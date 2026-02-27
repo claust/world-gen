@@ -1,0 +1,12 @@
+# Rust build output
+/target/
+
+# Backup files from rustfmt/cargo-editors
+**/*.rs.bk
+
+# macOS
+.DS_Store
+
+# Editor/IDE
+.idea/
+.vscode/
