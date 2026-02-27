@@ -5,8 +5,11 @@ use glam::{IVec2, Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use crate::renderer_wgpu::pipeline::DepthTexture;
-use crate::world_core::biome::{classify, Biome};
-use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
+use crate::world_core::biome::Biome;
+use crate::world_core::biome_map::BiomeMap;
+use crate::world_core::chunk::{
+    ChunkData, ChunkTerrain, TreeInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
+};
 
 struct GpuChunk {
     vertex_buffer: wgpu::Buffer,
@@ -35,7 +38,8 @@ pub struct TerrainRenderer {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     depth: DepthTexture,
-    chunk_meshes: HashMap<IVec2, GpuChunk>,
+    terrain_chunk_meshes: HashMap<IVec2, GpuChunk>,
+    tree_chunk_meshes: HashMap<IVec2, GpuChunk>,
 }
 
 impl TerrainRenderer {
@@ -150,7 +154,8 @@ impl TerrainRenderer {
             uniform_buffer,
             uniform_bind_group,
             depth: DepthTexture::new(device, config, "terrain-depth"),
-            chunk_meshes: HashMap::new(),
+            terrain_chunk_meshes: HashMap::new(),
+            tree_chunk_meshes: HashMap::new(),
         }
     }
 
@@ -173,36 +178,65 @@ impl TerrainRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[data]));
     }
 
-    pub fn sync_chunks(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkTerrain>) {
-        self.chunk_meshes
+    pub fn sync_chunks(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
+        self.terrain_chunk_meshes
+            .retain(|coord, _| chunks.contains_key(coord));
+        self.tree_chunk_meshes
             .retain(|coord, _| chunks.contains_key(coord));
 
         for (coord, chunk) in chunks {
-            if self.chunk_meshes.contains_key(coord) {
-                continue;
+            if !self.terrain_chunk_meshes.contains_key(coord) {
+                if let Some(cpu_mesh) = build_mesh(&chunk.terrain, &chunk.biome_map) {
+                    let vertex_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("terrain-vertex-buffer"),
+                            contents: bytemuck::cast_slice(cpu_mesh.vertices.as_slice()),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+
+                    let index_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("terrain-index-buffer"),
+                            contents: bytemuck::cast_slice(cpu_mesh.indices.as_slice()),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+
+                    self.terrain_chunk_meshes.insert(
+                        *coord,
+                        GpuChunk {
+                            vertex_buffer,
+                            index_buffer,
+                            index_count: cpu_mesh.indices.len() as u32,
+                        },
+                    );
+                }
             }
 
-            if let Some(cpu_mesh) = build_mesh(chunk) {
-                let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("terrain-vertex-buffer"),
-                    contents: bytemuck::cast_slice(cpu_mesh.vertices.as_slice()),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+            if !self.tree_chunk_meshes.contains_key(coord) {
+                if let Some(cpu_mesh) = build_tree_mesh(&chunk.content.trees) {
+                    let vertex_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("tree-vertex-buffer"),
+                            contents: bytemuck::cast_slice(cpu_mesh.vertices.as_slice()),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
 
-                let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("terrain-index-buffer"),
-                    contents: bytemuck::cast_slice(cpu_mesh.indices.as_slice()),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+                    let index_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("tree-index-buffer"),
+                            contents: bytemuck::cast_slice(cpu_mesh.indices.as_slice()),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
 
-                self.chunk_meshes.insert(
-                    *coord,
-                    GpuChunk {
-                        vertex_buffer,
-                        index_buffer,
-                        index_count: cpu_mesh.indices.len() as u32,
-                    },
-                );
+                    self.tree_chunk_meshes.insert(
+                        *coord,
+                        GpuChunk {
+                            vertex_buffer,
+                            index_buffer,
+                            index_count: cpu_mesh.indices.len() as u32,
+                        },
+                    );
+                }
             }
         }
     }
@@ -211,7 +245,13 @@ impl TerrainRenderer {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.uniform_bind_group, &[]);
 
-        for mesh in self.chunk_meshes.values() {
+        for mesh in self.terrain_chunk_meshes.values() {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        }
+
+        for mesh in self.tree_chunk_meshes.values() {
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
@@ -228,10 +268,10 @@ struct CpuChunkMesh {
     indices: Vec<u32>,
 }
 
-fn build_mesh(chunk: &ChunkTerrain) -> Option<CpuChunkMesh> {
+fn build_mesh(chunk: &ChunkTerrain, biome_map: &BiomeMap) -> Option<CpuChunkMesh> {
     let side = CHUNK_GRID_RESOLUTION;
     let total = side * side;
-    if chunk.heights.len() != total || chunk.moisture.len() != total {
+    if chunk.heights.len() != total || biome_map.values.len() != total {
         return None;
     }
     if chunk.max_height < chunk.min_height {
@@ -268,7 +308,7 @@ fn build_mesh(chunk: &ChunkTerrain) -> Option<CpuChunkMesh> {
             let world_x = origin_x + x as f32 * cell_size;
             let world_z = origin_z + z as f32 * cell_size;
             let h = chunk.heights[idx];
-            let biome = classify(h, chunk.moisture[idx]);
+            let biome = biome_map.values[idx];
             let color = biome_ground_color(biome, h);
             let n = normals[idx];
             TerrainVertex {
@@ -304,4 +344,171 @@ fn biome_ground_color(biome: Biome, height: f32) -> Vec3 {
 
     let tint = ((height + 40.0) / 260.0).clamp(0.0, 1.0);
     base.lerp(Vec3::splat(0.75), tint * 0.08)
+}
+
+fn build_tree_mesh(trees: &[TreeInstance]) -> Option<CpuChunkMesh> {
+    if trees.is_empty() {
+        return None;
+    }
+
+    let mut vertices = Vec::with_capacity(trees.len() * 12);
+    let mut indices = Vec::with_capacity(trees.len() * 54);
+
+    for tree in trees {
+        let trunk_center = tree.position + Vec3::new(0.0, tree.trunk_height * 0.5, 0.0);
+        append_box(
+            &mut vertices,
+            &mut indices,
+            trunk_center,
+            Vec3::new(0.30, tree.trunk_height * 0.5, 0.30),
+            Vec3::new(0.33, 0.22, 0.11),
+        );
+
+        let canopy_center =
+            tree.position + Vec3::new(0.0, tree.trunk_height + tree.canopy_radius, 0.0);
+        append_octahedron(
+            &mut vertices,
+            &mut indices,
+            canopy_center,
+            tree.canopy_radius,
+            Vec3::new(0.14, 0.38, 0.16),
+        );
+    }
+
+    Some(CpuChunkMesh { vertices, indices })
+}
+
+fn append_box(
+    vertices: &mut Vec<TerrainVertex>,
+    indices: &mut Vec<u32>,
+    center: Vec3,
+    half_extents: Vec3,
+    color: Vec3,
+) {
+    let min = center - half_extents;
+    let max = center + half_extents;
+
+    let p = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+
+    append_quad(
+        vertices,
+        indices,
+        [p[0], p[1], p[2], p[3]],
+        Vec3::NEG_Z,
+        color,
+    );
+    append_quad(vertices, indices, [p[5], p[4], p[7], p[6]], Vec3::Z, color);
+    append_quad(
+        vertices,
+        indices,
+        [p[4], p[0], p[3], p[7]],
+        Vec3::NEG_X,
+        color,
+    );
+    append_quad(vertices, indices, [p[1], p[5], p[6], p[2]], Vec3::X, color);
+    append_quad(vertices, indices, [p[3], p[2], p[6], p[7]], Vec3::Y, color);
+    append_quad(
+        vertices,
+        indices,
+        [p[4], p[5], p[1], p[0]],
+        Vec3::NEG_Y,
+        color,
+    );
+}
+
+fn append_octahedron(
+    vertices: &mut Vec<TerrainVertex>,
+    indices: &mut Vec<u32>,
+    center: Vec3,
+    radius: f32,
+    color: Vec3,
+) {
+    let top = center + Vec3::Y * radius;
+    let bottom = center - Vec3::Y * (radius * 0.9);
+    let east = center + Vec3::X * radius;
+    let west = center - Vec3::X * radius;
+    let north = center + Vec3::Z * radius;
+    let south = center - Vec3::Z * radius;
+
+    append_triangle(vertices, indices, top, north, east, color);
+    append_triangle(vertices, indices, top, east, south, color);
+    append_triangle(vertices, indices, top, south, west, color);
+    append_triangle(vertices, indices, top, west, north, color);
+    append_triangle(vertices, indices, bottom, east, north, color);
+    append_triangle(vertices, indices, bottom, south, east, color);
+    append_triangle(vertices, indices, bottom, west, south, color);
+    append_triangle(vertices, indices, bottom, north, west, color);
+}
+
+fn append_quad(
+    vertices: &mut Vec<TerrainVertex>,
+    indices: &mut Vec<u32>,
+    corners: [Vec3; 4],
+    normal: Vec3,
+    color: Vec3,
+) {
+    let [a, b, c, d] = corners;
+    let base = vertices.len() as u32;
+    vertices.extend_from_slice(&[
+        TerrainVertex {
+            position: a.to_array(),
+            normal: normal.to_array(),
+            color: color.to_array(),
+        },
+        TerrainVertex {
+            position: b.to_array(),
+            normal: normal.to_array(),
+            color: color.to_array(),
+        },
+        TerrainVertex {
+            position: c.to_array(),
+            normal: normal.to_array(),
+            color: color.to_array(),
+        },
+        TerrainVertex {
+            position: d.to_array(),
+            normal: normal.to_array(),
+            color: color.to_array(),
+        },
+    ]);
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn append_triangle(
+    vertices: &mut Vec<TerrainVertex>,
+    indices: &mut Vec<u32>,
+    a: Vec3,
+    b: Vec3,
+    c: Vec3,
+    color: Vec3,
+) {
+    let normal = (b - a).cross(c - a).normalize_or_zero();
+    let base = vertices.len() as u32;
+    vertices.extend_from_slice(&[
+        TerrainVertex {
+            position: a.to_array(),
+            normal: normal.to_array(),
+            color: color.to_array(),
+        },
+        TerrainVertex {
+            position: b.to_array(),
+            normal: normal.to_array(),
+            color: color.to_array(),
+        },
+        TerrainVertex {
+            position: c.to_array(),
+            normal: normal.to_array(),
+            color: color.to_array(),
+        },
+    ]);
+    indices.extend_from_slice(&[base, base + 1, base + 2]);
 }

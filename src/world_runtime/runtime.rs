@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use glam::{IVec2, Vec3};
 
-use crate::world_core::chunk::ChunkTerrain;
+use crate::world_core::chunk::ChunkData;
 use crate::world_core::time::WorldClock;
 use crate::world_runtime::streaming::StreamingWorld;
 
@@ -42,7 +42,7 @@ impl WorldRuntime {
         self.streaming.update(camera_position);
     }
 
-    pub fn chunks(&self) -> &HashMap<IVec2, ChunkTerrain> {
+    pub fn chunks(&self) -> &HashMap<IVec2, ChunkData> {
         self.streaming.chunks()
     }
 
