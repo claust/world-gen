@@ -1,0 +1,37 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug world-gen",
+      "program": "${workspaceFolder}/target/debug/world-gen",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PATH": "${env:HOME}/.cargo/bin:${env:PATH}",
+        "CARGO_HOME": "${env:HOME}/.cargo",
+        "RUSTUP_HOME": "${env:HOME}/.rustup"
+      },
+      "args": [
+        "--debug-api"
+      ],
+      "preLaunchTask": "cargo build debug bin"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Run world-gen (release)",
+      "program": "${workspaceFolder}/target/release/world-gen",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PATH": "${env:HOME}/.cargo/bin:${env:PATH}",
+        "CARGO_HOME": "${env:HOME}/.cargo",
+        "RUSTUP_HOME": "${env:HOME}/.rustup"
+      },
+      "args": [
+        "--debug-api"
+      ],
+      "preLaunchTask": "cargo build release bin"
+    }
+  ]
+}

@@ -41,6 +41,43 @@ cargo run --release
 cargo check
 ```
 
+## Debug API + Monitor (MVP)
+Run the game with local debug API enabled:
+
+```bash
+cargo run --release -- --debug-api
+```
+
+Default bind is `127.0.0.1:7777`.
+
+Optional overrides:
+
+```bash
+WORLD_GEN_DEBUG_API=true cargo run --release
+cargo run --release -- --debug-api --debug-api-bind 127.0.0.1:9000
+```
+
+Run the monitor app (separate Bun + React + Tailwind + shadcn project):
+
+```bash
+cd tools/debug-monitor
+bun install
+bun dev --host 127.0.0.1 --port 4173
+```
+
+If debug API is on a non-default loopback port:
+
+```bash
+cd tools/debug-monitor
+VITE_DEBUG_API_BASE=http://127.0.0.1:9000 bun dev --host 127.0.0.1 --port 4173
+```
+
+Available API routes:
+- `GET /health`
+- `GET /api/state`
+- `POST /api/command`
+- `GET /ws`
+
 ## Debug In VS Code (`F5`)
 - Open this folder (`/Users/claus/Repos/world-gen`) as the workspace root.
 - Select launch config `Debug world-gen`.
@@ -83,3 +120,4 @@ This captures every `2s` for `10` frames.
 ## Current Status
 - Architecture is now split into `world_core` (domain), `world_runtime` (use-cases/orchestration), and `renderer_wgpu` (render adapter).
 - Streaming and world clock are active in the main app loop.
+- Local debug API and monitor MVP are available for interactive telemetry and `set_day_speed` commands.

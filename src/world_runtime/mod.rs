@@ -1,4 +1,4 @@
 mod runtime;
 mod streaming;
 
-pub use runtime::WorldRuntime;
+pub use runtime::{RuntimeStats, WorldRuntime};

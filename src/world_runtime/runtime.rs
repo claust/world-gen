@@ -62,4 +62,20 @@ impl WorldRuntime {
             hour: self.clock.hour(),
         }
     }
+
+    pub fn day_speed(&self) -> f32 {
+        self.clock.day_speed()
+    }
+
+    pub fn set_day_speed(&mut self, value: f32) -> Result<f32, String> {
+        if !value.is_finite() {
+            return Err("day speed must be a finite number".to_string());
+        }
+        if !(0.0..=2000.0).contains(&value) {
+            return Err("day speed must be between 0.0 and 2000.0".to_string());
+        }
+
+        self.clock.set_day_speed(value);
+        Ok(self.clock.day_speed())
+    }
 }

@@ -1,0 +1,71 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo build debug bin",
+      "type": "shell",
+      "command": "${env:HOME}/.cargo/bin/cargo",
+      "args": [
+        "build",
+        "--bin",
+        "world-gen"
+      ],
+      "group": "build",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo build release bin",
+      "type": "shell",
+      "command": "${env:HOME}/.cargo/bin/cargo",
+      "args": [
+        "build",
+        "--release",
+        "--bin",
+        "world-gen"
+      ],
+      "group": "build",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo check",
+      "type": "shell",
+      "command": "${env:HOME}/.cargo/bin/cargo",
+      "args": [
+        "check"
+      ],
+      "group": "build",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo run",
+      "type": "shell",
+      "command": "${env:HOME}/.cargo/bin/cargo",
+      "args": [
+        "run"
+      ],
+      "group": "test",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo run --release",
+      "type": "shell",
+      "command": "${env:HOME}/.cargo/bin/cargo",
+      "args": [
+        "run",
+        "--release"
+      ],
+      "group": "test",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    }
+  ]
+}

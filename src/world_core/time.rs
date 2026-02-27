@@ -2,7 +2,7 @@ use glam::Vec3;
 
 pub struct WorldClock {
     hour: f32,
-    pub day_speed: f32,
+    day_speed: f32,
 }
 
 impl WorldClock {
@@ -15,6 +15,14 @@ impl WorldClock {
 
     pub fn update(&mut self, dt_seconds: f32) {
         self.hour = (self.hour + dt_seconds * self.day_speed).rem_euclid(24.0);
+    }
+
+    pub fn day_speed(&self) -> f32 {
+        self.day_speed
+    }
+
+    pub fn set_day_speed(&mut self, day_speed: f32) {
+        self.day_speed = day_speed;
     }
 
     pub fn hour(&self) -> f32 {

@@ -1,3 +1,4 @@
+mod debug_api;
 mod renderer_wgpu;
 mod world_core;
 mod world_runtime;
@@ -6,7 +7,7 @@ use anyhow::{Context, Result};
 use glam::Vec3;
 use renderer_wgpu::camera::{CameraController, FlyCamera};
 use renderer_wgpu::terrain::TerrainRenderer;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wgpu::SurfaceError;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, Event, WindowEvent};
@@ -14,7 +15,11 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowBuilder};
 
-use crate::world_runtime::WorldRuntime;
+use crate::debug_api::{
+    start_debug_api, CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind,
+    DebugApiConfig, DebugApiHandle, TelemetrySnapshot,
+};
+use crate::world_runtime::{RuntimeStats, WorldRuntime};
 
 struct AppState {
     window: &'static Window,
@@ -27,13 +32,16 @@ struct AppState {
     camera: FlyCamera,
     camera_controller: CameraController,
     world: WorldRuntime,
+    debug_api: Option<DebugApiHandle>,
     focused: bool,
     last_frame: Instant,
+    last_telemetry_emit: Instant,
     frame_time_ms: f32,
+    frame_index: u64,
 }
 
 impl AppState {
-    async fn new(window: &'static Window) -> Result<Self> {
+    async fn new(window: &'static Window, debug_api_config: DebugApiConfig) -> Result<Self> {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::default();
@@ -106,6 +114,11 @@ impl AppState {
 
         terrain_renderer.sync_chunks(&device, world.chunks());
 
+        let debug_api = start_debug_api(&debug_api_config)?;
+        if let Some(api) = &debug_api {
+            log::info!("debug api listening on {}", api.bind_addr());
+        }
+
         Ok(Self {
             window,
             surface,
@@ -117,9 +130,12 @@ impl AppState {
             camera,
             camera_controller,
             world,
+            debug_api,
             focused: true,
             last_frame: Instant::now(),
+            last_telemetry_emit: Instant::now() - Duration::from_secs(1),
             frame_time_ms: 0.0,
+            frame_index: 0,
         })
     }
 
@@ -148,7 +164,73 @@ impl AppState {
             .resize(&self.device, &self.surface_config);
     }
 
+    fn apply_debug_commands(&mut self) {
+        let Some(api) = &mut self.debug_api else {
+            return;
+        };
+
+        for command in api.drain_commands() {
+            let applied = match command.command {
+                CommandKind::SetDaySpeed { value } => match self.world.set_day_speed(value) {
+                    Ok(day_speed) => CommandAppliedEvent {
+                        id: command.id,
+                        frame: self.frame_index,
+                        ok: true,
+                        message: "day speed set".to_string(),
+                        day_speed: Some(day_speed),
+                    },
+                    Err(message) => CommandAppliedEvent {
+                        id: command.id,
+                        frame: self.frame_index,
+                        ok: false,
+                        message,
+                        day_speed: Some(self.world.day_speed()),
+                    },
+                },
+            };
+
+            api.publish_command_applied(applied);
+        }
+    }
+
+    fn publish_telemetry_if_due(&mut self, stats: &RuntimeStats) {
+        let Some(api) = &self.debug_api else {
+            return;
+        };
+
+        if self.last_telemetry_emit.elapsed() < Duration::from_millis(100) {
+            return;
+        }
+
+        let telemetry = TelemetrySnapshot {
+            frame: self.frame_index,
+            frame_time_ms: self.frame_time_ms,
+            fps: 1000.0 / self.frame_time_ms.max(0.01),
+            hour: stats.hour,
+            day_speed: self.world.day_speed(),
+            camera: CameraSnapshot {
+                x: self.camera.position.x,
+                y: self.camera.position.y,
+                z: self.camera.position.z,
+                yaw: self.camera.yaw,
+                pitch: self.camera.pitch,
+            },
+            chunks: ChunkSnapshot {
+                loaded: stats.loaded_chunks,
+                pending: stats.pending_chunks,
+                center: [stats.center_chunk.x, stats.center_chunk.y],
+            },
+            timestamp_ms: now_timestamp_ms(),
+        };
+
+        api.publish_telemetry(telemetry);
+        self.last_telemetry_emit = Instant::now();
+    }
+
     fn update(&mut self) {
+        self.frame_index = self.frame_index.saturating_add(1);
+        self.apply_debug_commands();
+
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -173,8 +255,10 @@ impl AppState {
         );
 
         let stats = self.world.stats();
+        self.publish_telemetry_if_due(&stats);
+
         self.window.set_title(&format!(
-            "world-gen | {:.1}ms ({:.0}fps) | chunks: {}/{} | center: {},{} | hour: {:.1}",
+            "world-gen | {:.1}ms ({:.0}fps) | chunks: {}/{} | center: {},{} | hour: {:.1} | day_speed: {:.2}",
             self.frame_time_ms,
             1000.0 / self.frame_time_ms.max(0.01),
             stats.loaded_chunks,
@@ -182,6 +266,7 @@ impl AppState {
             stats.center_chunk.x,
             stats.center_chunk.y,
             stats.hour,
+            self.world.day_speed(),
         ));
     }
 
@@ -235,8 +320,21 @@ fn try_grab_cursor(window: &Window) {
     window.set_cursor_visible(false);
 }
 
+fn now_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn main() -> Result<()> {
     env_logger::init();
+    let debug_api = DebugApiConfig::from_env_args()?;
+    log::info!(
+        "debug api enabled: {}, bind: {}",
+        debug_api.enabled,
+        debug_api.bind_addr
+    );
 
     let event_loop = EventLoop::new()?;
     let window = Box::leak(Box::new(
@@ -249,7 +347,7 @@ fn main() -> Result<()> {
 
     try_grab_cursor(window);
 
-    let mut app = pollster::block_on(AppState::new(window))?;
+    let mut app = pollster::block_on(AppState::new(window, debug_api))?;
 
     event_loop.run(move |event, target| {
         target.set_control_flow(ControlFlow::Poll);
