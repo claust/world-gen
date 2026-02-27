@@ -30,6 +30,10 @@ curl https://sh.rustup.rs -sSf | sh -s -- -y
 ```bash
 . "$HOME/.cargo/env"
 ```
+4. Enable repository hooks (checks Rust and debug-monitor TypeScript formatting + lint on staged files before commit):
+```bash
+git config core.hooksPath .githooks
+```
 
 ## Run The App
 1. Build and run in release mode:

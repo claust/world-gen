@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+staged_rust_files=()
+staged_debug_monitor_ts_files=()
+while IFS= read -r path; do
+  case "$path" in
+    *.rs) staged_rust_files+=("$path") ;;
+    tools/debug-monitor/*)
+      case "$path" in
+        *.ts|*.tsx|*.cts|*.mts|*.d.ts) staged_debug_monitor_ts_files+=("$path") ;;
+      esac
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ "${#staged_rust_files[@]}" -eq 0 ] && [ "${#staged_debug_monitor_ts_files[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+failed=0
+
+if [ "${#staged_rust_files[@]}" -gt 0 ]; then
+  echo "pre-commit: checking rustfmt on staged Rust files"
+  if ! cargo fmt --check -- "${staged_rust_files[@]}"; then
+    echo "pre-commit: rustfmt check failed. Run: cargo fmt -- <files>"
+    failed=1
+  fi
+
+  echo "pre-commit: running clippy"
+  if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    echo "pre-commit: clippy failed. Fix the diagnostics above."
+    failed=1
+  fi
+fi
+
+if [ "${#staged_debug_monitor_ts_files[@]}" -gt 0 ]; then
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "pre-commit: bun is required for debug-monitor checks. Install bun to continue."
+    failed=1
+  else
+    echo "pre-commit: checking debug-monitor formatting"
+    if ! (cd tools/debug-monitor && bun run format:check); then
+      echo "pre-commit: debug-monitor format check failed. Run: (cd tools/debug-monitor && bun run format)"
+      failed=1
+    fi
+
+    echo "pre-commit: linting debug-monitor"
+    if ! (cd tools/debug-monitor && bun run lint); then
+      echo "pre-commit: debug-monitor lint failed. Fix the diagnostics above."
+      failed=1
+    fi
+  fi
+fi
+
+if [ "$failed" -ne 0 ]; then
+  exit 1
+fi
