@@ -6,7 +6,7 @@ A local web UI for observing and controlling a running `world-gen` instance thro
 The debug monitor is a Bun + React + Vite app used during development to:
 - show live telemetry from the game over WebSocket,
 - display key runtime state (frame, FPS, clock, camera, chunk streaming),
-- send debug commands (currently `set_day_speed`) and show command acknowledgements.
+- send debug commands (`set_day_speed`, `set_move_key`) and show command acknowledgements.
 
 The monitor is intended for local development only and assumes a loopback debug API.
 
@@ -48,6 +48,7 @@ cargo run --release -- --debug-api
 2. Start this monitor app.
 3. Confirm `WS connected` appears in the UI.
 4. Use the day speed control to send `set_day_speed`.
+5. Use the WASD controls (or keyboard) to send `set_move_key` press/release commands.
 
 ## Scripts
 - `bun dev`: run Vite dev server

@@ -5,7 +5,7 @@ mod world_runtime;
 
 use anyhow::{Context, Result};
 use glam::Vec3;
-use renderer_wgpu::camera::{CameraController, FlyCamera};
+use renderer_wgpu::camera::{CameraController, FlyCamera, MoveDirection};
 use renderer_wgpu::terrain::TerrainRenderer;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wgpu::SurfaceError;
@@ -17,7 +17,7 @@ use winit::window::{CursorGrabMode, Window, WindowBuilder};
 
 use crate::debug_api::{
     start_debug_api, CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind,
-    DebugApiConfig, DebugApiHandle, TelemetrySnapshot,
+    DebugApiConfig, DebugApiHandle, MoveKey, TelemetrySnapshot,
 };
 use crate::world_runtime::{RuntimeStats, WorldRuntime};
 
@@ -216,6 +216,27 @@ impl AppState {
                         day_speed: Some(self.world.day_speed()),
                     },
                 },
+                CommandKind::SetMoveKey { key, pressed } => {
+                    let direction = match key {
+                        MoveKey::W => MoveDirection::Forward,
+                        MoveKey::A => MoveDirection::Left,
+                        MoveKey::S => MoveDirection::Backward,
+                        MoveKey::D => MoveDirection::Right,
+                    };
+                    self.camera_controller.set_remote_move(direction, pressed);
+
+                    CommandAppliedEvent {
+                        id: command.id,
+                        frame: self.frame_index,
+                        ok: true,
+                        message: format!(
+                            "move key {} {}",
+                            key.as_str(),
+                            if pressed { "pressed" } else { "released" }
+                        ),
+                        day_speed: None,
+                    }
+                }
             };
 
             api.publish_command_applied(applied);

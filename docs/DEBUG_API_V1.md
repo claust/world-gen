@@ -6,7 +6,7 @@ This contract defines the minimum viable local debug interface for `world-gen`.
 - Transport: HTTP + WebSocket
 - Binding: `127.0.0.1:7777` by default
 - API version: `v1`
-- Command allowlist: `set_day_speed`
+- Command allowlist: `set_day_speed`, `set_move_key`
 
 ## Architecture Boundaries
 
@@ -72,6 +72,15 @@ Request:
 }
 ```
 
+```json
+{
+  "id": "cmd-2",
+  "type": "set_move_key",
+  "key": "w",
+  "pressed": true
+}
+```
+
 Immediate response `202`:
 
 ```json
@@ -124,6 +133,7 @@ Event envelope uses tagged payloads:
 - Commands are applied in the main frame loop (deterministic boundary).
 - Each applied command emits one `command_applied` event with frame index.
 - The telemetry stream reflects the updated value after application.
+- `set_move_key` is a press/release command for `w|a|s|d`; movement continues while key is pressed.
 
 ## Safety/Operational Constraints
 

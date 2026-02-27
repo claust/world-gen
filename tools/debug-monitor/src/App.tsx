@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
@@ -36,6 +36,8 @@ type CommandApplied = {
   day_speed?: number;
 };
 
+type MoveKey = "w" | "a" | "s" | "d";
+
 type WsEvent =
   | { type: "telemetry"; payload: Telemetry }
   | { type: "command_applied"; payload: CommandApplied };
@@ -61,6 +63,12 @@ function App() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number | null>(null);
+  const keyHoldCountsRef = useRef<Record<MoveKey, number>>({
+    w: 0,
+    a: 0,
+    s: 0,
+    d: 0,
+  });
 
   const [connection, setConnection] = useState<"connecting" | "connected" | "disconnected">(
     "connecting",
@@ -70,6 +78,75 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [daySpeedInput, setDaySpeedInput] = useState("0.04");
   const [submitting, setSubmitting] = useState(false);
+
+  const sendCommand = useCallback(
+    async (command: Record<string, unknown>) => {
+      const commandId = `monitor-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const response = await fetch(`${apiBase}/api/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: commandId,
+          ...command,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = (await response.text()) || response.statusText;
+        throw new Error(body);
+      }
+    },
+    [apiBase],
+  );
+
+  const sendMoveKeyCommand = useCallback(
+    (key: MoveKey, pressed: boolean) => {
+      void sendCommand({
+        type: "set_move_key",
+        key,
+        pressed,
+      }).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+      });
+    },
+    [sendCommand],
+  );
+
+  const pressMoveKey = useCallback(
+    (key: MoveKey) => {
+      const current = keyHoldCountsRef.current[key];
+      keyHoldCountsRef.current[key] = current + 1;
+      if (current === 0) {
+        sendMoveKeyCommand(key, true);
+      }
+    },
+    [sendMoveKeyCommand],
+  );
+
+  const releaseMoveKey = useCallback(
+    (key: MoveKey) => {
+      const current = keyHoldCountsRef.current[key];
+      if (current <= 0) return;
+
+      const next = current - 1;
+      keyHoldCountsRef.current[key] = next;
+      if (next === 0) {
+        sendMoveKeyCommand(key, false);
+      }
+    },
+    [sendMoveKeyCommand],
+  );
+
+  const releaseAllMoveKeys = useCallback(() => {
+    const keys: MoveKey[] = ["w", "a", "s", "d"];
+    for (const key of keys) {
+      if (keyHoldCountsRef.current[key] > 0) {
+        keyHoldCountsRef.current[key] = 0;
+        sendMoveKeyCommand(key, false);
+      }
+    }
+  }, [sendMoveKeyCommand]);
 
   useEffect(() => {
     const loadInitialState = async () => {
@@ -149,6 +226,60 @@ function App() {
     };
   }, [wsUrl]);
 
+  useEffect(() => {
+    const keyFromCode = (code: string): MoveKey | null => {
+      switch (code) {
+        case "KeyW":
+          return "w";
+        case "KeyA":
+          return "a";
+        case "KeyS":
+          return "s";
+        case "KeyD":
+          return "d";
+        default:
+          return null;
+      }
+    };
+
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (isTypingTarget(event.target)) return;
+
+      const key = keyFromCode(event.code);
+      if (!key) return;
+
+      event.preventDefault();
+      pressMoveKey(key);
+    };
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      const key = keyFromCode(event.code);
+      if (!key) return;
+
+      event.preventDefault();
+      releaseMoveKey(key);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", releaseAllMoveKeys);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", releaseAllMoveKeys);
+      releaseAllMoveKeys();
+    };
+  }, [pressMoveKey, releaseMoveKey, releaseAllMoveKeys]);
+
   const submitDaySpeed = async (event: FormEvent) => {
     event.preventDefault();
     setSubmitting(true);
@@ -161,23 +292,11 @@ function App() {
       return;
     }
 
-    const commandId = `monitor-${Date.now()}`;
-
     try {
-      const response = await fetch(`${apiBase}/api/command`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          id: commandId,
-          type: "set_day_speed",
-          value: parsedValue,
-        }),
+      await sendCommand({
+        type: "set_day_speed",
+        value: parsedValue,
       });
-
-      if (!response.ok) {
-        const body = (await response.text()) || response.statusText;
-        throw new Error(body);
-      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
@@ -185,6 +304,22 @@ function App() {
       setSubmitting(false);
     }
   };
+
+  const buttonHandlers = (key: MoveKey) => ({
+    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      pressMoveKey(key);
+    },
+    onPointerUp: () => {
+      releaseMoveKey(key);
+    },
+    onPointerLeave: () => {
+      releaseMoveKey(key);
+    },
+    onPointerCancel: () => {
+      releaseMoveKey(key);
+    },
+  });
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-100 to-slate-200 p-6 text-slate-950">
@@ -238,7 +373,7 @@ function App() {
           <Card>
             <CardHeader>
               <CardTitle>Controls</CardTitle>
-              <CardDescription>Send one command: set day speed</CardDescription>
+              <CardDescription>Set day speed and navigate with WASD</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <form className="flex gap-2" onSubmit={submitDaySpeed}>
@@ -252,6 +387,25 @@ function App() {
                   {submitting ? "Sending…" : "Set"}
                 </Button>
               </form>
+              <div className="space-y-2">
+                <div className="text-sm">Navigation (W/A/S/D)</div>
+                <div className="grid w-fit grid-cols-3 gap-2">
+                  <div />
+                  <Button type="button" variant="outline" {...buttonHandlers("w")}>
+                    W
+                  </Button>
+                  <div />
+                  <Button type="button" variant="outline" {...buttonHandlers("a")}>
+                    A
+                  </Button>
+                  <Button type="button" variant="outline" {...buttonHandlers("s")}>
+                    S
+                  </Button>
+                  <Button type="button" variant="outline" {...buttonHandlers("d")}>
+                    D
+                  </Button>
+                </div>
+              </div>
               <Separator />
               <div className="text-sm">
                 Last ack:{" "}

@@ -50,10 +50,31 @@ pub struct CommandRequest {
     pub command: CommandKind,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MoveKey {
+    W,
+    A,
+    S,
+    D,
+}
+
+impl MoveKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::W => "w",
+            Self::A => "a",
+            Self::S => "s",
+            Self::D => "d",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CommandKind {
     SetDaySpeed { value: f32 },
+    SetMoveKey { key: MoveKey, pressed: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,4 +105,17 @@ pub struct CommandAppliedEvent {
 pub enum ServerEvent {
     Telemetry(TelemetrySnapshot),
     CommandApplied(CommandAppliedEvent),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CommandRequest;
+
+    #[test]
+    fn deserializes_set_move_key_command() {
+        let raw = r#"{"id":"cmd-1","type":"set_move_key","key":"w","pressed":true}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid set_move_key payload");
+        assert_eq!(command.id, "cmd-1");
+    }
 }

@@ -118,4 +118,4 @@ This captures every `2s` for `10` frames.
 ## Current Status
 - Architecture is now split into `world_core` (domain), `world_runtime` (use-cases/orchestration), and `renderer_wgpu` (render adapter).
 - Streaming and world clock are active in the main app loop.
-- Local debug API and monitor MVP are available for interactive telemetry and `set_day_speed` commands.
+- Local debug API and monitor MVP are available for interactive telemetry, `set_day_speed`, and remote `W/A/S/D` movement commands.
