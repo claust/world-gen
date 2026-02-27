@@ -159,8 +159,12 @@ impl AppState {
 
         let aspect = self.surface_config.width as f32 / self.surface_config.height.max(1) as f32;
         let view_proj = self.camera.view_projection(aspect);
-        self.terrain_renderer
-            .update_uniforms(&self.queue, view_proj, Vec3::new(0.3, 0.9, 0.2), 0.22);
+        self.terrain_renderer.update_uniforms(
+            &self.queue,
+            view_proj,
+            Vec3::new(0.3, 0.9, 0.2),
+            0.22,
+        );
 
         self.window.set_title(&format!(
             "world-gen MVP | {:.1}ms ({:.0}fps) | chunks: {}",
@@ -176,11 +180,11 @@ impl AppState {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("world-gen-render-encoder"),
-                });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("world-gen-render-encoder"),
+            });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

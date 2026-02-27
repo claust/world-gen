@@ -43,20 +43,19 @@ impl TerrainRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("terrain-bind-group-layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("terrain-bind-group-layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
 
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("terrain-bind-group"),
@@ -166,7 +165,8 @@ impl TerrainRenderer {
     }
 
     pub fn sync_chunks(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
-        self.chunk_meshes.retain(|coord, _| chunks.contains_key(coord));
+        self.chunk_meshes
+            .retain(|coord, _| chunks.contains_key(coord));
 
         for (coord, chunk) in chunks {
             if self.chunk_meshes.contains_key(coord) {
@@ -210,5 +210,4 @@ impl TerrainRenderer {
     pub fn depth_view(&self) -> &wgpu::TextureView {
         &self.depth.view
     }
-
 }
