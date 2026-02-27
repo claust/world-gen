@@ -31,10 +31,10 @@ impl MoveMask {
 
     fn from_local_key(code: KeyCode) -> Option<Self> {
         match code {
-            KeyCode::KeyW => Some(Self::FORWARD),
-            KeyCode::KeyA => Some(Self::LEFT),
-            KeyCode::KeyS => Some(Self::BACKWARD),
-            KeyCode::KeyD => Some(Self::RIGHT),
+            KeyCode::KeyW | KeyCode::ArrowUp => Some(Self::FORWARD),
+            KeyCode::KeyA | KeyCode::ArrowLeft => Some(Self::LEFT),
+            KeyCode::KeyS | KeyCode::ArrowDown => Some(Self::BACKWARD),
+            KeyCode::KeyD | KeyCode::ArrowRight => Some(Self::RIGHT),
             _ => None,
         }
     }

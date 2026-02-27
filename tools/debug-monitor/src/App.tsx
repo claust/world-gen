@@ -230,12 +230,16 @@ function App() {
     const keyFromCode = (code: string): MoveKey | null => {
       switch (code) {
         case "KeyW":
+        case "ArrowUp":
           return "w";
         case "KeyA":
+        case "ArrowLeft":
           return "a";
         case "KeyS":
+        case "ArrowDown":
           return "s";
         case "KeyD":
+        case "ArrowRight":
           return "d";
         default:
           return null;
@@ -388,7 +392,7 @@ function App() {
                 </Button>
               </form>
               <div className="space-y-2">
-                <div className="text-sm">Navigation (W/A/S/D)</div>
+                <div className="text-sm">Navigation (WASD / Arrow keys)</div>
                 <div className="grid w-fit grid-cols-3 gap-2">
                   <div />
                   <Button type="button" variant="outline" {...buttonHandlers("w")}>
