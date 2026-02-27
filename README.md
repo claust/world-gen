@@ -5,8 +5,8 @@ Add your brief project purpose/vision here.
 
 ## What This Repository Contains
 - A Rust + `wgpu` prototype for rendering a procedurally generated terrain world.
-- A minimal flyable MVP (single generated chunk, camera movement, simple lighting/sky).
-- A modular code layout for future phases (biomes, vegetation, streaming, time-of-day, debug UI).
+- A flyable MVP with streaming chunks, camera movement, and day/night lighting.
+- A clean split between world core logic, runtime orchestration, and rendering adapters.
 
 ## Prerequisites
 - macOS/Linux/Windows
@@ -80,28 +80,6 @@ This captures every `2s` for `10` frames.
 - Mouse: look around
 - `Esc`: quit
 
-## Project Structure
-```text
-src/
-  main.rs
-  world_gen/
-    heightmap.rs
-    biome.rs
-    vegetation.rs
-    chunk.rs
-  renderer/
-    terrain.rs
-    instanced.rs
-    sky.rs
-    camera.rs
-    pipeline.rs
-    shaders/
-      terrain.wgsl
-  world/
-    streaming.rs
-    time.rs
-```
-
 ## Current Status
-- MVP is focused on visualizing terrain quickly with minimal complexity.
-- Streaming, full biome material blending, vegetation instancing, and richer day/night are scaffolded for upcoming phases.
+- Architecture is now split into `world_core` (domain), `world_runtime` (use-cases/orchestration), and `renderer_wgpu` (render adapter).
+- Streaming and world clock are active in the main app loop.

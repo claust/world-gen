@@ -4,13 +4,22 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec2, Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
-use crate::renderer::pipeline::DepthTexture;
-use crate::world_gen::chunk::{ChunkData, TerrainVertex};
+use crate::renderer_wgpu::pipeline::DepthTexture;
+use crate::world_core::biome::{classify, Biome};
+use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
 
 struct GpuChunk {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Zeroable, Pod)]
+struct TerrainVertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+    color: [f32; 3],
 }
 
 #[repr(C)]
@@ -126,7 +135,7 @@ impl TerrainRenderer {
                 conservative: false,
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: crate::renderer::pipeline::DEPTH_FORMAT,
+                format: crate::renderer_wgpu::pipeline::DEPTH_FORMAT,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
@@ -164,7 +173,7 @@ impl TerrainRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[data]));
     }
 
-    pub fn sync_chunks(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
+    pub fn sync_chunks(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkTerrain>) {
         self.chunk_meshes
             .retain(|coord, _| chunks.contains_key(coord));
 
@@ -173,26 +182,28 @@ impl TerrainRenderer {
                 continue;
             }
 
-            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("terrain-vertex-buffer"),
-                contents: bytemuck::cast_slice(chunk.vertices.as_slice()),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+            if let Some(cpu_mesh) = build_mesh(chunk) {
+                let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain-vertex-buffer"),
+                    contents: bytemuck::cast_slice(cpu_mesh.vertices.as_slice()),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
 
-            let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("terrain-index-buffer"),
-                contents: bytemuck::cast_slice(chunk.indices.as_slice()),
-                usage: wgpu::BufferUsages::INDEX,
-            });
+                let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain-index-buffer"),
+                    contents: bytemuck::cast_slice(cpu_mesh.indices.as_slice()),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
 
-            self.chunk_meshes.insert(
-                *coord,
-                GpuChunk {
-                    vertex_buffer,
-                    index_buffer,
-                    index_count: chunk.indices.len() as u32,
-                },
-            );
+                self.chunk_meshes.insert(
+                    *coord,
+                    GpuChunk {
+                        vertex_buffer,
+                        index_buffer,
+                        index_count: cpu_mesh.indices.len() as u32,
+                    },
+                );
+            }
         }
     }
 
@@ -210,4 +221,87 @@ impl TerrainRenderer {
     pub fn depth_view(&self) -> &wgpu::TextureView {
         &self.depth.view
     }
+}
+
+struct CpuChunkMesh {
+    vertices: Vec<TerrainVertex>,
+    indices: Vec<u32>,
+}
+
+fn build_mesh(chunk: &ChunkTerrain) -> Option<CpuChunkMesh> {
+    let side = CHUNK_GRID_RESOLUTION;
+    let total = side * side;
+    if chunk.heights.len() != total || chunk.moisture.len() != total {
+        return None;
+    }
+    if chunk.max_height < chunk.min_height {
+        return None;
+    }
+
+    let cell_size = CHUNK_SIZE_METERS / (side - 1) as f32;
+    let origin_x = chunk.coord.x as f32 * CHUNK_SIZE_METERS;
+    let origin_z = chunk.coord.y as f32 * CHUNK_SIZE_METERS;
+
+    let normals: Vec<Vec3> = (0..total)
+        .map(|idx| {
+            let x = idx % side;
+            let z = idx / side;
+
+            let x0 = x.saturating_sub(1);
+            let x1 = (x + 1).min(side - 1);
+            let z0 = z.saturating_sub(1);
+            let z1 = (z + 1).min(side - 1);
+
+            let h_l = chunk.heights[z * side + x0];
+            let h_r = chunk.heights[z * side + x1];
+            let h_d = chunk.heights[z0 * side + x];
+            let h_u = chunk.heights[z1 * side + x];
+
+            Vec3::new(h_l - h_r, cell_size * 2.0, h_d - h_u).normalize()
+        })
+        .collect();
+
+    let vertices: Vec<TerrainVertex> = (0..total)
+        .map(|idx| {
+            let x = idx % side;
+            let z = idx / side;
+            let world_x = origin_x + x as f32 * cell_size;
+            let world_z = origin_z + z as f32 * cell_size;
+            let h = chunk.heights[idx];
+            let biome = classify(h, chunk.moisture[idx]);
+            let color = biome_ground_color(biome, h);
+            let n = normals[idx];
+            TerrainVertex {
+                position: [world_x, h, world_z],
+                normal: [n.x, n.y, n.z],
+                color: [color.x, color.y, color.z],
+            }
+        })
+        .collect();
+
+    let mut indices = Vec::with_capacity((side - 1) * (side - 1) * 6);
+    for z in 0..(side - 1) {
+        for x in 0..(side - 1) {
+            let i0 = (z * side + x) as u32;
+            let i1 = i0 + 1;
+            let i2 = i0 + side as u32;
+            let i3 = i2 + 1;
+            indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
+        }
+    }
+
+    Some(CpuChunkMesh { vertices, indices })
+}
+
+fn biome_ground_color(biome: Biome, height: f32) -> Vec3 {
+    let base = match biome {
+        Biome::Snow => Vec3::new(0.90, 0.92, 0.95),
+        Biome::Rock => Vec3::new(0.46, 0.48, 0.50),
+        Biome::Desert => Vec3::new(0.70, 0.60, 0.36),
+        Biome::Forest => Vec3::new(0.21, 0.43, 0.23),
+        Biome::Grassland => Vec3::new(0.34, 0.52, 0.24),
+    };
+
+    let tint = ((height + 40.0) / 260.0).clamp(0.0, 1.0);
+    base.lerp(Vec3::splat(0.75), tint * 0.08)
 }

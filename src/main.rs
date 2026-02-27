@@ -1,11 +1,11 @@
-mod renderer;
-mod world_gen;
+mod renderer_wgpu;
+mod world_core;
+mod world_runtime;
 
 use anyhow::{Context, Result};
-use glam::{IVec2, Vec3};
-use renderer::camera::{CameraController, FlyCamera};
-use renderer::terrain::TerrainRenderer;
-use std::collections::HashMap;
+use glam::Vec3;
+use renderer_wgpu::camera::{CameraController, FlyCamera};
+use renderer_wgpu::terrain::TerrainRenderer;
 use std::time::Instant;
 use wgpu::SurfaceError;
 use winit::dpi::PhysicalSize;
@@ -14,7 +14,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowBuilder};
 
-use crate::world_gen::chunk::{ChunkData, ChunkGenerator};
+use crate::world_runtime::WorldRuntime;
 
 struct AppState {
     window: &'static Window,
@@ -26,7 +26,7 @@ struct AppState {
     terrain_renderer: TerrainRenderer,
     camera: FlyCamera,
     camera_controller: CameraController,
-    chunks: HashMap<IVec2, ChunkData>,
+    world: WorldRuntime,
     focused: bool,
     last_frame: Instant,
     frame_time_ms: f32,
@@ -98,12 +98,13 @@ impl AppState {
         camera.pitch = -0.38;
         let camera_controller = CameraController::new(180.0, 0.0022);
 
-        let generator = ChunkGenerator::new(42);
-        let chunk = generator.generate_chunk(IVec2::ZERO);
-        let mut chunks = HashMap::with_capacity(1);
-        chunks.insert(IVec2::ZERO, chunk);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let mut world = WorldRuntime::new(42, 1, threads, 9.5, 0.04)?;
+        world.update(0.0, camera.position);
 
-        terrain_renderer.sync_chunks(&device, &chunks);
+        terrain_renderer.sync_chunks(&device, world.chunks());
 
         Ok(Self {
             window,
@@ -115,7 +116,7 @@ impl AppState {
             terrain_renderer,
             camera,
             camera_controller,
-            chunks,
+            world,
             focused: true,
             last_frame: Instant::now(),
             frame_time_ms: 0.0,
@@ -157,20 +158,30 @@ impl AppState {
         self.camera_controller
             .update_camera(dt, &mut self.camera, self.focused);
 
+        self.world.update(dt, self.camera.position);
+        self.terrain_renderer
+            .sync_chunks(&self.device, self.world.chunks());
+
         let aspect = self.surface_config.width as f32 / self.surface_config.height.max(1) as f32;
         let view_proj = self.camera.view_projection(aspect);
+        let lighting = self.world.lighting();
         self.terrain_renderer.update_uniforms(
             &self.queue,
             view_proj,
-            Vec3::new(0.3, 0.9, 0.2),
-            0.22,
+            lighting.sun_direction,
+            lighting.ambient,
         );
 
+        let stats = self.world.stats();
         self.window.set_title(&format!(
-            "world-gen MVP | {:.1}ms ({:.0}fps) | chunks: {}",
+            "world-gen | {:.1}ms ({:.0}fps) | chunks: {}/{} | center: {},{} | hour: {:.1}",
             self.frame_time_ms,
             1000.0 / self.frame_time_ms.max(0.01),
-            self.chunks.len()
+            stats.loaded_chunks,
+            stats.loaded_chunks + stats.pending_chunks,
+            stats.center_chunk.x,
+            stats.center_chunk.y,
+            stats.hour,
         ));
     }
 
@@ -193,7 +204,7 @@ impl AppState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::renderer::sky::clear_color()),
+                        load: wgpu::LoadOp::Clear(crate::renderer_wgpu::sky::clear_color()),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

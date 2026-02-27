@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use glam::{IVec2, Vec3};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
-use crate::world_gen::chunk::{ChunkData, ChunkGenerator, CHUNK_SIZE_METERS};
+use crate::world_core::chunk::{ChunkGenerator, ChunkTerrain, CHUNK_SIZE_METERS};
 
 pub struct StreamingStats {
     pub loaded_chunks: usize,
@@ -16,9 +16,9 @@ pub struct StreamingWorld {
     seed: u32,
     load_radius: i32,
     pool: ThreadPool,
-    sender: Sender<ChunkData>,
-    receiver: Receiver<ChunkData>,
-    loaded: HashMap<IVec2, ChunkData>,
+    sender: Sender<ChunkTerrain>,
+    receiver: Receiver<ChunkTerrain>,
+    loaded: HashMap<IVec2, ChunkTerrain>,
     pending: HashSet<IVec2>,
     center_chunk: IVec2,
 }
@@ -32,15 +32,21 @@ impl StreamingWorld {
 
         let (sender, receiver) = mpsc::channel();
 
+        let generator = ChunkGenerator::new(seed);
+        let center_chunk = IVec2::ZERO;
+        let initial_chunk = generator.generate_chunk(center_chunk);
+        let mut loaded = HashMap::with_capacity(1);
+        loaded.insert(center_chunk, initial_chunk);
+
         Ok(Self {
             seed,
             load_radius,
             pool,
             sender,
             receiver,
-            loaded: HashMap::new(),
+            loaded,
             pending: HashSet::new(),
-            center_chunk: IVec2::ZERO,
+            center_chunk,
         })
     }
 
@@ -77,7 +83,7 @@ impl StreamingWorld {
         }
     }
 
-    pub fn chunks(&self) -> &HashMap<IVec2, ChunkData> {
+    pub fn chunks(&self) -> &HashMap<IVec2, ChunkTerrain> {
         &self.loaded
     }
 
