@@ -103,6 +103,17 @@ impl CameraController {
         }
     }
 
+    pub fn reset_inputs(&mut self) {
+        self.move_forward = false;
+        self.move_back = false;
+        self.move_left = false;
+        self.move_right = false;
+        self.move_up = false;
+        self.move_down = false;
+        self.run_modifier = false;
+        self.mouse_delta = (0.0, 0.0);
+    }
+
     pub fn update_camera(&mut self, dt_seconds: f32, camera: &mut FlyCamera, focused: bool) {
         if focused {
             camera.yaw -= self.mouse_delta.0 as f32 * self.look_sensitivity;

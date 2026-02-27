@@ -108,7 +108,8 @@ This captures every `2s` for `10` frames.
 - `Left Shift`: move down
 - `Left Ctrl`: speed boost
 - Mouse: look around
-- `Esc`: quit
+- `Esc`: release mouse cursor
+- `Left Click` (in window): capture mouse cursor again
 
 ## Current Status
 - Architecture is now split into `world_core` (domain), `world_runtime` (use-cases/orchestration), and `renderer_wgpu` (render adapter).

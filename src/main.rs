@@ -10,7 +10,7 @@ use renderer_wgpu::terrain::TerrainRenderer;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wgpu::SurfaceError;
 use winit::dpi::PhysicalSize;
-use winit::event::{DeviceEvent, ElementState, Event, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowBuilder};
@@ -34,6 +34,7 @@ struct AppState {
     world: WorldRuntime,
     debug_api: Option<DebugApiHandle>,
     focused: bool,
+    cursor_captured: bool,
     last_frame: Instant,
     last_telemetry_emit: Instant,
     frame_time_ms: f32,
@@ -41,7 +42,11 @@ struct AppState {
 }
 
 impl AppState {
-    async fn new(window: &'static Window, debug_api_config: DebugApiConfig) -> Result<Self> {
+    async fn new(
+        window: &'static Window,
+        debug_api_config: DebugApiConfig,
+        cursor_captured: bool,
+    ) -> Result<Self> {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::default();
@@ -132,6 +137,7 @@ impl AppState {
             world,
             debug_api,
             focused: true,
+            cursor_captured,
             last_frame: Instant::now(),
             last_telemetry_emit: Instant::now() - Duration::from_secs(1),
             frame_time_ms: 0.0,
@@ -144,11 +150,34 @@ impl AppState {
 
         if let WindowEvent::Focused(focused) = event {
             self.focused = *focused;
+            if !focused {
+                self.release_cursor();
+            }
         }
     }
 
     fn process_device_event(&mut self, event: &DeviceEvent) {
+        if !(self.focused && self.cursor_captured) {
+            return;
+        }
         self.camera_controller.process_device_event(event);
+    }
+
+    fn capture_cursor(&mut self) {
+        self.cursor_captured = try_grab_window_cursor(self.window);
+        if self.cursor_captured {
+            self.camera_controller.reset_inputs();
+        }
+    }
+
+    fn release_cursor(&mut self) {
+        if !self.cursor_captured {
+            return;
+        }
+
+        release_window_cursor(self.window);
+        self.cursor_captured = false;
+        self.camera_controller.reset_inputs();
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -237,8 +266,11 @@ impl AppState {
 
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
 
-        self.camera_controller
-            .update_camera(dt, &mut self.camera, self.focused);
+        self.camera_controller.update_camera(
+            dt,
+            &mut self.camera,
+            self.focused && self.cursor_captured,
+        );
 
         self.world.update(dt, self.camera.position);
         self.terrain_renderer
@@ -314,10 +346,19 @@ impl AppState {
     }
 }
 
-fn try_grab_cursor(window: &Window) {
-    let _ = window.set_cursor_grab(CursorGrabMode::Locked);
-    let _ = window.set_cursor_grab(CursorGrabMode::Confined);
-    window.set_cursor_visible(false);
+fn try_grab_window_cursor(window: &Window) -> bool {
+    let grabbed = window
+        .set_cursor_grab(CursorGrabMode::Locked)
+        .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+        .is_ok();
+
+    window.set_cursor_visible(!grabbed);
+    grabbed
+}
+
+fn release_window_cursor(window: &Window) {
+    let _ = window.set_cursor_grab(CursorGrabMode::None);
+    window.set_cursor_visible(true);
 }
 
 fn now_timestamp_ms() -> u64 {
@@ -345,9 +386,8 @@ fn main() -> Result<()> {
             .context("failed to create window")?,
     ));
 
-    try_grab_cursor(window);
-
-    let mut app = pollster::block_on(AppState::new(window, debug_api))?;
+    let cursor_captured = try_grab_window_cursor(window);
+    let mut app = pollster::block_on(AppState::new(window, debug_api, cursor_captured))?;
 
     event_loop.run(move |event, target| {
         target.set_control_flow(ControlFlow::Poll);
@@ -362,7 +402,14 @@ fn main() -> Result<()> {
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
-                        target.exit();
+                        app.release_cursor();
+                    }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    } if app.focused && !app.cursor_captured => {
+                        app.capture_cursor();
                     }
                     WindowEvent::Resized(size) => app.resize(size),
                     WindowEvent::RedrawRequested => {
