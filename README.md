@@ -16,10 +16,10 @@ Add your brief project purpose/vision here.
   - `rust-analyzer`
   - `CodeLLDB` (`vadimcn.vscode-lldb`)
 
-## Setup
+## Project Setup
 1. Clone the repository:
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/claust/world-gen.git
 cd world-gen
 ```
 2. Install Rust (if needed):
@@ -31,7 +31,7 @@ curl https://sh.rustup.rs -sSf | sh -s -- -y
 . "$HOME/.cargo/env"
 ```
 
-## Run
+## Run The App
 1. Build and run in release mode:
 ```bash
 cargo run --release
@@ -41,8 +41,9 @@ cargo run --release
 cargo check
 ```
 
-## Debug API + Monitor (MVP)
-Run the game with local debug API enabled:
+## Debugging
+### Debug API + Monitor (MVP)
+Run the game with the local debug API enabled:
 
 ```bash
 cargo run --release -- --debug-api
@@ -62,14 +63,14 @@ Run the monitor app (separate Bun + React + Tailwind + shadcn project):
 ```bash
 cd tools/debug-monitor
 bun install
-bun dev --host 127.0.0.1 --port 4173
+bun dev
 ```
 
 If debug API is on a non-default loopback port:
 
 ```bash
 cd tools/debug-monitor
-VITE_DEBUG_API_BASE=http://127.0.0.1:9000 bun dev --host 127.0.0.1 --port 4173
+VITE_DEBUG_API_BASE=http://127.0.0.1:9000 bun dev
 ```
 
 Available API routes:
@@ -78,34 +79,26 @@ Available API routes:
 - `POST /api/command`
 - `GET /ws`
 
-## Debug In VS Code (`F5`)
+### Debug In VS Code (`F5`)
 - Open this folder (`/Users/claus/Repos/world-gen`) as the workspace root.
 - Select launch config `Debug world-gen`.
 - Press `F5`.
 
-## Screenshot Workflow For Fast Feedback
+## Screenshot Capture Workflow
 Use this when you want to share the current rendered world state for review.
 
-1. Grant macOS permissions for capture tools (needed by Peekaboo):
-```bash
-peekaboo list permissions
-```
-If missing, enable:
-- `System Settings > Privacy & Security > Screen Recording`
-- `System Settings > Privacy & Security > Accessibility`
-
-2. Capture one frame (put the world-gen window frontmost first):
+1. Capture one frame (put the `world-gen` window frontmost first):
 ```bash
 ./scripts/capture_world.sh
 ```
 
-3. Capture multiple frames over time:
+2. Capture multiple frames over time:
 ```bash
 ./scripts/capture_world_loop.sh 2 10
 ```
 This captures every `2s` for `10` frames.
 
-4. Output location:
+3. Output location:
 - `captures/latest.png` (most recent)
 - `captures/world-gen-YYYYMMDD-HHMMSS.png` (history)
 

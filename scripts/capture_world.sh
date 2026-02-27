@@ -9,33 +9,88 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${1:-$CAPTURE_DIR/world-gen-$STAMP.png}"
 mkdir -p "$(dirname "$OUT_PATH")"
 
+print_macos_permission_help() {
+  cat >&2 <<'EOF'
+Check macOS permissions:
+1. Run: peekaboo list permissions
+2. In System Settings > Privacy & Security:
+   - enable Screen Recording
+   - enable Accessibility
+Restart your terminal app after changing permissions.
+EOF
+}
+
 capture_with_peekaboo() {
   if ! command -v peekaboo >/dev/null 2>&1; then
+    echo "Peekaboo is not installed. Falling back to full-display capture." >&2
     return 1
   fi
 
+  local peekaboo_stderr
+  peekaboo_stderr="$(mktemp)"
+
   # Prefer frontmost window so you can point this at a running world-gen instance quickly.
-  peekaboo image --mode frontmost --path "$OUT_PATH" --format png >/dev/null
+  if peekaboo image --mode frontmost --path "$OUT_PATH" --format png >/dev/null 2>"$peekaboo_stderr"; then
+    rm -f "$peekaboo_stderr"
+    return 0
+  fi
+
+  local details
+  details="$(cat "$peekaboo_stderr")"
+  rm -f "$peekaboo_stderr"
+
+  echo "Peekaboo could not capture the frontmost window." >&2
+  if [ -n "$details" ]; then
+    echo "Peekaboo output: $details" >&2
+  fi
+
+  if printf "%s" "$details" | grep -Eiq "permission|accessibility|screen recording|not authorized|denied"; then
+    print_macos_permission_help
+  fi
+
+  return 1
 }
 
 capture_with_screencapture() {
   if ! command -v screencapture >/dev/null 2>&1; then
+    echo "The 'screencapture' command is not available on this system." >&2
     return 1
   fi
 
+  local screencapture_stderr
+  screencapture_stderr="$(mktemp)"
+
   # Fallback captures the current display. Put world-gen in front first.
-  screencapture -x "$OUT_PATH"
+  if screencapture -x "$OUT_PATH" 2>"$screencapture_stderr"; then
+    rm -f "$screencapture_stderr"
+    return 0
+  fi
+
+  local details
+  details="$(cat "$screencapture_stderr")"
+  rm -f "$screencapture_stderr"
+
+  echo "Fallback display capture failed." >&2
+  if [ -n "$details" ]; then
+    echo "screencapture output: $details" >&2
+  fi
+
+  if printf "%s" "$details" | grep -Eiq "permission|screen recording|not authorized|denied"; then
+    echo "Screen Recording permission is likely missing for your terminal app." >&2
+    echo "Open System Settings > Privacy & Security > Screen Recording and allow it." >&2
+  fi
+
+  return 1
 }
 
 if capture_with_peekaboo; then
   :
 elif capture_with_screencapture; then
+  echo "Captured the full display as a fallback. Install/authorize Peekaboo for frontmost-window capture." >&2
   :
 else
   echo "Capture failed." >&2
-  echo "Make sure Screen Recording permission is enabled for your terminal/automation host:" >&2
-  echo "System Settings > Privacy & Security > Screen Recording" >&2
-  echo "If using Peekaboo interactions, also enable Accessibility." >&2
+  print_macos_permission_help
   exit 1
 fi
 

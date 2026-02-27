@@ -1,73 +1,69 @@
-# React + TypeScript + Vite
+# World Gen Debug Monitor
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A local web UI for observing and controlling a running `world-gen` instance through its debug API.
 
-Currently, two official plugins are available:
+## Overview
+The debug monitor is a Bun + React + Vite app used during development to:
+- show live telemetry from the game over WebSocket,
+- display key runtime state (frame, FPS, clock, camera, chunk streaming),
+- send debug commands (currently `set_day_speed`) and show command acknowledgements.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+The monitor is intended for local development only and assumes a loopback debug API.
 
-## React Compiler
+## What It Connects To
+The monitor talks to the game debug API endpoints:
+- `GET /api/state` for initial state snapshot,
+- `POST /api/command` to send commands,
+- `GET /ws` for live telemetry and command acks,
+- `GET /health` for service checks (useful for manual verification).
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Default API base URL is:
+- `http://127.0.0.1:7777`
 
-## Expanding the ESLint configuration
+Override with:
+- `VITE_DEBUG_API_BASE=http://127.0.0.1:<port>`
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Run Locally
+From this directory (`tools/debug-monitor`):
 
-```js
-export default defineConfig([
-  globalIgnores(["dist"]),
-  {
-    files: ["**/*.{ts,tsx}"],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ["./tsconfig.node.json", "./tsconfig.app.json"],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-]);
+```bash
+bun install
+bun dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Then open:
+- `http://127.0.0.1:4173`
 
-```js
-// eslint.config.js
-import reactX from "eslint-plugin-react-x";
-import reactDom from "eslint-plugin-react-dom";
+If your game debug API uses a different port:
 
-export default defineConfig([
-  globalIgnores(["dist"]),
-  {
-    files: ["**/*.{ts,tsx}"],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs["recommended-typescript"],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ["./tsconfig.node.json", "./tsconfig.app.json"],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-]);
+```bash
+VITE_DEBUG_API_BASE=http://127.0.0.1:9000 bun dev
+```
+
+## Typical Dev Workflow
+1. Start `world-gen` with debug API enabled (from repo root):
+```bash
+cargo run --release -- --debug-api
+```
+2. Start this monitor app.
+3. Confirm `WS connected` appears in the UI.
+4. Use the day speed control to send `set_day_speed`.
+
+## Scripts
+- `bun dev`: run Vite dev server
+- `bun build`: type-check and build production assets
+- `bun preview`: preview production build
+- `bun lint`: run oxlint with type-aware checks
+- `bun format` / `bun format:check`: format/check formatting
+- `bun test:e2e`: run Playwright end-to-end test
+
+## E2E Test Notes
+The Playwright test expects:
+- monitor UI reachable at `MONITOR_BASE_URL` (default `http://127.0.0.1:4173`),
+- game debug API reachable at `DEBUG_API_BASE` (default `http://127.0.0.1:7777`).
+
+Start both apps before running:
+
+```bash
+bun test:e2e
 ```
