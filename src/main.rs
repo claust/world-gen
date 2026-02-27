@@ -93,7 +93,9 @@ impl AppState {
 
         let mut terrain_renderer = TerrainRenderer::new(&device, &surface_config);
 
-        let camera = FlyCamera::new(Vec3::new(0.0, 160.0, 0.0));
+        let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
+        camera.yaw = 1.02;
+        camera.pitch = -0.38;
         let camera_controller = CameraController::new(180.0, 0.0022);
 
         let generator = ChunkGenerator::new(42);

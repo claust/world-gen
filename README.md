@@ -12,6 +12,9 @@ Add your brief project purpose/vision here.
 - macOS/Linux/Windows
 - Rust toolchain (`rustc`, `cargo`)
 - A GPU/driver setup that supports `wgpu`
+- VS Code extensions (if using `F5`):
+  - `rust-analyzer`
+  - `CodeLLDB` (`vadimcn.vscode-lldb`)
 
 ## Setup
 1. Clone the repository:
@@ -37,6 +40,37 @@ cargo run --release
 ```bash
 cargo check
 ```
+
+## Debug In VS Code (`F5`)
+- Open this folder (`/Users/claus/Repos/world-gen`) as the workspace root.
+- Select launch config `Debug world-gen`.
+- Press `F5`.
+
+## Screenshot Workflow For Fast Feedback
+Use this when you want to share the current rendered world state for review.
+
+1. Grant macOS permissions for capture tools (needed by Peekaboo):
+```bash
+peekaboo list permissions
+```
+If missing, enable:
+- `System Settings > Privacy & Security > Screen Recording`
+- `System Settings > Privacy & Security > Accessibility`
+
+2. Capture one frame (put the world-gen window frontmost first):
+```bash
+./scripts/capture_world.sh
+```
+
+3. Capture multiple frames over time:
+```bash
+./scripts/capture_world_loop.sh 2 10
+```
+This captures every `2s` for `10` frames.
+
+4. Output location:
+- `captures/latest.png` (most recent)
+- `captures/world-gen-YYYYMMDD-HHMMSS.png` (history)
 
 ## Controls
 - `W/A/S/D`: move
