@@ -14,6 +14,7 @@ use crate::world_core::layer::Layer;
 pub struct FernsLayer {
     seed: u32,
     config: FernsConfig,
+    sea_level: f32,
 }
 
 pub struct FernsInput<'a> {
@@ -23,8 +24,12 @@ pub struct FernsInput<'a> {
 }
 
 impl FernsLayer {
-    pub fn new(seed: u32, config: FernsConfig) -> Self {
-        Self { seed, config }
+    pub fn new(seed: u32, config: FernsConfig, sea_level: f32) -> Self {
+        Self {
+            seed,
+            config,
+            sea_level,
+        }
     }
 }
 
@@ -81,7 +86,10 @@ impl<'a> Layer<FernsInput<'a>, Vec<FernInstance>> for FernsLayer {
                 }
 
                 let slope = estimate_slope(&terrain.heights, local_x, local_z);
-                if slope > self.config.max_slope || height < self.config.min_height {
+                if slope > self.config.max_slope
+                    || height < self.config.min_height
+                    || height < self.sea_level
+                {
                     continue;
                 }
 

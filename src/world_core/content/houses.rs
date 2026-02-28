@@ -14,6 +14,7 @@ use crate::world_core::layer::Layer;
 pub struct HousesLayer {
     seed: u32,
     config: HousesConfig,
+    sea_level: f32,
 }
 
 pub struct HousesInput<'a> {
@@ -23,8 +24,12 @@ pub struct HousesInput<'a> {
 }
 
 impl HousesLayer {
-    pub fn new(seed: u32, config: HousesConfig) -> Self {
-        Self { seed, config }
+    pub fn new(seed: u32, config: HousesConfig, sea_level: f32) -> Self {
+        Self {
+            seed,
+            config,
+            sea_level,
+        }
     }
 }
 
@@ -85,6 +90,7 @@ impl<'a> Layer<HousesInput<'a>, Vec<HouseInstance>> for HousesLayer {
 
                 let slope = estimate_slope(&terrain.heights, local_x, local_z);
                 if slope > self.config.max_slope
+                    || height < self.sea_level
                     || !(self.config.height_min..=self.config.height_max).contains(&height)
                 {
                     continue;

@@ -14,6 +14,7 @@ use crate::world_core::layer::Layer;
 pub struct FloraLayer {
     seed: u32,
     config: FloraConfig,
+    sea_level: f32,
 }
 
 pub struct FloraInput<'a> {
@@ -23,8 +24,12 @@ pub struct FloraInput<'a> {
 }
 
 impl FloraLayer {
-    pub fn new(seed: u32, config: FloraConfig) -> Self {
-        Self { seed, config }
+    pub fn new(seed: u32, config: FloraConfig, sea_level: f32) -> Self {
+        Self {
+            seed,
+            config,
+            sea_level,
+        }
     }
 }
 
@@ -77,7 +82,10 @@ impl<'a> Layer<FloraInput<'a>, Vec<TreeInstance>> for FloraLayer {
                 }
 
                 let slope = estimate_slope(&terrain.heights, local_x, local_z);
-                if slope > self.config.max_slope || height < self.config.min_height {
+                if slope > self.config.max_slope
+                    || height < self.config.min_height
+                    || height < self.sea_level
+                {
                     continue;
                 }
 

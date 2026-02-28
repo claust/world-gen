@@ -27,9 +27,9 @@ pub struct ContentLayer {
 impl ContentLayer {
     pub fn new(seed: u32, config: &GameConfig) -> Self {
         Self {
-            flora: FloraLayer::new(seed, config.flora.clone()),
-            houses: HousesLayer::new(seed, config.houses.clone()),
-            ferns: FernsLayer::new(seed, config.ferns.clone()),
+            flora: FloraLayer::new(seed, config.flora.clone(), config.sea_level),
+            houses: HousesLayer::new(seed, config.houses.clone(), config.sea_level),
+            ferns: FernsLayer::new(seed, config.ferns.clone(), config.sea_level),
         }
     }
 }
