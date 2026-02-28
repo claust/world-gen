@@ -141,6 +141,7 @@ pub struct CameraController {
     mouse_delta: (f64, f64),
     pub move_speed: f32,
     pub look_sensitivity: f32,
+    pub turn_speed: f32,
 }
 
 impl CameraController {
@@ -153,6 +154,7 @@ impl CameraController {
             mouse_delta: (0.0, 0.0),
             move_speed,
             look_sensitivity,
+            turn_speed: 2.0,
         }
     }
 
@@ -207,23 +209,24 @@ impl CameraController {
         }
         self.mouse_delta = (0.0, 0.0);
 
+        let movement = self.movement.effective();
+
+        if movement.contains(MoveMask::LEFT) {
+            camera.yaw += self.turn_speed * dt_seconds;
+        }
+        if movement.contains(MoveMask::RIGHT) {
+            camera.yaw -= self.turn_speed * dt_seconds;
+        }
+
         let mut direction = Vec3::ZERO;
         let forward = camera.forward();
         let flat_forward = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
-        let right = camera.right();
-        let movement = self.movement.effective();
 
         if movement.contains(MoveMask::FORWARD) {
             direction += flat_forward;
         }
         if movement.contains(MoveMask::BACKWARD) {
             direction -= flat_forward;
-        }
-        if movement.contains(MoveMask::RIGHT) {
-            direction += right;
-        }
-        if movement.contains(MoveMask::LEFT) {
-            direction -= right;
         }
         if self.local_move_up {
             direction += Vec3::Y;
