@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameConfig {
     pub world: WorldConfig,
@@ -53,7 +53,7 @@ impl GameConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorldConfig {
     pub seed: u32,
@@ -73,7 +73,7 @@ impl Default for WorldConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BiomeConfig {
     pub snow_height: f32,
@@ -93,14 +93,14 @@ impl Default for BiomeConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct NoiseLayer {
     pub frequency: f64,
     pub amplitude: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeightmapConfig {
     pub continental: NoiseLayer,
@@ -139,7 +139,7 @@ impl Default for HeightmapConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FloraConfig {
     pub grid_spacing: f32,
@@ -183,7 +183,7 @@ impl Default for FloraConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FernsConfig {
     pub grid_spacing: f32,
@@ -224,7 +224,7 @@ impl Default for FernsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HousesConfig {
     pub grid_spacing: f32,

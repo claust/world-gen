@@ -1,6 +1,10 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod asset_watcher;
 pub mod camera;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod egui_bridge;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod egui_pass;
 pub mod geometry;
 pub mod gpu_context;
 pub mod instancing;

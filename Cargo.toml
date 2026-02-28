@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow = "1.0"
 bytemuck = { version = "1.16", features = ["derive"] }
+egui = "0.30"
 gltf = "1"
 glam = "0.27"
 log = "0.4"
@@ -23,6 +24,7 @@ objc = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 axum = { version = "0.7", features = ["ws"] }
+egui-wgpu = { version = "0.30", default-features = false }
 notify = "7"
 env_logger = "0.11"
 futures-util = "0.3"

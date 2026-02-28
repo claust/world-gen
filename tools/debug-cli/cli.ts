@@ -159,6 +159,14 @@ async function cmdLookAt(apiBase: string, flags: Record<string, string>) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdPressKey(apiBase: string, flags: Record<string, string>) {
+  const key = requireFlag(flags, "key");
+  const valid = ["f1", "escape"];
+  if (!valid.includes(key)) die(`--key must be one of: ${valid.join(", ")}`);
+  const result = await sendAndWait(apiBase, { type: "press_key", key });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdMove(apiBase: string, flags: Record<string, string>) {
   const key = requireFlag(flags, "key");
   const valid = ["w", "a", "s", "d", "up", "down"];
@@ -188,6 +196,7 @@ Commands:
   find_nearest    --kind <house|tree|fern>   Find nearest object
   look_at         --id <object_id> [--distance <n>]  Look at object
   move            --key <w|a|s|d|up|down> [--duration <ms>]  Move camera
+  press_key       --key <f1|escape>      Press a key (toggle config panel, etc.)
 
 Options:
   --api <url>    API base URL (default: ${DEFAULT_API})`;
@@ -221,6 +230,9 @@ async function main() {
         break;
       case "move":
         await cmdMove(apiBase, flags);
+        break;
+      case "press_key":
+        await cmdPressKey(apiBase, flags);
         break;
       default:
         if (command) process.stderr.write(`unknown command: ${command}\n\n`);

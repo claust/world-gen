@@ -109,6 +109,16 @@ pub enum CommandKind {
         distance: Option<f32>,
     },
     TakeScreenshot,
+    PressKey {
+        key: PressableKey,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PressableKey {
+    F1,
+    Escape,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +272,34 @@ mod tests {
             super::CommandKind::SetCameraLook { yaw, pitch }
             if (yaw - 1.5).abs() < f32::EPSILON
                 && (pitch - (-0.3)).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn deserializes_press_key_f1() {
+        let raw = r#"{"id":"pk-1","type":"press_key","key":"f1"}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid press_key f1 payload");
+        assert_eq!(command.id, "pk-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::PressKey {
+                key: super::PressableKey::F1
+            }
+        ));
+    }
+
+    #[test]
+    fn deserializes_press_key_escape() {
+        let raw = r#"{"id":"pk-2","type":"press_key","key":"escape"}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid press_key escape payload");
+        assert_eq!(command.id, "pk-2");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::PressKey {
+                key: super::PressableKey::Escape
+            }
         ));
     }
 }
