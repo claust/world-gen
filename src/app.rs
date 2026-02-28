@@ -466,6 +466,8 @@ impl AppState {
             self.focused && self.cursor_captured,
         );
 
+        clamp_camera_to_terrain(&mut self.camera, self.world.chunks());
+
         self.world.update(dt, self.camera.position);
         self.world_renderer
             .sync_chunks(&self.gpu.device, &self.gpu.queue, self.world.chunks());
@@ -857,6 +859,51 @@ fn save_screenshot(
 
     log::info!("screenshot saved: {}", path.display());
     Ok(filename)
+}
+
+const MIN_HEIGHT_ABOVE_GROUND: f32 = 2.0;
+
+fn clamp_camera_to_terrain(
+    camera: &mut FlyCamera,
+    chunks: &std::collections::HashMap<glam::IVec2, crate::world_core::chunk::ChunkData>,
+) {
+    use crate::world_core::chunk::{CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
+
+    let cx = (camera.position.x / CHUNK_SIZE_METERS).floor() as i32;
+    let cz = (camera.position.z / CHUNK_SIZE_METERS).floor() as i32;
+    let Some(chunk) = chunks.get(&glam::IVec2::new(cx, cz)) else {
+        return;
+    };
+
+    let local_x = camera.position.x - cx as f32 * CHUNK_SIZE_METERS;
+    let local_z = camera.position.z - cz as f32 * CHUNK_SIZE_METERS;
+
+    // Bilinear interpolation of height (same logic as sampling.rs)
+    let side = CHUNK_GRID_RESOLUTION;
+    let xf = ((local_x / CHUNK_SIZE_METERS) * (side - 1) as f32).clamp(0.0, (side - 1) as f32);
+    let zf = ((local_z / CHUNK_SIZE_METERS) * (side - 1) as f32).clamp(0.0, (side - 1) as f32);
+
+    let x0 = xf.floor() as usize;
+    let z0 = zf.floor() as usize;
+    let x1 = (x0 + 1).min(side - 1);
+    let z1 = (z0 + 1).min(side - 1);
+    let tx = xf - x0 as f32;
+    let tz = zf - z0 as f32;
+
+    let h = &chunk.terrain.heights;
+    let h00 = h[z0 * side + x0];
+    let h10 = h[z0 * side + x1];
+    let h01 = h[z1 * side + x0];
+    let h11 = h[z1 * side + x1];
+
+    let hx0 = h00 + (h10 - h00) * tx;
+    let hx1 = h01 + (h11 - h01) * tx;
+    let terrain_height = hx0 + (hx1 - hx0) * tz;
+
+    let min_y = terrain_height + MIN_HEIGHT_ABOVE_GROUND;
+    if camera.position.y < min_y {
+        camera.position.y = min_y;
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
