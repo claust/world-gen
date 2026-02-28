@@ -6,6 +6,7 @@ mod world_runtime;
 use anyhow::{Context, Result};
 use glam::Vec3;
 use renderer_wgpu::camera::{CameraController, FlyCamera, MoveDirection};
+use renderer_wgpu::gpu_context::GpuContext;
 use renderer_wgpu::world::WorldRenderer;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wgpu::SurfaceError;
@@ -23,11 +24,7 @@ use crate::world_runtime::{RuntimeStats, WorldRuntime};
 
 struct AppState {
     window: &'static Window,
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    surface_config: wgpu::SurfaceConfiguration,
-    size: PhysicalSize<u32>,
+    gpu: GpuContext,
     world_renderer: WorldRenderer,
     camera: FlyCamera,
     camera_controller: CameraController,
@@ -47,64 +44,9 @@ impl AppState {
         debug_api_config: DebugApiConfig,
         cursor_captured: bool,
     ) -> Result<Self> {
-        let size = window.inner_size();
+        let gpu = GpuContext::new(window).await?;
 
-        let instance = wgpu::Instance::default();
-        let surface = instance
-            .create_surface(window)
-            .context("failed to create wgpu surface")?;
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .context("no suitable GPU adapter found")?;
-
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("world-gen-device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                },
-                None,
-            )
-            .await
-            .context("failed to request GPU device")?;
-
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(capabilities.formats[0]);
-
-        let present_mode = if capabilities
-            .present_modes
-            .contains(&wgpu::PresentMode::Fifo)
-        {
-            wgpu::PresentMode::Fifo
-        } else {
-            capabilities.present_modes[0]
-        };
-
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode,
-            alpha_mode: capabilities.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &surface_config);
-
-        let mut world_renderer = WorldRenderer::new(&device, &surface_config);
+        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.config);
 
         let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         camera.yaw = 1.02;
@@ -117,7 +59,7 @@ impl AppState {
         let mut world = WorldRuntime::new(42, 1, threads, 9.5, 0.04)?;
         world.update(0.0, camera.position);
 
-        world_renderer.sync_chunks(&device, world.chunks());
+        world_renderer.sync_chunks(&gpu.device, world.chunks());
 
         let debug_api = start_debug_api(&debug_api_config)?;
         if let Some(api) = &debug_api {
@@ -126,11 +68,7 @@ impl AppState {
 
         Ok(Self {
             window,
-            surface,
-            device,
-            queue,
-            surface_config,
-            size,
+            gpu,
             world_renderer,
             camera,
             camera_controller,
@@ -181,16 +119,9 @@ impl AppState {
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
-        if new_size.width == 0 || new_size.height == 0 {
-            return;
-        }
-
-        self.size = new_size;
-        self.surface_config.width = new_size.width;
-        self.surface_config.height = new_size.height;
-        self.surface.configure(&self.device, &self.surface_config);
+        self.gpu.resize(new_size);
         self.world_renderer
-            .resize(&self.device, &self.surface_config);
+            .resize(&self.gpu.device, &self.gpu.config);
     }
 
     fn apply_debug_commands(&mut self) {
@@ -295,13 +226,13 @@ impl AppState {
 
         self.world.update(dt, self.camera.position);
         self.world_renderer
-            .sync_chunks(&self.device, self.world.chunks());
+            .sync_chunks(&self.gpu.device, self.world.chunks());
 
-        let aspect = self.surface_config.width as f32 / self.surface_config.height.max(1) as f32;
+        let aspect = self.gpu.aspect();
         let view_proj = self.camera.view_projection(aspect);
         let lighting = self.world.lighting();
         self.world_renderer.update_uniforms(
-            &self.queue,
+            &self.gpu.queue,
             view_proj,
             lighting.sun_direction,
             lighting.ambient,
@@ -324,12 +255,13 @@ impl AppState {
     }
 
     fn render(&mut self) -> Result<(), SurfaceError> {
-        let output = self.surface.get_current_texture()?;
+        let output = self.gpu.surface.get_current_texture()?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
+            .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("world-gen-render-encoder"),
@@ -361,7 +293,7 @@ impl AppState {
             self.world_renderer.render(&mut pass);
         }
 
-        self.queue.submit(Some(encoder.finish()));
+        self.gpu.queue.submit(Some(encoder.finish()));
         output.present();
         Ok(())
     }
@@ -437,7 +369,7 @@ fn main() -> Result<()> {
                         app.update();
                         match app.render() {
                             Ok(()) => {}
-                            Err(SurfaceError::Lost) => app.resize(app.size),
+                            Err(SurfaceError::Lost) => app.resize(app.gpu.size),
                             Err(SurfaceError::OutOfMemory) => target.exit(),
                             Err(SurfaceError::Timeout | SurfaceError::Outdated) => {}
                         }
