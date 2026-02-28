@@ -80,6 +80,7 @@ pub enum CommandKind {
     SetDaySpeed { value: f32 },
     SetMoveKey { key: MoveKey, pressed: bool },
     SetCameraPosition { x: f32, y: f32, z: f32 },
+    SetCameraLook { yaw: f32, pitch: f32 },
     TakeScreenshot,
 }
 
@@ -175,6 +176,20 @@ mod tests {
             if (x - 100.0).abs() < f32::EPSILON
                 && (y - 200.0).abs() < f32::EPSILON
                 && (z - 50.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn deserializes_set_camera_look() {
+        let raw = r#"{"id":"lk-1","type":"set_camera_look","yaw":1.5,"pitch":-0.3}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid set_camera_look payload");
+        assert_eq!(command.id, "lk-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::SetCameraLook { yaw, pitch }
+            if (yaw - 1.5).abs() < f32::EPSILON
+                && (pitch - (-0.3)).abs() < f32::EPSILON
         ));
     }
 }

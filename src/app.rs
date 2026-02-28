@@ -238,6 +238,17 @@ impl AppState {
                         day_speed: None,
                     }
                 }
+                CommandKind::SetCameraLook { yaw, pitch } => {
+                    self.camera.yaw = yaw;
+                    self.camera.pitch = pitch.clamp(-1.54, 1.54);
+                    CommandAppliedEvent {
+                        id: command.id,
+                        frame: self.frame_index,
+                        ok: true,
+                        message: format!("camera look set to yaw={:.2}, pitch={:.2}", yaw, pitch),
+                        day_speed: None,
+                    }
+                }
                 CommandKind::TakeScreenshot => {
                     if self.screenshot_pending.is_some() {
                         CommandAppliedEvent {

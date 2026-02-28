@@ -82,6 +82,8 @@ function App() {
   const [teleportX, setTeleportX] = useState("");
   const [teleportY, setTeleportY] = useState("");
   const [teleportZ, setTeleportZ] = useState("");
+  const [lookYaw, setLookYaw] = useState("");
+  const [lookPitch, setLookPitch] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const sendCommand = useCallback(
@@ -345,6 +347,30 @@ function App() {
     }
   };
 
+  const submitLook = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+
+    const yaw = lookYaw === "" ? (telemetry?.camera.yaw ?? 0) : Number(lookYaw);
+    const pitch = lookPitch === "" ? (telemetry?.camera.pitch ?? 0) : Number(lookPitch);
+
+    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {
+      setError("yaw and pitch must be numbers");
+      return;
+    }
+
+    try {
+      await sendCommand({
+        type: "set_camera_look",
+        yaw,
+        pitch,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    }
+  };
+
   const buttonHandlers = (key: MoveKey) => ({
     onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -491,6 +517,33 @@ function App() {
                     />
                   </div>
                   <Button type="submit">Go</Button>
+                </form>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <div className="text-sm">Camera Look (radians)</div>
+                <form className="flex items-end gap-2" onSubmit={submitLook}>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Yaw</label>
+                    <Input
+                      aria-label="yaw"
+                      className="w-24"
+                      value={lookYaw}
+                      onChange={(e) => setLookYaw(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.yaw.toFixed(2) : "0"}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Pitch</label>
+                    <Input
+                      aria-label="pitch"
+                      className="w-24"
+                      value={lookPitch}
+                      onChange={(e) => setLookPitch(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.pitch.toFixed(2) : "0"}
+                    />
+                  </div>
+                  <Button type="submit">Set</Button>
                 </form>
               </div>
               <Separator />
