@@ -74,13 +74,39 @@ impl MoveKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ObjectKind {
+    House,
+    Tree,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CommandKind {
-    SetDaySpeed { value: f32 },
-    SetMoveKey { key: MoveKey, pressed: bool },
-    SetCameraPosition { x: f32, y: f32, z: f32 },
-    SetCameraLook { yaw: f32, pitch: f32 },
+    SetDaySpeed {
+        value: f32,
+    },
+    SetMoveKey {
+        key: MoveKey,
+        pressed: bool,
+    },
+    SetCameraPosition {
+        x: f32,
+        y: f32,
+        z: f32,
+    },
+    SetCameraLook {
+        yaw: f32,
+        pitch: f32,
+    },
+    FindNearest {
+        kind: ObjectKind,
+    },
+    LookAtObject {
+        object_id: String,
+        distance: Option<f32>,
+    },
     TakeScreenshot,
 }
 
@@ -104,7 +130,12 @@ pub struct CommandAppliedEvent {
     pub frame: u64,
     pub ok: bool,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub day_speed: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_position: Option<[f32; 3]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +207,46 @@ mod tests {
             if (x - 100.0).abs() < f32::EPSILON
                 && (y - 200.0).abs() < f32::EPSILON
                 && (z - 50.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn deserializes_find_nearest() {
+        let raw = r#"{"id":"fn-1","type":"find_nearest","kind":"house"}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid find_nearest payload");
+        assert_eq!(command.id, "fn-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::FindNearest {
+                kind: super::ObjectKind::House
+            }
+        ));
+    }
+
+    #[test]
+    fn deserializes_look_at_object() {
+        let raw =
+            r#"{"id":"la-1","type":"look_at_object","object_id":"house-0_0-3","distance":15.0}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid look_at_object payload");
+        assert_eq!(command.id, "la-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::LookAtObject { ref object_id, distance: Some(d) }
+            if object_id == "house-0_0-3" && (d - 15.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn deserializes_look_at_object_without_distance() {
+        let raw = r#"{"id":"la-2","type":"look_at_object","object_id":"tree-1_-1-5"}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid look_at_object payload without distance");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::LookAtObject { ref object_id, distance: None }
+            if object_id == "tree-1_-1-5"
         ));
     }
 

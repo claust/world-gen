@@ -34,6 +34,8 @@ type CommandApplied = {
   ok: boolean;
   message: string;
   day_speed?: number;
+  object_id?: string;
+  object_position?: [number, number, number];
 };
 
 type MoveKey = "w" | "a" | "s" | "d" | "up" | "down";
@@ -85,6 +87,12 @@ function App() {
   const [lookYaw, setLookYaw] = useState("");
   const [lookPitch, setLookPitch] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [findKind, setFindKind] = useState<"house" | "tree">("house");
+  const [foundObject, setFoundObject] = useState<{
+    id: string;
+    position: [number, number, number];
+  } | null>(null);
+  const [lookAtDistance, setLookAtDistance] = useState("15");
 
   const sendCommand = useCallback(
     async (command: Record<string, unknown>) => {
@@ -201,6 +209,12 @@ function App() {
             setLastAck(parsed.payload);
             if (parsed.payload.ok && typeof parsed.payload.day_speed === "number") {
               setDaySpeedInput(parsed.payload.day_speed.toFixed(2));
+            }
+            if (parsed.payload.ok && parsed.payload.object_id && parsed.payload.object_position) {
+              setFoundObject({
+                id: parsed.payload.object_id,
+                position: parsed.payload.object_position,
+              });
             }
           }
         } catch {
@@ -364,6 +378,38 @@ function App() {
         type: "set_camera_look",
         yaw,
         pitch,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    }
+  };
+
+  const submitFindNearest = async () => {
+    setError(null);
+    try {
+      await sendCommand({ type: "find_nearest", kind: findKind });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    }
+  };
+
+  const submitLookAt = async () => {
+    if (!foundObject) return;
+    setError(null);
+
+    const dist = Number(lookAtDistance);
+    if (!Number.isFinite(dist) || dist <= 0) {
+      setError("distance must be a positive number");
+      return;
+    }
+
+    try {
+      await sendCommand({
+        type: "look_at_object",
+        object_id: foundObject.id,
+        distance: dist,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -545,6 +591,52 @@ function App() {
                   </div>
                   <Button type="submit">Set</Button>
                 </form>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <div className="text-sm">Find &amp; Inspect</div>
+                <div className="flex items-end gap-2">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Kind</label>
+                    <select
+                      className="flex h-9 w-24 rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-sm"
+                      value={findKind}
+                      onChange={(e) => setFindKind(e.target.value as "house" | "tree")}
+                    >
+                      <option value="house">House</option>
+                      <option value="tree">Tree</option>
+                    </select>
+                  </div>
+                  <Button type="button" onClick={submitFindNearest}>
+                    Find Nearest
+                  </Button>
+                </div>
+                {foundObject ? (
+                  <div className="space-y-2 rounded-md border border-input p-2 text-xs">
+                    <div>
+                      Found: <span className="font-mono">{foundObject.id}</span>
+                    </div>
+                    <div>
+                      Position: ({foundObject.position[0].toFixed(1)},{" "}
+                      {foundObject.position[1].toFixed(1)}, {foundObject.position[2].toFixed(1)})
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">Distance</label>
+                        <Input
+                          aria-label="look at distance"
+                          className="w-20"
+                          value={lookAtDistance}
+                          onChange={(e) => setLookAtDistance(e.target.value)}
+                          placeholder="15"
+                        />
+                      </div>
+                      <Button type="button" onClick={submitLookAt}>
+                        Look At
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <Separator />
               <div className="text-sm">

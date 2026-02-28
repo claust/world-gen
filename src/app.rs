@@ -24,7 +24,7 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::debug_api::{
     start_debug_api, CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind,
-    DebugApiConfig, DebugApiHandle, MoveKey, TelemetrySnapshot,
+    DebugApiConfig, DebugApiHandle, MoveKey, ObjectKind, TelemetrySnapshot,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer_wgpu::asset_watcher::AssetWatcher;
@@ -196,6 +196,8 @@ impl AppState {
                         ok: true,
                         message: "day speed set".to_string(),
                         day_speed: Some(day_speed),
+                        object_id: None,
+                        object_position: None,
                     },
                     Err(message) => CommandAppliedEvent {
                         id: command.id,
@@ -203,6 +205,8 @@ impl AppState {
                         ok: false,
                         message,
                         day_speed: Some(self.world.day_speed()),
+                        object_id: None,
+                        object_position: None,
                     },
                 },
                 CommandKind::SetMoveKey { key, pressed } => {
@@ -226,6 +230,8 @@ impl AppState {
                             if pressed { "pressed" } else { "released" }
                         ),
                         day_speed: None,
+                        object_id: None,
+                        object_position: None,
                     }
                 }
                 CommandKind::SetCameraPosition { x, y, z } => {
@@ -236,6 +242,8 @@ impl AppState {
                         ok: true,
                         message: format!("camera position set to ({:.1}, {:.1}, {:.1})", x, y, z),
                         day_speed: None,
+                        object_id: None,
+                        object_position: None,
                     }
                 }
                 CommandKind::SetCameraLook { yaw, pitch } => {
@@ -247,6 +255,126 @@ impl AppState {
                         ok: true,
                         message: format!("camera look set to yaw={:.2}, pitch={:.2}", yaw, pitch),
                         day_speed: None,
+                        object_id: None,
+                        object_position: None,
+                    }
+                }
+                CommandKind::FindNearest { kind } => {
+                    let cam_pos = self.camera.position;
+                    let mut best: Option<(String, [f32; 3], f32)> = None;
+
+                    for (coord, chunk) in self.world.chunks() {
+                        let items: Box<dyn Iterator<Item = (usize, glam::Vec3)>> = match kind {
+                            ObjectKind::House => Box::new(
+                                chunk
+                                    .content
+                                    .houses
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, h)| (i, h.position)),
+                            ),
+                            ObjectKind::Tree => Box::new(
+                                chunk
+                                    .content
+                                    .trees
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, t)| (i, t.position)),
+                            ),
+                        };
+
+                        let prefix = match kind {
+                            ObjectKind::House => "house",
+                            ObjectKind::Tree => "tree",
+                        };
+
+                        for (idx, pos) in items {
+                            let dist = cam_pos.distance_squared(pos);
+                            let is_closer = best.as_ref().is_none_or(|(_, _, d)| dist < *d);
+                            if is_closer {
+                                let id = format!("{}-{}_{}-{}", prefix, coord.x, coord.y, idx);
+                                best = Some((id, [pos.x, pos.y, pos.z], dist));
+                            }
+                        }
+                    }
+
+                    match best {
+                        Some((id, pos, _)) => CommandAppliedEvent {
+                            id: command.id,
+                            frame: self.frame_index,
+                            ok: true,
+                            message: format!(
+                                "nearest {} at ({:.1}, {:.1}, {:.1})",
+                                match kind {
+                                    ObjectKind::House => "house",
+                                    ObjectKind::Tree => "tree",
+                                },
+                                pos[0],
+                                pos[1],
+                                pos[2]
+                            ),
+                            day_speed: None,
+                            object_id: Some(id),
+                            object_position: Some(pos),
+                        },
+                        None => CommandAppliedEvent {
+                            id: command.id,
+                            frame: self.frame_index,
+                            ok: false,
+                            message: format!(
+                                "no {} found in loaded chunks",
+                                match kind {
+                                    ObjectKind::House => "houses",
+                                    ObjectKind::Tree => "trees",
+                                }
+                            ),
+                            day_speed: None,
+                            object_id: None,
+                            object_position: None,
+                        },
+                    }
+                }
+                CommandKind::LookAtObject {
+                    ref object_id,
+                    distance,
+                } => {
+                    let dist = distance.unwrap_or(15.0);
+                    let result = parse_and_find_object(object_id, self.world.chunks());
+
+                    match result {
+                        Some(target) => {
+                            let offset = glam::Vec3::new(1.0, 0.5, 1.0).normalize() * dist;
+                            let cam_pos = target + offset;
+                            self.camera.position = cam_pos;
+
+                            let to_target = target - cam_pos;
+                            self.camera.yaw = to_target.z.atan2(to_target.x);
+                            self.camera.pitch = (to_target.y / to_target.length().max(0.001))
+                                .asin()
+                                .clamp(-1.54, 1.54);
+
+                            CommandAppliedEvent {
+                                id: command.id,
+                                frame: self.frame_index,
+                                ok: true,
+                                message: format!(
+                                    "looking at ({:.1}, {:.1}, {:.1}) from {:.1}m",
+                                    target.x, target.y, target.z, dist
+                                ),
+                                day_speed: None,
+                                object_id: Some(object_id.clone()),
+                                object_position: Some([target.x, target.y, target.z]),
+                            }
+                        }
+                        None => CommandAppliedEvent {
+                            id: command.id,
+                            frame: self.frame_index,
+                            ok: false,
+                            message: format!("object '{}' not found", object_id),
+                            day_speed: None,
+                            object_id: None,
+                            object_position: None,
+                        },
                     }
                 }
                 CommandKind::TakeScreenshot => {
@@ -257,6 +385,8 @@ impl AppState {
                             ok: false,
                             message: "screenshot already pending".to_string(),
                             day_speed: None,
+                            object_id: None,
+                            object_position: None,
                         }
                     } else {
                         self.screenshot_pending = Some(command.id);
@@ -512,6 +642,8 @@ impl AppState {
                 ok,
                 message,
                 day_speed: None,
+                object_id: None,
+                object_position: None,
             });
         }
     }
@@ -725,6 +857,31 @@ fn save_screenshot(
 
     log::info!("screenshot saved: {}", path.display());
     Ok(filename)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_and_find_object(
+    object_id: &str,
+    chunks: &std::collections::HashMap<glam::IVec2, crate::world_core::chunk::ChunkData>,
+) -> Option<Vec3> {
+    // Format: "{type}-{chunk_x}_{chunk_z}-{index}"
+    let mut parts = object_id.splitn(3, '-');
+    let kind = parts.next()?;
+    let coord_str = parts.next()?;
+    let index_str = parts.next()?;
+
+    let mut coords = coord_str.splitn(2, '_');
+    let cx: i32 = coords.next()?.parse().ok()?;
+    let cz: i32 = coords.next()?.parse().ok()?;
+
+    let index: usize = index_str.parse().ok()?;
+    let chunk = chunks.get(&glam::IVec2::new(cx, cz))?;
+
+    match kind {
+        "house" => chunk.content.houses.get(index).map(|h| h.position),
+        "tree" => chunk.content.trees.get(index).map(|t| t.position),
+        _ => None,
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
