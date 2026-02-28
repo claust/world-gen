@@ -14,3 +14,7 @@
 !.vscode/launch.json
 !.vscode/tasks.json
 captures/
+
+# wasm-pack build output
+/pkg/
+/web/pkg
