@@ -717,6 +717,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
 
                 match event {
                     WindowEvent::CloseRequested => {
+                        #[cfg(not(target_arch = "wasm32"))]
                         app.save_game();
                         target.exit();
                     }

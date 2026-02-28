@@ -35,6 +35,7 @@ pub struct ModelRegistry {
 }
 
 impl ModelRegistry {
+    #[allow(unused_variables, unused_mut)]
     pub fn new(device: &wgpu::Device) -> Self {
         let mut models = HashMap::new();
 
