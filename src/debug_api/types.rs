@@ -79,6 +79,7 @@ impl MoveKey {
 pub enum ObjectKind {
     House,
     Tree,
+    Fern,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -197,12 +197,17 @@ pub struct FernsConfig {
     pub scale_range: f32,
     pub max_slope: f32,
     pub min_height: f32,
+    /// Extra density added near the waterline (sea level). Strongest right at
+    /// the shore and fading to zero at `waterline_range` meters above sea level.
+    pub waterline_boost: f32,
+    /// Height range (meters above sea level) over which the waterline boost applies.
+    pub waterline_range: f32,
 }
 
 impl Default for FernsConfig {
     fn default() -> Self {
         Self {
-            grid_spacing: 5.0,
+            grid_spacing: 4.0,
             forest_density_offset: 0.55,
             forest_density_scale: 1.5,
             forest_density_max: 0.6,
@@ -213,6 +218,8 @@ impl Default for FernsConfig {
             scale_range: 0.7,
             max_slope: 0.8,
             min_height: -20.0,
+            waterline_boost: 0.7,
+            waterline_range: 8.0,
         }
     }
 }

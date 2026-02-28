@@ -303,11 +303,20 @@ impl AppState {
                                     .enumerate()
                                     .map(|(i, t)| (i, t.position)),
                             ),
+                            ObjectKind::Fern => Box::new(
+                                chunk
+                                    .content
+                                    .ferns
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, f)| (i, f.position)),
+                            ),
                         };
 
                         let prefix = match kind {
                             ObjectKind::House => "house",
                             ObjectKind::Tree => "tree",
+                            ObjectKind::Fern => "fern",
                         };
 
                         for (idx, pos) in items {
@@ -330,6 +339,7 @@ impl AppState {
                                 match kind {
                                     ObjectKind::House => "house",
                                     ObjectKind::Tree => "tree",
+                                    ObjectKind::Fern => "fern",
                                 },
                                 pos[0],
                                 pos[1],
@@ -348,6 +358,7 @@ impl AppState {
                                 match kind {
                                     ObjectKind::House => "houses",
                                     ObjectKind::Tree => "trees",
+                                    ObjectKind::Fern => "ferns",
                                 }
                             ),
                             day_speed: None,
@@ -960,14 +971,17 @@ fn parse_and_find_object(
     chunks: &std::collections::HashMap<glam::IVec2, crate::world_core::chunk::ChunkData>,
 ) -> Option<Vec3> {
     // Format: "{type}-{chunk_x}_{chunk_z}-{index}"
-    let mut parts = object_id.splitn(3, '-');
-    let kind = parts.next()?;
-    let coord_str = parts.next()?;
-    let index_str = parts.next()?;
+    // Use first '-' and last '-' to handle negative chunk coordinates (e.g. "fern--2_3-0")
+    let first_dash = object_id.find('-')?;
+    let kind = &object_id[..first_dash];
+    let rest = &object_id[first_dash + 1..];
+    let last_dash = rest.rfind('-')?;
+    let coord_str = &rest[..last_dash];
+    let index_str = &rest[last_dash + 1..];
 
-    let mut coords = coord_str.splitn(2, '_');
-    let cx: i32 = coords.next()?.parse().ok()?;
-    let cz: i32 = coords.next()?.parse().ok()?;
+    let underscore = coord_str.find('_')?;
+    let cx: i32 = coord_str[..underscore].parse().ok()?;
+    let cz: i32 = coord_str[underscore + 1..].parse().ok()?;
 
     let index: usize = index_str.parse().ok()?;
     let chunk = chunks.get(&glam::IVec2::new(cx, cz))?;
@@ -975,6 +989,7 @@ fn parse_and_find_object(
     match kind {
         "house" => chunk.content.houses.get(index).map(|h| h.position),
         "tree" => chunk.content.trees.get(index).map(|t| t.position),
+        "fern" => chunk.content.ferns.get(index).map(|f| f.position),
         _ => None,
     }
 }

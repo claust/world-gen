@@ -145,7 +145,7 @@ async function cmdSetCameraLook(apiBase: string, flags: Record<string, string>) 
 
 async function cmdFindNearest(apiBase: string, flags: Record<string, string>) {
   const kind = requireFlag(flags, "kind");
-  if (kind !== "house" && kind !== "tree") die(`--kind must be "house" or "tree"`);
+  if (kind !== "house" && kind !== "tree" && kind !== "fern") die(`--kind must be "house", "tree", or "fern"`);
   const result = await sendAndWait(apiBase, { type: "find_nearest", kind });
   console.log(JSON.stringify(result, null, 2));
 }
@@ -185,7 +185,7 @@ Commands:
   set_day_speed   --value <n>              Set day/night cycle speed
   set_camera_position --x <n> --y <n> --z <n>  Teleport camera
   set_camera_look --yaw <n> --pitch <n>    Set camera orientation
-  find_nearest    --kind <house|tree>       Find nearest object
+  find_nearest    --kind <house|tree|fern>   Find nearest object
   look_at         --id <object_id> [--distance <n>]  Look at object
   move            --key <w|a|s|d|up|down> [--duration <ms>]  Move camera
 

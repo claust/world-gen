@@ -80,7 +80,7 @@ impl<'a> Layer<FernsInput<'a>, Vec<FernInstance>> for FernsLayer {
                 let height = sample_field_bilinear(&terrain.heights, local_x, local_z);
                 let moisture = sample_field_bilinear(&terrain.moisture, local_x, local_z);
                 let biome = sample_biome_nearest(&biome_map.values, local_x, local_z);
-                let density = self.fern_density(biome, moisture);
+                let density = self.fern_density(biome, moisture, height);
                 if rnd > density {
                     continue;
                 }
@@ -123,15 +123,25 @@ impl<'a> Layer<FernsInput<'a>, Vec<FernInstance>> for FernsLayer {
 }
 
 impl FernsLayer {
-    fn fern_density(&self, biome: Biome, moisture: f32) -> f32 {
+    fn fern_density(&self, biome: Biome, moisture: f32, height: f32) -> f32 {
         let c = &self.config;
-        match biome {
+        let base = match biome {
             Biome::Forest => ((moisture - c.forest_density_offset) * c.forest_density_scale)
                 .clamp(0.0, c.forest_density_max),
             Biome::Grassland => ((moisture - c.grassland_density_offset)
                 * c.grassland_density_scale)
                 .clamp(0.0, c.grassland_density_max),
             Biome::Rock | Biome::Desert | Biome::Snow => 0.0,
-        }
+        };
+
+        // Boost density near the waterline: strongest at sea level, fading linearly
+        let above_water = height - self.sea_level;
+        let waterline = if above_water >= 0.0 && above_water < c.waterline_range {
+            c.waterline_boost * (1.0 - above_water / c.waterline_range)
+        } else {
+            0.0
+        };
+
+        (base + waterline).clamp(0.0, 1.0)
     }
 }
