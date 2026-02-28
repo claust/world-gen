@@ -22,6 +22,7 @@ jobs:
         with:
           toolchain: 1.93.1
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
@@ -29,11 +30,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Lint with clippy
+      - name: Lint with clippy (native)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Build executable (release)
+      - name: Lint with clippy (wasm32)
+        run: cargo clippy --target wasm32-unknown-unknown --lib -- -D warnings
+
+      - name: Build executable (native, release)
         run: cargo build --release --bin world-gen
+
+      - name: Build wasm (release)
+        run: cargo build --release --target wasm32-unknown-unknown --lib
 
   debug-monitor:
     name: Debug Monitor Lint and Build
