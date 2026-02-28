@@ -14,7 +14,15 @@ impl GpuContext {
     pub async fn new(window: &'static Window) -> Result<Self> {
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::default();
+        let backends = if cfg!(target_arch = "wasm32") {
+            wgpu::Backends::BROWSER_WEBGPU
+        } else {
+            wgpu::Backends::all()
+        };
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..Default::default()
+        });
         let surface = instance
             .create_surface(window)
             .context("failed to create wgpu surface")?;
@@ -28,17 +36,26 @@ impl GpuContext {
             .await
             .context("no suitable GPU adapter found")?;
 
+        log::info!("adapter: {:?}", adapter.get_info());
+
+        let required_limits = if cfg!(target_arch = "wasm32") {
+            adapter.limits()
+        } else {
+            wgpu::Limits::default()
+        };
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("world-gen-device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
+                    memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,
             )
             .await
-            .context("failed to request GPU device")?;
+            .map_err(|e| anyhow::anyhow!("failed to request GPU device: {e}"))?;
 
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities

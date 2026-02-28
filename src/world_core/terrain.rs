@@ -1,4 +1,5 @@
 use glam::IVec2;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
@@ -25,8 +26,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         let origin_x = coord.x as f32 * CHUNK_SIZE_METERS;
         let origin_z = coord.y as f32 * CHUNK_SIZE_METERS;
 
-        let heights: Vec<f32> = (0..total)
-            .into_par_iter()
+        let heights: Vec<f32> = maybe_par_iter!(0..total)
             .map(|idx| {
                 let x = idx % side;
                 let z = idx / side;
@@ -36,8 +36,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
             })
             .collect();
 
-        let moisture: Vec<f32> = (0..total)
-            .into_par_iter()
+        let moisture: Vec<f32> = maybe_par_iter!(0..total)
             .map(|idx| {
                 let x = idx % side;
                 let z = idx / side;

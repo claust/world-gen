@@ -13,12 +13,14 @@ pub fn create_render_pipeline(
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
-            entry_point: "vs_main",
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
             buffers: vertex_buffers,
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: "fs_main",
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: config.format,
                 blend: Some(wgpu::BlendState::REPLACE),
@@ -43,6 +45,7 @@ pub fn create_render_pipeline(
         }),
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
+        cache: None,
     })
 }
 
