@@ -26,6 +26,8 @@ use crate::debug_api::{
     start_debug_api, CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind,
     DebugApiConfig, DebugApiHandle, MoveKey, TelemetrySnapshot,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::renderer_wgpu::asset_watcher::AssetWatcher;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -51,6 +53,8 @@ pub struct AppState {
     last_telemetry_emit: Instant,
     #[cfg(not(target_arch = "wasm32"))]
     screenshot_pending: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    asset_watcher: Option<AssetWatcher>,
 }
 
 impl AppState {
@@ -62,7 +66,7 @@ impl AppState {
     ) -> Result<Self> {
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.config);
+        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
 
         let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         camera.yaw = 1.02;
@@ -82,6 +86,8 @@ impl AppState {
             log::info!("debug api listening on {}", api.bind_addr());
         }
 
+        let asset_watcher = AssetWatcher::start();
+
         Ok(Self {
             window,
             gpu,
@@ -98,6 +104,7 @@ impl AppState {
             elapsed_seconds: 0.0,
             frame_index: 0,
             screenshot_pending: None,
+            asset_watcher,
         })
     }
 
@@ -105,7 +112,7 @@ impl AppState {
     pub async fn new_web(window: &'static Window, cursor_captured: bool) -> Result<Self> {
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.config);
+        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
 
         let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         camera.yaw = 1.02;
@@ -280,6 +287,19 @@ impl AppState {
         #[cfg(not(target_arch = "wasm32"))]
         self.apply_debug_commands();
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(watcher) = &self.asset_watcher {
+            let reloads: Vec<(String, Vec<u8>)> = watcher
+                .drain_reloads()
+                .into_iter()
+                .map(|r| (r.name, r.bytes))
+                .collect();
+            if !reloads.is_empty() {
+                self.world_renderer
+                    .apply_model_reloads(&self.gpu.device, &reloads);
+            }
+        }
+
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -312,6 +332,14 @@ impl AppState {
             &self.gpu.queue,
             lighting.sun_direction,
             lighting.ambient,
+        );
+        self.world_renderer.update_hud(
+            &self.gpu.queue,
+            &self.gpu.device,
+            self.camera.position,
+            self.camera.yaw,
+            self.gpu.config.width as f32,
+            self.gpu.config.height as f32,
         );
 
         #[cfg(not(target_arch = "wasm32"))]

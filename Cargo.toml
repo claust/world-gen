@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow = "1.0"
 bytemuck = { version = "1.16", features = ["derive"] }
+gltf = "1"
 glam = "0.27"
 log = "0.4"
 noise = "0.9"
@@ -19,6 +20,7 @@ winit = "0.29"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 axum = { version = "0.7", features = ["ws"] }
+notify = "7"
 env_logger = "0.11"
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
