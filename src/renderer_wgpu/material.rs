@@ -25,6 +25,8 @@ impl FrameUniform {
 pub struct TerrainMaterialUniform {
     pub light_direction: [f32; 4],
     pub ambient: [f32; 4],
+    pub fog_color: [f32; 4],
+    pub fog_params: [f32; 4],
 }
 
 pub struct FrameBindGroup {
@@ -102,6 +104,8 @@ impl MaterialBindGroup {
         let initial = TerrainMaterialUniform {
             light_direction: [0.4, 1.0, 0.3, 0.0],
             ambient: [0.2, 0.2, 0.2, 0.0],
+            fog_color: [0.45, 0.68, 0.96, 1.0],
+            fog_params: [0.0, 1000.0, 0.0, 0.0],
         };
 
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -126,10 +130,20 @@ impl MaterialBindGroup {
         }
     }
 
-    pub fn update_terrain(&self, queue: &wgpu::Queue, light_dir: Vec3, ambient: f32) {
+    pub fn update_terrain(
+        &self,
+        queue: &wgpu::Queue,
+        light_dir: Vec3,
+        ambient: f32,
+        fog_color: [f32; 3],
+        fog_start: f32,
+        fog_end: f32,
+    ) {
         let data = TerrainMaterialUniform {
             light_direction: [light_dir.x, light_dir.y, light_dir.z, 0.0],
             ambient: [ambient, ambient, ambient, 0.0],
+            fog_color: [fog_color[0], fog_color[1], fog_color[2], 1.0],
+            fog_params: [fog_start, fog_end, 0.0, 0.0],
         };
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&[data]));
     }

@@ -83,8 +83,13 @@ impl AppState {
 
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer =
-            WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config, config.sea_level);
+        let mut world_renderer = WorldRenderer::new(
+            &gpu.device,
+            &gpu.queue,
+            &gpu.config,
+            config.sea_level,
+            config.world.load_radius,
+        );
 
         let (cam_pos, cam_yaw, cam_pitch) = match &save {
             Some(s) => (
@@ -152,8 +157,13 @@ impl AppState {
 
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer =
-            WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config, config.sea_level);
+        let mut world_renderer = WorldRenderer::new(
+            &gpu.device,
+            &gpu.queue,
+            &gpu.config,
+            config.sea_level,
+            config.world.load_radius,
+        );
 
         let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         camera.yaw = 1.02;
@@ -294,6 +304,8 @@ impl AppState {
             self.world.reload_config(&new_config);
             self.world_renderer
                 .set_sea_level(&self.gpu.queue, new_config.sea_level);
+            self.world_renderer
+                .set_load_radius(new_config.world.load_radius);
             let _ = self.world.set_day_speed(new_config.world.day_speed);
         }
 

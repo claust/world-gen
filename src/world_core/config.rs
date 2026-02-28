@@ -66,7 +66,7 @@ impl Default for WorldConfig {
     fn default() -> Self {
         Self {
             seed: 42,
-            load_radius: 1,
+            load_radius: 3,
             start_hour: 9.5,
             day_speed: 0.04,
         }

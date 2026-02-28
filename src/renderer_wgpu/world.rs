@@ -18,6 +18,9 @@ pub struct WorldRenderer {
     water: WaterPass,
     instanced: InstancedPass,
     hud: HudPass,
+    fog_color: [f32; 3],
+    fog_start: f32,
+    fog_end: f32,
 }
 
 impl WorldRenderer {
@@ -26,6 +29,7 @@ impl WorldRenderer {
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
         sea_level: f32,
+        load_radius: i32,
     ) -> Self {
         let frame_bg = FrameBindGroup::new(device);
         let terrain_material = MaterialBindGroup::new_terrain(device);
@@ -41,6 +45,11 @@ impl WorldRenderer {
         let instanced = InstancedPass::new(device, config, &pipeline_layout);
         let hud = HudPass::new(device, queue, config);
 
+        let r = load_radius as f32;
+        let fog_start = r * 256.0 * 0.6;
+        let fog_end = (r + 0.5) * 256.0;
+        let fog_color = [0.45, 0.68, 0.96];
+
         Self {
             frame_bg,
             terrain_material,
@@ -49,11 +58,20 @@ impl WorldRenderer {
             water,
             instanced,
             hud,
+            fog_color,
+            fog_start,
+            fog_end,
         }
     }
 
     pub fn set_sea_level(&mut self, _queue: &wgpu::Queue, sea_level: f32) {
         self.water.set_sea_level(sea_level);
+    }
+
+    pub fn set_load_radius(&mut self, load_radius: i32) {
+        let r = load_radius as f32;
+        self.fog_start = r * 256.0 * 0.6;
+        self.fog_end = (r + 0.5) * 256.0;
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
@@ -75,8 +93,14 @@ impl WorldRenderer {
     }
 
     pub fn update_material(&self, queue: &wgpu::Queue, light_direction: Vec3, ambient: f32) {
-        self.terrain_material
-            .update_terrain(queue, light_direction, ambient);
+        self.terrain_material.update_terrain(
+            queue,
+            light_direction,
+            ambient,
+            self.fog_color,
+            self.fog_start,
+            self.fog_end,
+        );
     }
 
     pub fn update_hud(
