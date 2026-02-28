@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build WASM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.1
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build wasm (release)
+        run: cargo build --release --target wasm32-unknown-unknown --lib
+
+      # Version must match wasm-bindgen crate version in Cargo.lock (currently 0.2.114)
+      - name: Download wasm-bindgen-cli
+        run: |
+          BINDGEN_VERSION="0.2.114"
+          curl -sSL "https://github.com/rustwasm/wasm-bindgen/releases/download/${BINDGEN_VERSION}/wasm-bindgen-${BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o wasm-bindgen.tar.gz
+          tar xzf wasm-bindgen.tar.gz
+          mv "wasm-bindgen-${BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/
+          wasm-bindgen --version
+
+      - name: Generate JS glue with wasm-bindgen
+        run: |
+          wasm-bindgen \
+            --target web \
+            --out-dir web/pkg \
+            --out-name world_gen \
+            target/wasm32-unknown-unknown/release/world_gen.wasm
+
+      - name: Generate version tag
+        id: version
+        run: echo "tag=v$(date +%Y%m%d)-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release zip
+        run: cd web && zip -r ../world-gen-web.zip .
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-gen-web-zip
+          path: world-gen-web.zip
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/
+
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download zip artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: world-gen-web-zip
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ needs.build.outputs.tag }}" \
+            --generate-notes \
+            --title "${{ needs.build.outputs.tag }}" \
+            world-gen-web.zip
