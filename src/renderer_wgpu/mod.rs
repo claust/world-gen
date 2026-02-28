@@ -7,3 +7,6 @@ pub mod pipeline;
 pub mod sky;
 pub mod terrain_compute;
 pub mod world;
+
+mod instanced_pass;
+mod terrain_pass;
