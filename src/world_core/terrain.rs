@@ -54,7 +54,6 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
             });
 
         ChunkTerrain {
-            coord,
             heights,
             moisture,
             min_height,

@@ -1,7 +1,5 @@
 use glam::{IVec2, Vec3};
 
-use crate::world_core::biome_map::BiomeMap;
-
 pub const CHUNK_SIZE_METERS: f32 = 256.0;
 pub const CHUNK_GRID_RESOLUTION: usize = 129;
 
@@ -26,7 +24,6 @@ pub struct ChunkContent {
 
 #[derive(Clone)]
 pub struct ChunkTerrain {
-    pub coord: IVec2,
     pub heights: Vec<f32>,
     pub moisture: Vec<f32>,
     pub min_height: f32,
@@ -37,6 +34,5 @@ pub struct ChunkTerrain {
 pub struct ChunkData {
     pub coord: IVec2,
     pub terrain: ChunkTerrain,
-    pub biome_map: BiomeMap,
     pub content: ChunkContent,
 }

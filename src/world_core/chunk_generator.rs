@@ -33,7 +33,6 @@ impl ChunkGenerator {
         ChunkData {
             coord,
             terrain,
-            biome_map,
             content,
         }
     }

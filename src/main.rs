@@ -60,7 +60,7 @@ impl AppState {
         let mut world = WorldRuntime::new(42, 1, threads, 9.5, 0.04)?;
         world.update(0.0, camera.position);
 
-        world_renderer.sync_chunks(&gpu.device, world.chunks());
+        world_renderer.sync_chunks(&gpu.device, &gpu.queue, world.chunks());
 
         let debug_api = start_debug_api(&debug_api_config)?;
         if let Some(api) = &debug_api {
@@ -229,7 +229,7 @@ impl AppState {
 
         self.world.update(dt, self.camera.position);
         self.world_renderer
-            .sync_chunks(&self.gpu.device, self.world.chunks());
+            .sync_chunks(&self.gpu.device, &self.gpu.queue, self.world.chunks());
 
         let aspect = self.gpu.aspect();
         let view_proj = self.camera.view_projection(aspect);

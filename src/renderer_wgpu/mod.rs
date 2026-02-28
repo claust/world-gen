@@ -1,8 +1,9 @@
 pub mod camera;
 pub mod geometry;
 pub mod gpu_context;
+pub mod instancing;
 pub mod material;
-pub mod mesh;
 pub mod pipeline;
 pub mod sky;
+pub mod terrain_compute;
 pub mod world;
