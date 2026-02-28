@@ -116,8 +116,8 @@ impl WorldRenderer {
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
 
         self.terrain.render(pass);
-        self.water.render(pass);
         self.instanced.render(pass);
+        self.water.render(pass);
         self.hud.render(pass);
     }
 
