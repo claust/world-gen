@@ -36,7 +36,7 @@ type CommandApplied = {
   day_speed?: number;
 };
 
-type MoveKey = "w" | "a" | "s" | "d";
+type MoveKey = "w" | "a" | "s" | "d" | "up" | "down";
 
 type WsEvent =
   | { type: "telemetry"; payload: Telemetry }
@@ -68,6 +68,8 @@ function App() {
     a: 0,
     s: 0,
     d: 0,
+    up: 0,
+    down: 0,
   });
 
   const [connection, setConnection] = useState<"connecting" | "connected" | "disconnected">(
@@ -77,6 +79,9 @@ function App() {
   const [lastAck, setLastAck] = useState<CommandApplied | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [daySpeedInput, setDaySpeedInput] = useState("0.04");
+  const [teleportX, setTeleportX] = useState("");
+  const [teleportY, setTeleportY] = useState("");
+  const [teleportZ, setTeleportZ] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const sendCommand = useCallback(
@@ -139,7 +144,7 @@ function App() {
   );
 
   const releaseAllMoveKeys = useCallback(() => {
-    const keys: MoveKey[] = ["w", "a", "s", "d"];
+    const keys: MoveKey[] = ["w", "a", "s", "d", "up", "down"];
     for (const key of keys) {
       if (keyHoldCountsRef.current[key] > 0) {
         keyHoldCountsRef.current[key] = 0;
@@ -241,6 +246,11 @@ function App() {
         case "KeyD":
         case "ArrowRight":
           return "d";
+        case "Space":
+          return "up";
+        case "ShiftLeft":
+        case "ShiftRight":
+          return "down";
         default:
           return null;
       }
@@ -306,6 +316,32 @@ function App() {
       setError(message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const submitTeleport = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+
+    const x = teleportX === "" ? (telemetry?.camera.x ?? 0) : Number(teleportX);
+    const y = teleportY === "" ? (telemetry?.camera.y ?? 0) : Number(teleportY);
+    const z = teleportZ === "" ? (telemetry?.camera.z ?? 0) : Number(teleportZ);
+
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      setError("teleport coordinates must be numbers");
+      return;
+    }
+
+    try {
+      await sendCommand({
+        type: "set_camera_position",
+        x,
+        y,
+        z,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
     }
   };
 
@@ -392,8 +428,13 @@ function App() {
                 </Button>
               </form>
               <div className="space-y-2">
-                <div className="text-sm">Navigation (WASD / Arrow keys)</div>
+                <div className="text-sm">Navigation (WASD / Arrow keys / Space / Shift)</div>
                 <div className="grid w-fit grid-cols-3 gap-2">
+                  <div />
+                  <Button type="button" variant="outline" {...buttonHandlers("up")}>
+                    Up
+                  </Button>
+                  <div />
                   <div />
                   <Button type="button" variant="outline" {...buttonHandlers("w")}>
                     W
@@ -408,7 +449,49 @@ function App() {
                   <Button type="button" variant="outline" {...buttonHandlers("d")}>
                     D
                   </Button>
+                  <div />
+                  <Button type="button" variant="outline" {...buttonHandlers("down")}>
+                    Down
+                  </Button>
+                  <div />
                 </div>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <div className="text-sm">Teleport</div>
+                <form className="flex items-end gap-2" onSubmit={submitTeleport}>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">X</label>
+                    <Input
+                      aria-label="x"
+                      className="w-20"
+                      value={teleportX}
+                      onChange={(e) => setTeleportX(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.x.toFixed(1) : "0"}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Y</label>
+                    <Input
+                      aria-label="y"
+                      className="w-20"
+                      value={teleportY}
+                      onChange={(e) => setTeleportY(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.y.toFixed(1) : "0"}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Z</label>
+                    <Input
+                      aria-label="z"
+                      className="w-20"
+                      value={teleportZ}
+                      onChange={(e) => setTeleportZ(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.z.toFixed(1) : "0"}
+                    />
+                  </div>
+                  <Button type="submit">Go</Button>
+                </form>
               </div>
               <Separator />
               <div className="text-sm">

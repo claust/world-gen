@@ -211,6 +211,8 @@ impl AppState {
                         MoveKey::A => MoveDirection::Left,
                         MoveKey::S => MoveDirection::Backward,
                         MoveKey::D => MoveDirection::Right,
+                        MoveKey::Up => MoveDirection::Up,
+                        MoveKey::Down => MoveDirection::Down,
                     };
                     self.camera_controller.set_remote_move(direction, pressed);
 
@@ -223,6 +225,16 @@ impl AppState {
                             key.as_str(),
                             if pressed { "pressed" } else { "released" }
                         ),
+                        day_speed: None,
+                    }
+                }
+                CommandKind::SetCameraPosition { x, y, z } => {
+                    self.camera.position = glam::Vec3::new(x, y, z);
+                    CommandAppliedEvent {
+                        id: command.id,
+                        frame: self.frame_index,
+                        ok: true,
+                        message: format!("camera position set to ({:.1}, {:.1}, {:.1})", x, y, z),
                         day_speed: None,
                     }
                 }

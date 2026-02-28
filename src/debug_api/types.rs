@@ -57,6 +57,8 @@ pub enum MoveKey {
     A,
     S,
     D,
+    Up,
+    Down,
 }
 
 impl MoveKey {
@@ -66,6 +68,8 @@ impl MoveKey {
             Self::A => "a",
             Self::S => "s",
             Self::D => "d",
+            Self::Up => "up",
+            Self::Down => "down",
         }
     }
 }
@@ -75,6 +79,7 @@ impl MoveKey {
 pub enum CommandKind {
     SetDaySpeed { value: f32 },
     SetMoveKey { key: MoveKey, pressed: bool },
+    SetCameraPosition { x: f32, y: f32, z: f32 },
     TakeScreenshot,
 }
 
@@ -129,6 +134,47 @@ mod tests {
         assert!(matches!(
             command.command,
             super::CommandKind::TakeScreenshot
+        ));
+    }
+
+    #[test]
+    fn deserializes_set_move_key_up_down() {
+        let raw = r#"{"id":"cmd-2","type":"set_move_key","key":"up","pressed":true}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid set_move_key up payload");
+        assert_eq!(command.id, "cmd-2");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::SetMoveKey {
+                key: super::MoveKey::Up,
+                pressed: true
+            }
+        ));
+
+        let raw = r#"{"id":"cmd-3","type":"set_move_key","key":"down","pressed":false}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid set_move_key down payload");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::SetMoveKey {
+                key: super::MoveKey::Down,
+                pressed: false
+            }
+        ));
+    }
+
+    #[test]
+    fn deserializes_set_camera_position() {
+        let raw = r#"{"id":"tp-1","type":"set_camera_position","x":100.0,"y":200.0,"z":50.0}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid set_camera_position payload");
+        assert_eq!(command.id, "tp-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::SetCameraPosition { x, y, z }
+            if (x - 100.0).abs() < f32::EPSILON
+                && (y - 200.0).abs() < f32::EPSILON
+                && (z - 50.0).abs() < f32::EPSILON
         ));
     }
 }
