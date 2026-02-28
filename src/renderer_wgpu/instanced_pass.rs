@@ -4,8 +4,8 @@ use glam::IVec2;
 
 use super::geometry::Vertex;
 use super::instancing::{
-    build_canopy_instances, build_fern_instances, build_house_instances, build_tree_instances,
-    build_trunk_instances, upload_instances, GpuInstanceChunk, InstanceData, ModelRegistry,
+    build_fern_instances, build_house_instances, build_tree_instances, upload_instances,
+    GpuInstanceChunk, InstanceData, ModelRegistry,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
@@ -15,11 +15,7 @@ use crate::world_core::chunk::ChunkData;
 pub struct InstancedPass {
     pipeline: wgpu::RenderPipeline,
     models: ModelRegistry,
-    // Unified tree instances (used when a "tree" GLB model is loaded)
     tree_instances: HashMap<IVec2, GpuInstanceChunk>,
-    // Legacy split instances (used with procedural trunk/canopy meshes)
-    trunk_instances: HashMap<IVec2, GpuInstanceChunk>,
-    canopy_instances: HashMap<IVec2, GpuInstanceChunk>,
     house_instances: HashMap<IVec2, GpuInstanceChunk>,
     fern_instances: HashMap<IVec2, GpuInstanceChunk>,
 }
@@ -97,8 +93,6 @@ impl InstancedPass {
             pipeline,
             models: ModelRegistry::new(device),
             tree_instances: HashMap::new(),
-            trunk_instances: HashMap::new(),
-            canopy_instances: HashMap::new(),
             house_instances: HashMap::new(),
             fern_instances: HashMap::new(),
         }
@@ -108,10 +102,6 @@ impl InstancedPass {
     pub fn sync_chunks(&mut self, device: &wgpu::Device, world_chunks: &HashMap<IVec2, ChunkData>) {
         self.tree_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
-        self.trunk_instances
-            .retain(|coord, _| world_chunks.contains_key(coord));
-        self.canopy_instances
-            .retain(|coord, _| world_chunks.contains_key(coord));
         self.house_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
         self.fern_instances
@@ -119,34 +109,11 @@ impl InstancedPass {
 
         for (coord, chunk) in world_chunks {
             // Trees
-            if self.models.unified_tree {
-                if !self.tree_instances.contains_key(coord) {
-                    if let Some(gpu) = upload_instances(
-                        device,
-                        &build_tree_instances(&chunk.content.trees),
-                        "tree",
-                    ) {
-                        self.tree_instances.insert(*coord, gpu);
-                    }
-                }
-            } else {
-                if !self.trunk_instances.contains_key(coord) {
-                    if let Some(gpu) = upload_instances(
-                        device,
-                        &build_trunk_instances(&chunk.content.trees),
-                        "trunk",
-                    ) {
-                        self.trunk_instances.insert(*coord, gpu);
-                    }
-                }
-                if !self.canopy_instances.contains_key(coord) {
-                    if let Some(gpu) = upload_instances(
-                        device,
-                        &build_canopy_instances(&chunk.content.trees),
-                        "canopy",
-                    ) {
-                        self.canopy_instances.insert(*coord, gpu);
-                    }
+            if !self.tree_instances.contains_key(coord) {
+                if let Some(gpu) =
+                    upload_instances(device, &build_tree_instances(&chunk.content.trees), "tree")
+                {
+                    self.tree_instances.insert(*coord, gpu);
                 }
             }
 
@@ -180,21 +147,14 @@ impl InstancedPass {
         for (name, bytes) in reloads {
             match model_loader::load_glb(device, bytes, name) {
                 Ok(mesh) => {
-                    let tree_transition = self.models.hot_swap(name, mesh);
+                    self.models.hot_swap(name, mesh);
                     log::info!("hot-reloaded model: {name}");
 
-                    if tree_transition {
-                        self.trunk_instances.clear();
-                        self.canopy_instances.clear();
-                        self.tree_instances.clear();
-                    }
-
-                    if name == "tree" {
-                        self.tree_instances.clear();
-                    } else if name == "house" {
-                        self.house_instances.clear();
-                    } else if name == "fern" {
-                        self.fern_instances.clear();
+                    match name.as_str() {
+                        "tree" => self.tree_instances.clear(),
+                        "house" => self.house_instances.clear(),
+                        "fern" => self.fern_instances.clear(),
+                        _ => {}
                     }
                 }
                 Err(e) => {
@@ -207,58 +167,22 @@ impl InstancedPass {
     pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_pipeline(&self.pipeline);
 
-        // Trees
-        if self.models.unified_tree {
-            if let Some(tree_mesh) = self.models.get("tree") {
-                pass.set_vertex_buffer(0, tree_mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(tree_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                for inst in self.tree_instances.values() {
-                    pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
-                    pass.draw_indexed(0..tree_mesh.index_count, 0, 0..inst.instance_count);
+        let draw_model =
+            |pass: &mut wgpu::RenderPass<'a>,
+             name: &str,
+             instances: &'a HashMap<IVec2, GpuInstanceChunk>| {
+                if let Some(mesh) = self.models.get(name) {
+                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                    pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    for inst in instances.values() {
+                        pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                        pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+                    }
                 }
-            }
-        } else {
-            // Legacy: separate trunk + canopy
-            if let Some(trunk_mesh) = self.models.get("trunk") {
-                pass.set_vertex_buffer(0, trunk_mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(trunk_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                for inst in self.trunk_instances.values() {
-                    pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
-                    pass.draw_indexed(0..trunk_mesh.index_count, 0, 0..inst.instance_count);
-                }
-            }
+            };
 
-            if let Some(canopy_mesh) = self.models.get("canopy") {
-                pass.set_vertex_buffer(0, canopy_mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(
-                    canopy_mesh.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
-                for inst in self.canopy_instances.values() {
-                    pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
-                    pass.draw_indexed(0..canopy_mesh.index_count, 0, 0..inst.instance_count);
-                }
-            }
-        }
-
-        // Houses
-        if let Some(house_mesh) = self.models.get("house") {
-            pass.set_vertex_buffer(0, house_mesh.vertex_buffer.slice(..));
-            pass.set_index_buffer(house_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            for inst in self.house_instances.values() {
-                pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
-                pass.draw_indexed(0..house_mesh.index_count, 0, 0..inst.instance_count);
-            }
-        }
-
-        // Ferns
-        if let Some(fern_mesh) = self.models.get("fern") {
-            pass.set_vertex_buffer(0, fern_mesh.vertex_buffer.slice(..));
-            pass.set_index_buffer(fern_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            for inst in self.fern_instances.values() {
-                pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
-                pass.draw_indexed(0..fern_mesh.index_count, 0, 0..inst.instance_count);
-            }
-        }
+        draw_model(pass, "tree", &self.tree_instances);
+        draw_model(pass, "house", &self.house_instances);
+        draw_model(pass, "fern", &self.fern_instances);
     }
 }
