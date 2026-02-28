@@ -75,6 +75,7 @@ impl MoveKey {
 pub enum CommandKind {
     SetDaySpeed { value: f32 },
     SetMoveKey { key: MoveKey, pressed: bool },
+    TakeScreenshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,5 +118,17 @@ mod tests {
         let command: CommandRequest =
             serde_json::from_str(raw).expect("valid set_move_key payload");
         assert_eq!(command.id, "cmd-1");
+    }
+
+    #[test]
+    fn deserializes_take_screenshot_command() {
+        let raw = r#"{"id":"ss-1","type":"take_screenshot"}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid take_screenshot payload");
+        assert_eq!(command.id, "ss-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::TakeScreenshot
+        ));
     }
 }
