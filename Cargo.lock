@@ -3223,6 +3223,7 @@ dependencies = [
  "log",
  "noise",
  "notify",
+ "objc",
  "pollster",
  "rayon",
  "serde",
