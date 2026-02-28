@@ -216,8 +216,8 @@ impl StreamingWorld {
 
     pub fn reload_config(&mut self, config: &GameConfig) {
         let new_config = Arc::new(config.clone());
-        self.loaded.clear();
         if let Ok(loader) = PlatformLoader::new_loader(self.seed, self.thread_count, new_config) {
+            self.loaded.clear();
             self.loader = loader;
         }
     }
