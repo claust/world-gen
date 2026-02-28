@@ -5,9 +5,7 @@ use wgpu::util::DeviceExt;
 
 use super::geometry::Vertex;
 use super::pipeline::create_water_pipeline;
-use crate::world_core::chunk::{
-    ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, SEA_LEVEL,
-};
+use crate::world_core::chunk::{ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, SEA_LEVEL};
 
 struct GpuWaterChunk {
     vertex_buffer: wgpu::Buffer,
@@ -91,11 +89,7 @@ impl WaterPass {
 
     /// Retains only chunks present in `world_chunks`. Generates water mesh for
     /// any new chunk whose terrain dips below sea level.
-    pub fn sync_chunks(
-        &mut self,
-        device: &wgpu::Device,
-        world_chunks: &HashMap<IVec2, ChunkData>,
-    ) {
+    pub fn sync_chunks(&mut self, device: &wgpu::Device, world_chunks: &HashMap<IVec2, ChunkData>) {
         self.chunks
             .retain(|coord, _| world_chunks.contains_key(coord));
 
