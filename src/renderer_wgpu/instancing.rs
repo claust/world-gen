@@ -106,6 +106,23 @@ impl ModelRegistry {
     pub fn get(&self, name: &str) -> Option<&PrototypeMesh> {
         self.models.get(name)
     }
+
+    /// Replace a prototype mesh by name, dropping the old GPU buffers.
+    /// Returns `true` if a procedural→GLB tree transition occurred
+    /// (meaning tree instance buffers need to be rebuilt).
+    pub fn hot_swap(&mut self, name: &str, mesh: PrototypeMesh) -> bool {
+        self.models.insert(name.to_string(), mesh);
+
+        let mut tree_transition = false;
+        if name == "tree" && !self.unified_tree {
+            self.unified_tree = true;
+            self.models.remove("trunk");
+            self.models.remove("canopy");
+            tree_transition = true;
+        }
+
+        tree_transition
+    }
 }
 
 pub fn upload_prototype(

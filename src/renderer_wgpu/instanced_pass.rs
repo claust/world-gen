@@ -7,6 +7,8 @@ use super::instancing::{
     build_canopy_instances, build_house_instances, build_tree_instances, build_trunk_instances,
     upload_instances, GpuInstanceChunk, InstanceData, ModelRegistry,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use super::model_loader;
 use super::pipeline::create_render_pipeline;
 use crate::world_core::chunk::ChunkData;
 
@@ -152,6 +154,36 @@ impl InstancedPass {
                     "house",
                 ) {
                     self.house_instances.insert(*coord, gpu);
+                }
+            }
+        }
+    }
+
+    /// Process hot-reloaded model data. Parses GLB bytes, uploads to GPU, and
+    /// swaps the prototype mesh. On a procedural→GLB tree transition, clears
+    /// instance buffers so `sync_chunks()` rebuilds them.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn apply_model_reloads(&mut self, device: &wgpu::Device, reloads: &[(String, Vec<u8>)]) {
+        for (name, bytes) in reloads {
+            match model_loader::load_glb(device, bytes, name) {
+                Ok(mesh) => {
+                    let tree_transition = self.models.hot_swap(name, mesh);
+                    log::info!("hot-reloaded model: {name}");
+
+                    if tree_transition {
+                        self.trunk_instances.clear();
+                        self.canopy_instances.clear();
+                        self.tree_instances.clear();
+                    }
+
+                    if name == "tree" {
+                        self.tree_instances.clear();
+                    } else if name == "house" {
+                        self.house_instances.clear();
+                    }
+                }
+                Err(e) => {
+                    log::warn!("failed to hot-reload model {name}: {e:#}");
                 }
             }
         }

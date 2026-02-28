@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
+pub mod asset_watcher;
 pub mod camera;
 pub mod geometry;
 pub mod gpu_context;

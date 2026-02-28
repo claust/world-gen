@@ -101,6 +101,11 @@ impl WorldRenderer {
         self.instanced.sync_chunks(device, chunks);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn apply_model_reloads(&mut self, device: &wgpu::Device, reloads: &[(String, Vec<u8>)]) {
+        self.instanced.apply_model_reloads(device, reloads);
+    }
+
     pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
