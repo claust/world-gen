@@ -130,8 +130,9 @@ impl WaterPass {
                 }
             }
 
+            let label = format!("water-vb-{},{}", coord.x, coord.y);
             let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("water-vb"),
+                label: Some(&label),
                 contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
