@@ -6,6 +6,7 @@ use super::hud_pass::HudPass;
 use super::instanced_pass::InstancedPass;
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
 use super::terrain_pass::TerrainPass;
+use super::water_pass::WaterPass;
 use crate::renderer_wgpu::pipeline::DepthTexture;
 use crate::world_core::chunk::ChunkData;
 
@@ -14,6 +15,7 @@ pub struct WorldRenderer {
     terrain_material: MaterialBindGroup,
     depth: DepthTexture,
     terrain: TerrainPass,
+    water: WaterPass,
     instanced: InstancedPass,
     hud: HudPass,
 }
@@ -34,6 +36,7 @@ impl WorldRenderer {
         });
 
         let terrain = TerrainPass::new(device, config, &pipeline_layout);
+        let water = WaterPass::new(device, config, &pipeline_layout);
         let instanced = InstancedPass::new(device, config, &pipeline_layout);
         let hud = HudPass::new(device, queue, config);
 
@@ -42,6 +45,7 @@ impl WorldRenderer {
             terrain_material,
             depth: DepthTexture::new(device, config, "terrain-depth"),
             terrain,
+            water,
             instanced,
             hud,
         }
@@ -98,6 +102,7 @@ impl WorldRenderer {
             queue.submit(Some(encoder.finish()));
         }
 
+        self.water.sync_chunks(device, chunks);
         self.instanced.sync_chunks(device, chunks);
     }
 
@@ -112,6 +117,7 @@ impl WorldRenderer {
 
         self.terrain.render(pass);
         self.instanced.render(pass);
+        self.water.render(pass);
         self.hud.render(pass);
     }
 

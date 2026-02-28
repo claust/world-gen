@@ -3,6 +3,9 @@ use glam::{IVec2, Vec3};
 pub const CHUNK_SIZE_METERS: f32 = 256.0;
 pub const CHUNK_GRID_RESOLUTION: usize = 129;
 
+/// Global water surface height. Any terrain below this level is submerged.
+pub const SEA_LEVEL: f32 = 18.0;
+
 #[derive(Clone)]
 pub struct TreeInstance {
     pub position: Vec3,
@@ -28,6 +31,8 @@ pub struct ChunkTerrain {
     pub moisture: Vec<f32>,
     pub min_height: f32,
     pub max_height: f32,
+    /// `true` when any vertex in this chunk is below `SEA_LEVEL`.
+    pub has_water: bool,
 }
 
 #[derive(Clone)]

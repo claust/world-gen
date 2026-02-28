@@ -2,7 +2,7 @@ use glam::IVec2;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
-use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
+use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, SEA_LEVEL};
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::layer::Layer;
 
@@ -55,6 +55,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         ChunkTerrain {
             heights,
             moisture,
+            has_water: min_height < SEA_LEVEL,
             min_height,
             max_height,
         }
