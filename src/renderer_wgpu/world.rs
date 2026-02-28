@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use bytemuck::{Pod, Zeroable};
 use glam::{IVec2, Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use super::geometry::Vertex;
+use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
 use super::mesh::{build_house_mesh, build_terrain_mesh, build_tree_mesh, CpuChunkMesh};
 use crate::renderer_wgpu::pipeline::DepthTexture;
 use crate::world_core::chunk::ChunkData;
@@ -15,18 +15,10 @@ struct GpuChunk {
     index_count: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Zeroable, Pod)]
-struct TerrainUniform {
-    view_proj: [[f32; 4]; 4],
-    light_direction: [f32; 4],
-    ambient: [f32; 4],
-}
-
 pub struct WorldRenderer {
-    pipeline: wgpu::RenderPipeline,
-    uniform_buffer: wgpu::Buffer,
-    uniform_bind_group: wgpu::BindGroup,
+    frame_bg: FrameBindGroup,
+    terrain_material: MaterialBindGroup,
+    terrain_pipeline: wgpu::RenderPipeline,
     depth: DepthTexture,
     terrain_chunk_meshes: HashMap<IVec2, GpuChunk>,
     tree_chunk_meshes: HashMap<IVec2, GpuChunk>,
@@ -35,40 +27,8 @@ pub struct WorldRenderer {
 
 impl WorldRenderer {
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
-        let initial_uniform = TerrainUniform {
-            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            light_direction: [0.4, 1.0, 0.3, 0.0],
-            ambient: [0.2, 0.2, 0.2, 0.0],
-        };
-
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terrain-uniform-buffer"),
-            contents: bytemuck::cast_slice(&[initial_uniform]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("terrain-bind-group-layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("terrain-bind-group"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
+        let frame_bg = FrameBindGroup::new(device);
+        let terrain_material = MaterialBindGroup::new_terrain(device);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain-shader"),
@@ -77,7 +37,7 @@ impl WorldRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("terrain-pipeline-layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&frame_bg.layout, &terrain_material.layout],
             push_constant_ranges: &[],
         });
 
@@ -103,7 +63,7 @@ impl WorldRenderer {
             ],
         };
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let terrain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("terrain-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -141,9 +101,9 @@ impl WorldRenderer {
         });
 
         Self {
-            pipeline,
-            uniform_buffer,
-            uniform_bind_group,
+            frame_bg,
+            terrain_material,
+            terrain_pipeline,
             depth: DepthTexture::new(device, config, "terrain-depth"),
             terrain_chunk_meshes: HashMap::new(),
             tree_chunk_meshes: HashMap::new(),
@@ -155,19 +115,23 @@ impl WorldRenderer {
         self.depth = DepthTexture::new(device, config, "terrain-depth");
     }
 
-    pub fn update_uniforms(
+    pub fn update_frame(
         &self,
         queue: &wgpu::Queue,
         view_proj: Mat4,
-        light_direction: Vec3,
-        ambient: f32,
+        camera_position: Vec3,
+        elapsed: f32,
+        hour: f32,
     ) {
-        let data = TerrainUniform {
-            view_proj: view_proj.to_cols_array_2d(),
-            light_direction: [light_direction.x, light_direction.y, light_direction.z, 0.0],
-            ambient: [ambient, ambient, ambient, 0.0],
-        };
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[data]));
+        self.frame_bg.update(
+            queue,
+            &FrameUniform::new(view_proj, camera_position, elapsed, hour),
+        );
+    }
+
+    pub fn update_material(&self, queue: &wgpu::Queue, light_direction: Vec3, ambient: f32) {
+        self.terrain_material
+            .update_terrain(queue, light_direction, ambient);
     }
 
     pub fn sync_chunks(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
@@ -206,8 +170,10 @@ impl WorldRenderer {
     }
 
     pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
+
+        pass.set_pipeline(&self.terrain_pipeline);
+        pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
 
         for mesh in self.terrain_chunk_meshes.values() {
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));

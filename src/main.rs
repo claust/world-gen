@@ -35,6 +35,7 @@ struct AppState {
     last_frame: Instant,
     last_telemetry_emit: Instant,
     frame_time_ms: f32,
+    elapsed_seconds: f32,
     frame_index: u64,
 }
 
@@ -79,6 +80,7 @@ impl AppState {
             last_frame: Instant::now(),
             last_telemetry_emit: Instant::now() - Duration::from_secs(1),
             frame_time_ms: 0.0,
+            elapsed_seconds: 0.0,
             frame_index: 0,
         })
     }
@@ -217,6 +219,7 @@ impl AppState {
         self.last_frame = now;
 
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
+        self.elapsed_seconds += dt;
 
         self.camera_controller.update_camera(
             dt,
@@ -231,14 +234,20 @@ impl AppState {
         let aspect = self.gpu.aspect();
         let view_proj = self.camera.view_projection(aspect);
         let lighting = self.world.lighting();
-        self.world_renderer.update_uniforms(
+        let stats = self.world.stats();
+        self.world_renderer.update_frame(
             &self.gpu.queue,
             view_proj,
+            self.camera.position,
+            self.elapsed_seconds,
+            stats.hour,
+        );
+        self.world_renderer.update_material(
+            &self.gpu.queue,
             lighting.sun_direction,
             lighting.ambient,
         );
 
-        let stats = self.world.stats();
         self.publish_telemetry_if_due(&stats);
 
         self.window.set_title(&format!(
