@@ -11,7 +11,7 @@ pub struct DebugApiConfig {
 impl Default for DebugApiConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             bind_addr: "127.0.0.1:7777".to_string(),
         }
     }
@@ -68,9 +68,9 @@ mod tests {
     use super::DebugApiConfig;
 
     #[test]
-    fn default_is_disabled() {
+    fn default_is_enabled() {
         let parsed = DebugApiConfig::from_iter(Vec::<std::ffi::OsString>::new(), None).unwrap();
-        assert!(!parsed.enabled);
+        assert!(parsed.enabled);
         assert_eq!(parsed.bind_addr, "127.0.0.1:7777");
     }
 
