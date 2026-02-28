@@ -1,11 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::{self, Receiver, Sender};
-
 use glam::{IVec2, Vec3};
-#[cfg(not(target_arch = "wasm32"))]
-use rayon::{ThreadPool, ThreadPoolBuilder};
 
 use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::chunk_generator::ChunkGenerator;
@@ -16,119 +11,184 @@ pub struct StreamingStats {
     pub center_chunk: IVec2,
 }
 
-pub struct StreamingWorld {
-    seed: u32,
-    load_radius: i32,
-    loaded: HashMap<IVec2, ChunkData>,
-    center_chunk: IVec2,
-    #[cfg(not(target_arch = "wasm32"))]
-    pool: ThreadPool,
-    #[cfg(not(target_arch = "wasm32"))]
-    sender: Sender<ChunkData>,
-    #[cfg(not(target_arch = "wasm32"))]
-    receiver: Receiver<ChunkData>,
-    #[cfg(not(target_arch = "wasm32"))]
-    pending: HashSet<IVec2>,
+// ---------------------------------------------------------------------------
+// ChunkLoader trait — abstracts platform-specific chunk generation strategy
+// ---------------------------------------------------------------------------
+
+trait ChunkLoader {
+    fn new_loader(seed: u32, threads: usize) -> anyhow::Result<Self>
+    where
+        Self: Sized;
+    fn dispatch(&mut self, coord: IVec2, seed: u32);
+    fn poll(&mut self) -> Vec<ChunkData>;
+    fn pending_count(&self) -> usize;
+    fn cancel_outside(&mut self, required: &HashSet<IVec2>);
 }
 
-impl StreamingWorld {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(seed: u32, load_radius: i32, threads: usize) -> anyhow::Result<Self> {
-        let pool = ThreadPoolBuilder::new()
-            .num_threads(threads.max(1))
-            .thread_name(|i| format!("chunk-gen-{i}"))
-            .build()?;
+// ---------------------------------------------------------------------------
+// Native: threaded chunk generation via rayon
+// ---------------------------------------------------------------------------
 
-        let (sender, receiver) = mpsc::channel();
+#[cfg(not(target_arch = "wasm32"))]
+mod threaded {
+    use super::*;
+    use std::sync::mpsc::{self, Receiver, Sender};
 
-        let generator = ChunkGenerator::new(seed);
-        let center_chunk = IVec2::ZERO;
-        let initial_chunk = generator.generate_chunk(center_chunk);
-        let mut loaded = HashMap::with_capacity(1);
-        loaded.insert(center_chunk, initial_chunk);
+    use rayon::{ThreadPool, ThreadPoolBuilder};
 
-        Ok(Self {
-            seed,
-            load_radius,
-            pool,
-            sender,
-            receiver,
-            loaded,
-            pending: HashSet::new(),
-            center_chunk,
-        })
+    pub struct ThreadedLoader {
+        pool: ThreadPool,
+        sender: Sender<ChunkData>,
+        receiver: Receiver<ChunkData>,
+        pending: HashSet<IVec2>,
     }
 
-    #[cfg(target_arch = "wasm32")]
-    pub fn new(seed: u32, load_radius: i32, _threads: usize) -> anyhow::Result<Self> {
-        let generator = ChunkGenerator::new(seed);
-        let center_chunk = IVec2::ZERO;
-        let initial_chunk = generator.generate_chunk(center_chunk);
-        let mut loaded = HashMap::with_capacity(1);
-        loaded.insert(center_chunk, initial_chunk);
+    impl ChunkLoader for ThreadedLoader {
+        fn new_loader(seed: u32, threads: usize) -> anyhow::Result<Self> {
+            let _ = seed; // seed is passed per-dispatch, not stored
+            let pool = ThreadPoolBuilder::new()
+                .num_threads(threads.max(1))
+                .thread_name(|i| format!("chunk-gen-{i}"))
+                .build()?;
+            let (sender, receiver) = mpsc::channel();
+            Ok(Self {
+                pool,
+                sender,
+                receiver,
+                pending: HashSet::new(),
+            })
+        }
 
-        Ok(Self {
-            seed,
-            load_radius,
-            loaded,
-            center_chunk,
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn update(&mut self, camera_position: Vec3) {
-        self.drain_completed();
-
-        self.center_chunk = world_to_chunk(camera_position);
-        let required = required_coords(self.center_chunk, self.load_radius);
-
-        self.loaded.retain(|coord, _| required.contains(coord));
-        self.pending.retain(|coord| required.contains(coord));
-
-        for coord in required {
-            if self.loaded.contains_key(&coord) || self.pending.contains(&coord) {
-                continue;
+        fn dispatch(&mut self, coord: IVec2, seed: u32) {
+            if self.pending.contains(&coord) {
+                return;
             }
-
-            let tx = self.sender.clone();
-            let seed = self.seed;
             self.pending.insert(coord);
-
+            let tx = self.sender.clone();
             self.pool.spawn(move || {
                 let generator = ChunkGenerator::new(seed);
                 let chunk = generator.generate_chunk(coord);
                 let _ = tx.send(chunk);
             });
         }
+
+        fn poll(&mut self) -> Vec<ChunkData> {
+            let mut completed = Vec::new();
+            while let Ok(chunk) = self.receiver.try_recv() {
+                self.pending.remove(&chunk.coord);
+                completed.push(chunk);
+            }
+            completed
+        }
+
+        fn pending_count(&self) -> usize {
+            self.pending.len()
+        }
+
+        fn cancel_outside(&mut self, required: &HashSet<IVec2>) {
+            self.pending.retain(|coord| required.contains(coord));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wasm: synchronous chunk generation, throttled per frame
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+mod sync {
+    use super::*;
+
+    pub struct SyncLoader {
+        seed: u32,
+        queue: Vec<IVec2>,
     }
 
-    #[cfg(target_arch = "wasm32")]
+    impl ChunkLoader for SyncLoader {
+        fn new_loader(seed: u32, _threads: usize) -> anyhow::Result<Self> {
+            Ok(Self {
+                seed,
+                queue: Vec::new(),
+            })
+        }
+
+        fn dispatch(&mut self, coord: IVec2, _seed: u32) {
+            if !self.queue.contains(&coord) {
+                self.queue.push(coord);
+            }
+        }
+
+        fn poll(&mut self) -> Vec<ChunkData> {
+            let generator = ChunkGenerator::new(self.seed);
+            let count = self.queue.len().min(2);
+            let coords: Vec<IVec2> = self.queue.drain(..count).collect();
+            coords
+                .into_iter()
+                .map(|coord| generator.generate_chunk(coord))
+                .collect()
+        }
+
+        fn pending_count(&self) -> usize {
+            self.queue.len()
+        }
+
+        fn cancel_outside(&mut self, required: &HashSet<IVec2>) {
+            self.queue.retain(|coord| required.contains(coord));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StreamingWorld — unified orchestration, delegates loading to PlatformLoader
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+type PlatformLoader = threaded::ThreadedLoader;
+#[cfg(target_arch = "wasm32")]
+type PlatformLoader = sync::SyncLoader;
+
+pub struct StreamingWorld {
+    seed: u32,
+    load_radius: i32,
+    loaded: HashMap<IVec2, ChunkData>,
+    center_chunk: IVec2,
+    loader: PlatformLoader,
+}
+
+impl StreamingWorld {
+    pub fn new(seed: u32, load_radius: i32, threads: usize) -> anyhow::Result<Self> {
+        let loader = PlatformLoader::new_loader(seed, threads)?;
+
+        let generator = ChunkGenerator::new(seed);
+        let center_chunk = IVec2::ZERO;
+        let initial_chunk = generator.generate_chunk(center_chunk);
+        let mut loaded = HashMap::with_capacity(1);
+        loaded.insert(center_chunk, initial_chunk);
+
+        Ok(Self {
+            seed,
+            load_radius,
+            loaded,
+            center_chunk,
+            loader,
+        })
+    }
+
     pub fn update(&mut self, camera_position: Vec3) {
+        for chunk in self.loader.poll() {
+            self.loaded.insert(chunk.coord, chunk);
+        }
+
         self.center_chunk = world_to_chunk(camera_position);
         let required = required_coords(self.center_chunk, self.load_radius);
 
         self.loaded.retain(|coord, _| required.contains(coord));
+        self.loader.cancel_outside(&required);
 
-        let generator = ChunkGenerator::new(self.seed);
-        let mut generated = 0;
-        for coord in &required {
-            if self.loaded.contains_key(coord) {
-                continue;
+        for &coord in &required {
+            if !self.loaded.contains_key(&coord) {
+                self.loader.dispatch(coord, self.seed);
             }
-            let chunk = generator.generate_chunk(*coord);
-            self.loaded.insert(*coord, chunk);
-            generated += 1;
-            if generated >= 2 {
-                break;
-            }
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn drain_completed(&mut self) {
-        while let Ok(chunk) = self.receiver.try_recv() {
-            self.pending.remove(&chunk.coord);
-            self.loaded.insert(chunk.coord, chunk);
         }
     }
 
@@ -139,10 +199,7 @@ impl StreamingWorld {
     pub fn stats(&self) -> StreamingStats {
         StreamingStats {
             loaded_chunks: self.loaded.len(),
-            #[cfg(not(target_arch = "wasm32"))]
-            pending_chunks: self.pending.len(),
-            #[cfg(target_arch = "wasm32")]
-            pending_chunks: 0,
+            pending_chunks: self.loader.pending_count(),
             center_chunk: self.center_chunk,
         }
     }
