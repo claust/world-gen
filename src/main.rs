@@ -6,7 +6,7 @@ mod world_runtime;
 use anyhow::{Context, Result};
 use glam::Vec3;
 use renderer_wgpu::camera::{CameraController, FlyCamera, MoveDirection};
-use renderer_wgpu::terrain::TerrainRenderer;
+use renderer_wgpu::world::WorldRenderer;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wgpu::SurfaceError;
 use winit::dpi::PhysicalSize;
@@ -28,7 +28,7 @@ struct AppState {
     queue: wgpu::Queue,
     surface_config: wgpu::SurfaceConfiguration,
     size: PhysicalSize<u32>,
-    terrain_renderer: TerrainRenderer,
+    world_renderer: WorldRenderer,
     camera: FlyCamera,
     camera_controller: CameraController,
     world: WorldRuntime,
@@ -104,7 +104,7 @@ impl AppState {
         };
         surface.configure(&device, &surface_config);
 
-        let mut terrain_renderer = TerrainRenderer::new(&device, &surface_config);
+        let mut world_renderer = WorldRenderer::new(&device, &surface_config);
 
         let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         camera.yaw = 1.02;
@@ -117,7 +117,7 @@ impl AppState {
         let mut world = WorldRuntime::new(42, 1, threads, 9.5, 0.04)?;
         world.update(0.0, camera.position);
 
-        terrain_renderer.sync_chunks(&device, world.chunks());
+        world_renderer.sync_chunks(&device, world.chunks());
 
         let debug_api = start_debug_api(&debug_api_config)?;
         if let Some(api) = &debug_api {
@@ -131,7 +131,7 @@ impl AppState {
             queue,
             surface_config,
             size,
-            terrain_renderer,
+            world_renderer,
             camera,
             camera_controller,
             world,
@@ -189,7 +189,7 @@ impl AppState {
         self.surface_config.width = new_size.width;
         self.surface_config.height = new_size.height;
         self.surface.configure(&self.device, &self.surface_config);
-        self.terrain_renderer
+        self.world_renderer
             .resize(&self.device, &self.surface_config);
     }
 
@@ -294,13 +294,13 @@ impl AppState {
         );
 
         self.world.update(dt, self.camera.position);
-        self.terrain_renderer
+        self.world_renderer
             .sync_chunks(&self.device, self.world.chunks());
 
         let aspect = self.surface_config.width as f32 / self.surface_config.height.max(1) as f32;
         let view_proj = self.camera.view_projection(aspect);
         let lighting = self.world.lighting();
-        self.terrain_renderer.update_uniforms(
+        self.world_renderer.update_uniforms(
             &self.queue,
             view_proj,
             lighting.sun_direction,
@@ -347,7 +347,7 @@ impl AppState {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: self.terrain_renderer.depth_view(),
+                    view: self.world_renderer.depth_view(),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -358,7 +358,7 @@ impl AppState {
                 occlusion_query_set: None,
             });
 
-            self.terrain_renderer.render(&mut pass);
+            self.world_renderer.render(&mut pass);
         }
 
         self.queue.submit(Some(encoder.finish()));

@@ -23,7 +23,7 @@ struct TerrainUniform {
     ambient: [f32; 4],
 }
 
-pub struct TerrainRenderer {
+pub struct WorldRenderer {
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
@@ -33,7 +33,7 @@ pub struct TerrainRenderer {
     house_chunk_meshes: HashMap<IVec2, GpuChunk>,
 }
 
-impl TerrainRenderer {
+impl WorldRenderer {
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
         let initial_uniform = TerrainUniform {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
