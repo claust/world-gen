@@ -4,8 +4,8 @@ use glam::IVec2;
 
 use super::geometry::Vertex;
 use super::instancing::{
-    build_canopy_instances, build_house_instances, build_tree_instances, build_trunk_instances,
-    upload_instances, GpuInstanceChunk, InstanceData, ModelRegistry,
+    build_canopy_instances, build_fern_instances, build_house_instances, build_tree_instances,
+    build_trunk_instances, upload_instances, GpuInstanceChunk, InstanceData, ModelRegistry,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
@@ -21,6 +21,7 @@ pub struct InstancedPass {
     trunk_instances: HashMap<IVec2, GpuInstanceChunk>,
     canopy_instances: HashMap<IVec2, GpuInstanceChunk>,
     house_instances: HashMap<IVec2, GpuInstanceChunk>,
+    fern_instances: HashMap<IVec2, GpuInstanceChunk>,
 }
 
 impl InstancedPass {
@@ -99,6 +100,7 @@ impl InstancedPass {
             trunk_instances: HashMap::new(),
             canopy_instances: HashMap::new(),
             house_instances: HashMap::new(),
+            fern_instances: HashMap::new(),
         }
     }
 
@@ -111,6 +113,8 @@ impl InstancedPass {
         self.canopy_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
         self.house_instances
+            .retain(|coord, _| world_chunks.contains_key(coord));
+        self.fern_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
 
         for (coord, chunk) in world_chunks {
@@ -156,6 +160,15 @@ impl InstancedPass {
                     self.house_instances.insert(*coord, gpu);
                 }
             }
+
+            // Ferns
+            if !self.fern_instances.contains_key(coord) {
+                if let Some(gpu) =
+                    upload_instances(device, &build_fern_instances(&chunk.content.ferns), "fern")
+                {
+                    self.fern_instances.insert(*coord, gpu);
+                }
+            }
         }
     }
 
@@ -180,6 +193,8 @@ impl InstancedPass {
                         self.tree_instances.clear();
                     } else if name == "house" {
                         self.house_instances.clear();
+                    } else if name == "fern" {
+                        self.fern_instances.clear();
                     }
                 }
                 Err(e) => {
@@ -233,6 +248,16 @@ impl InstancedPass {
             for inst in self.house_instances.values() {
                 pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
                 pass.draw_indexed(0..house_mesh.index_count, 0, 0..inst.instance_count);
+            }
+        }
+
+        // Ferns
+        if let Some(fern_mesh) = self.models.get("fern") {
+            pass.set_vertex_buffer(0, fern_mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(fern_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for inst in self.fern_instances.values() {
+                pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                pass.draw_indexed(0..fern_mesh.index_count, 0, 0..inst.instance_count);
             }
         }
     }

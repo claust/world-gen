@@ -1,7 +1,9 @@
+mod ferns;
 mod flora;
 mod houses;
 mod sampling;
 
+use self::ferns::{FernsInput, FernsLayer};
 use self::flora::{FloraInput, FloraLayer};
 use self::houses::{HousesInput, HousesLayer};
 
@@ -18,6 +20,7 @@ pub struct ContentInput<'a> {
 pub struct ContentLayer {
     flora: FloraLayer,
     houses: HousesLayer,
+    ferns: FernsLayer,
 }
 
 impl ContentLayer {
@@ -25,6 +28,7 @@ impl ContentLayer {
         Self {
             flora: FloraLayer::new(seed),
             houses: HousesLayer::new(seed),
+            ferns: FernsLayer::new(seed),
         }
     }
 }
@@ -38,6 +42,11 @@ impl<'a> Layer<ContentInput<'a>, ChunkContent> for ContentLayer {
                 biome_map: input.biome_map,
             }),
             houses: self.houses.generate(HousesInput {
+                coord: input.coord,
+                terrain: input.terrain,
+                biome_map: input.biome_map,
+            }),
+            ferns: self.ferns.generate(FernsInput {
                 coord: input.coord,
                 terrain: input.terrain,
                 biome_map: input.biome_map,

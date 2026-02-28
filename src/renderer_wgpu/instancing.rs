@@ -7,7 +7,7 @@ use wgpu::util::DeviceExt;
 use super::geometry::{append_box, append_octahedron, append_quad, append_triangle, Vertex};
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
-use crate::world_core::chunk::{HouseInstance, TreeInstance};
+use crate::world_core::chunk::{FernInstance, HouseInstance, TreeInstance};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Zeroable, Pod)]
@@ -55,6 +55,10 @@ impl ModelRegistry {
             if let Some(mesh) = model_loader::try_load_model(device, "house") {
                 models.insert("house".to_string(), mesh);
             }
+
+            if let Some(mesh) = model_loader::try_load_model(device, "fern") {
+                models.insert("fern".to_string(), mesh);
+            }
         }
 
         // Suppress unused_mut on wasm32 where the cfg block above is compiled out
@@ -94,6 +98,16 @@ impl ModelRegistry {
             models.insert(
                 "house".to_string(),
                 upload_prototype(device, &verts, &idxs, "house-prototype"),
+            );
+        }
+
+        if !models.contains_key("fern") {
+            verts.clear();
+            idxs.clear();
+            build_fern_prototype(&mut verts, &mut idxs);
+            models.insert(
+                "fern".to_string(),
+                upload_prototype(device, &verts, &idxs, "fern-prototype"),
             );
         }
 
@@ -261,6 +275,19 @@ pub fn build_canopy_instances(trees: &[TreeInstance]) -> Vec<InstanceData> {
         .collect()
 }
 
+pub fn build_fern_instances(ferns: &[FernInstance]) -> Vec<InstanceData> {
+    ferns
+        .iter()
+        .map(|f| InstanceData {
+            position: [f.position.x, f.position.y, f.position.z],
+            rotation_y: f.rotation,
+            scale: [f.scale, f.scale, f.scale],
+            _pad: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        })
+        .collect()
+}
+
 pub fn build_house_instances(houses: &[HouseInstance]) -> Vec<InstanceData> {
     houses
         .iter()
@@ -272,6 +299,41 @@ pub fn build_house_instances(houses: &[HouseInstance]) -> Vec<InstanceData> {
             color: [1.0, 1.0, 1.0, 1.0],
         })
         .collect()
+}
+
+fn build_fern_prototype(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>) {
+    let color = Vec3::new(0.20, 0.45, 0.15);
+    let hw = 0.3; // half-width
+    let h = 0.4; // height
+
+    // Two crossed quads forming an X
+    // Quad 1: along X axis
+    append_quad(
+        vertices,
+        indices,
+        [
+            Vec3::new(-hw, 0.0, 0.0),
+            Vec3::new(hw, 0.0, 0.0),
+            Vec3::new(hw, h, 0.0),
+            Vec3::new(-hw, h, 0.0),
+        ],
+        Vec3::Z,
+        color,
+    );
+
+    // Quad 2: along Z axis
+    append_quad(
+        vertices,
+        indices,
+        [
+            Vec3::new(0.0, 0.0, -hw),
+            Vec3::new(0.0, 0.0, hw),
+            Vec3::new(0.0, h, hw),
+            Vec3::new(0.0, h, -hw),
+        ],
+        Vec3::X,
+        color,
+    );
 }
 
 pub fn upload_instances(

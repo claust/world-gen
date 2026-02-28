@@ -19,10 +19,18 @@ pub struct HouseInstance {
     pub rotation: f32,
 }
 
+#[derive(Clone)]
+pub struct FernInstance {
+    pub position: Vec3,
+    pub rotation: f32,
+    pub scale: f32,
+}
+
 #[derive(Clone, Default)]
 pub struct ChunkContent {
     pub trees: Vec<TreeInstance>,
     pub houses: Vec<HouseInstance>,
+    pub ferns: Vec<FernInstance>,
 }
 
 #[derive(Clone)]
