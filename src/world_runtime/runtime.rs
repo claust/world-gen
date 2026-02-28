@@ -49,6 +49,10 @@ impl WorldRuntime {
         })
     }
 
+    pub fn reload_config(&mut self, config: &GameConfig) {
+        self.streaming.reload_config(config);
+    }
+
     pub fn update(&mut self, dt_seconds: f32, camera_position: Vec3) {
         self.clock.update(dt_seconds);
         self.streaming.update(camera_position);

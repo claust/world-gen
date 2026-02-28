@@ -52,6 +52,10 @@ impl WorldRenderer {
         }
     }
 
+    pub fn set_sea_level(&mut self, _queue: &wgpu::Queue, sea_level: f32) {
+        self.water.set_sea_level(sea_level);
+    }
+
     pub fn resize(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
         self.depth = DepthTexture::new(device, config, "terrain-depth");
     }

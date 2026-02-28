@@ -90,6 +90,11 @@ impl WaterPass {
         }
     }
 
+    pub fn set_sea_level(&mut self, sea_level: f32) {
+        self.sea_level = sea_level;
+        self.chunks.clear();
+    }
+
     /// Retains only chunks present in `world_chunks`. Generates water mesh for
     /// any new chunk whose terrain dips below sea level.
     pub fn sync_chunks(&mut self, device: &wgpu::Device, world_chunks: &HashMap<IVec2, ChunkData>) {

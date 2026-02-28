@@ -160,6 +160,7 @@ pub struct StreamingWorld {
     loaded: HashMap<IVec2, ChunkData>,
     center_chunk: IVec2,
     loader: PlatformLoader,
+    thread_count: usize,
 }
 
 impl StreamingWorld {
@@ -183,6 +184,7 @@ impl StreamingWorld {
             loaded,
             center_chunk,
             loader,
+            thread_count: threads,
         })
     }
 
@@ -210,6 +212,14 @@ impl StreamingWorld {
 
     pub fn seed(&self) -> u32 {
         self.seed
+    }
+
+    pub fn reload_config(&mut self, config: &GameConfig) {
+        let new_config = Arc::new(config.clone());
+        self.loaded.clear();
+        if let Ok(loader) = PlatformLoader::new_loader(self.seed, self.thread_count, new_config) {
+            self.loader = loader;
+        }
     }
 
     pub fn stats(&self) -> StreamingStats {

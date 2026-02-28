@@ -16,6 +16,12 @@ use crate::world_runtime::WorldRuntime;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer_wgpu::camera::MoveDirection;
 #[cfg(not(target_arch = "wasm32"))]
+use crate::renderer_wgpu::egui_bridge::EguiBridge;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::renderer_wgpu::egui_pass::EguiPass;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ui::ConfigPanel;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::world_core::save::{CameraSave, SaveData, WorldSave};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::world_runtime::RuntimeStats;
@@ -27,7 +33,7 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::debug_api::{
     start_debug_api, CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind,
-    DebugApiConfig, DebugApiHandle, MoveKey, ObjectKind, TelemetrySnapshot,
+    DebugApiConfig, DebugApiHandle, MoveKey, ObjectKind, PressableKey, TelemetrySnapshot,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer_wgpu::asset_watcher::AssetWatcher;
@@ -58,6 +64,12 @@ pub struct AppState {
     screenshot_pending: Option<String>,
     #[cfg(not(target_arch = "wasm32"))]
     asset_watcher: Option<AssetWatcher>,
+    #[cfg(not(target_arch = "wasm32"))]
+    egui_bridge: EguiBridge,
+    #[cfg(not(target_arch = "wasm32"))]
+    egui_pass: EguiPass,
+    #[cfg(not(target_arch = "wasm32"))]
+    config_panel: ConfigPanel,
 }
 
 impl AppState {
@@ -107,6 +119,11 @@ impl AppState {
 
         let asset_watcher = AssetWatcher::start();
 
+        let scale_factor = window.scale_factor() as f32;
+        let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
+        let egui_pass = EguiPass::new(&gpu.device, gpu.config.format);
+        let config_panel = ConfigPanel::new(&config);
+
         Ok(Self {
             window,
             gpu,
@@ -124,6 +141,9 @@ impl AppState {
             frame_index: 0,
             screenshot_pending: None,
             asset_watcher,
+            egui_bridge,
+            egui_pass,
+            config_panel,
         })
     }
 
@@ -201,15 +221,20 @@ impl AppState {
         self.gpu.resize(new_size);
         self.world_renderer
             .resize(&self.gpu.device, &self.gpu.config);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.egui_bridge
+            .resize(self.gpu.config.width, self.gpu.config.height);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn apply_debug_commands(&mut self) {
-        let Some(api) = &mut self.debug_api else {
-            return;
-        };
+        let commands: Vec<_> = self
+            .debug_api
+            .as_mut()
+            .map(|api| api.drain_commands())
+            .unwrap_or_default();
 
-        for command in api.drain_commands() {
+        for command in commands {
             let applied = match command.command {
                 CommandKind::SetDaySpeed { value } => match self.world.set_day_speed(value) {
                     Ok(day_speed) => CommandAppliedEvent {
@@ -415,9 +440,44 @@ impl AppState {
                         continue;
                     }
                 }
+                CommandKind::PressKey { key } => {
+                    let message = match key {
+                        PressableKey::F1 => {
+                            self.config_panel.toggle();
+                            if self.config_panel.is_visible() {
+                                self.release_cursor();
+                                "config panel opened".to_string()
+                            } else {
+                                self.capture_cursor();
+                                "config panel closed".to_string()
+                            }
+                        }
+                        PressableKey::Escape => {
+                            if self.config_panel.is_visible() {
+                                self.config_panel.toggle();
+                                self.capture_cursor();
+                                "config panel closed".to_string()
+                            } else {
+                                self.release_cursor();
+                                "cursor released".to_string()
+                            }
+                        }
+                    };
+                    CommandAppliedEvent {
+                        id: command.id,
+                        frame: self.frame_index,
+                        ok: true,
+                        message,
+                        day_speed: None,
+                        object_id: None,
+                        object_position: None,
+                    }
+                }
             };
 
-            api.publish_command_applied(applied);
+            if let Some(api) = &self.debug_api {
+                api.publish_command_applied(applied);
+            }
         }
     }
 
@@ -519,6 +579,15 @@ impl AppState {
             self.gpu.config.height as f32,
         );
 
+        // Apply config panel changes (debounced — only on pointer release)
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(new_config) = self.config_panel.take_dirty_config(self.egui_bridge.ctx()) {
+            self.world.reload_config(&new_config);
+            self.world_renderer
+                .set_sea_level(&self.gpu.queue, new_config.sea_level);
+            let _ = self.world.set_day_speed(new_config.world.day_speed);
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         self.publish_telemetry_if_due(&stats);
 
@@ -572,6 +641,33 @@ impl AppState {
             });
 
             self.world_renderer.render(&mut pass);
+        }
+
+        // egui overlay pass (renders on top of 3D scene)
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.config_panel.is_visible() {
+            let raw_input = self.egui_bridge.take_raw_input();
+            let full_output = self.egui_bridge.ctx().run(raw_input, |ctx| {
+                self.config_panel.ui(ctx);
+            });
+
+            self.egui_bridge
+                .handle_platform_output(self.window, &full_output.platform_output);
+
+            let screen = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: [self.gpu.config.width, self.gpu.config.height],
+                pixels_per_point: self.egui_bridge.pixels_per_point(),
+            };
+
+            self.egui_pass.render(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+                &view,
+                screen,
+                full_output,
+                self.egui_bridge.ctx(),
+            );
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -702,10 +798,44 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
 
         match event {
             Event::WindowEvent { window_id, event } if window_id == app.window.id() => {
-                app.process_window_event(&event);
+                // F1 toggles config panel (intercept before anything else) [native only]
+                #[cfg(not(target_arch = "wasm32"))]
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F1))
+                    {
+                        app.config_panel.toggle();
+                        if app.config_panel.is_visible() {
+                            app.release_cursor();
+                        } else {
+                            app.capture_cursor();
+                        }
+                        return;
+                    }
+                }
+
+                // When config panel is visible, feed events to egui first [native only]
+                #[cfg(not(target_arch = "wasm32"))]
+                let egui_wants_event = if app.config_panel.is_visible() {
+                    app.egui_bridge.on_window_event(&event)
+                } else {
+                    false
+                };
+                #[cfg(target_arch = "wasm32")]
+                let egui_wants_event = false;
+
+                // Only forward to camera if egui didn't consume the event
+                if !egui_wants_event {
+                    app.process_window_event(&event);
+                }
 
                 match event {
                     WindowEvent::CloseRequested => {
+                        #[cfg(not(target_arch = "wasm32"))]
                         app.save_game();
                         target.exit();
                     }
@@ -713,6 +843,16 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            if app.config_panel.is_visible() {
+                                app.config_panel.toggle();
+                                app.capture_cursor();
+                            } else {
+                                app.release_cursor();
+                            }
+                        }
+                        #[cfg(target_arch = "wasm32")]
                         app.release_cursor();
                     }
                     WindowEvent::MouseInput {
@@ -720,6 +860,13 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if app.config_panel.is_visible() {
+                            // Don't capture cursor when config panel is open
+                        } else {
+                            app.capture_cursor();
+                        }
+                        #[cfg(target_arch = "wasm32")]
                         app.capture_cursor();
                     }
                     WindowEvent::Resized(size) => app.resize(size),
@@ -736,6 +883,14 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                 }
             }
             Event::DeviceEvent { event, .. } => {
+                // Block mouse delta when config panel is visible [native only]
+                #[cfg(not(target_arch = "wasm32"))]
+                if app.config_panel.is_visible() {
+                    // skip device events
+                } else {
+                    app.process_device_event(&event);
+                }
+                #[cfg(target_arch = "wasm32")]
                 app.process_device_event(&event);
             }
             Event::AboutToWait => {
