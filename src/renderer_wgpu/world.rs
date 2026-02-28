@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use glam::{IVec2, Mat4, Vec3};
 
+use super::hud_pass::HudPass;
 use super::instanced_pass::InstancedPass;
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
 use super::terrain_pass::TerrainPass;
@@ -14,10 +15,15 @@ pub struct WorldRenderer {
     depth: DepthTexture,
     terrain: TerrainPass,
     instanced: InstancedPass,
+    hud: HudPass,
 }
 
 impl WorldRenderer {
-    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> Self {
         let frame_bg = FrameBindGroup::new(device);
         let terrain_material = MaterialBindGroup::new_terrain(device);
 
@@ -29,6 +35,7 @@ impl WorldRenderer {
 
         let terrain = TerrainPass::new(device, config, &pipeline_layout);
         let instanced = InstancedPass::new(device, config, &pipeline_layout);
+        let hud = HudPass::new(device, queue, config);
 
         Self {
             frame_bg,
@@ -36,6 +43,7 @@ impl WorldRenderer {
             depth: DepthTexture::new(device, config, "terrain-depth"),
             terrain,
             instanced,
+            hud,
         }
     }
 
@@ -62,6 +70,19 @@ impl WorldRenderer {
             .update_terrain(queue, light_direction, ambient);
     }
 
+    pub fn update_hud(
+        &mut self,
+        queue: &wgpu::Queue,
+        device: &wgpu::Device,
+        camera_pos: Vec3,
+        camera_yaw: f32,
+        screen_w: f32,
+        screen_h: f32,
+    ) {
+        self.hud
+            .update(queue, device, camera_pos, camera_yaw, screen_w, screen_h);
+    }
+
     pub fn sync_chunks(
         &mut self,
         device: &wgpu::Device,
@@ -86,6 +107,7 @@ impl WorldRenderer {
 
         self.terrain.render(pass);
         self.instanced.render(pass);
+        self.hud.render(pass);
     }
 
     pub fn depth_view(&self) -> &wgpu::TextureView {

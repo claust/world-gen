@@ -62,7 +62,7 @@ impl AppState {
     ) -> Result<Self> {
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.config);
+        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
 
         let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         camera.yaw = 1.02;
@@ -105,7 +105,7 @@ impl AppState {
     pub async fn new_web(window: &'static Window, cursor_captured: bool) -> Result<Self> {
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.config);
+        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
 
         let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         camera.yaw = 1.02;
@@ -312,6 +312,14 @@ impl AppState {
             &self.gpu.queue,
             lighting.sun_direction,
             lighting.ambient,
+        );
+        self.world_renderer.update_hud(
+            &self.gpu.queue,
+            &self.gpu.device,
+            self.camera.position,
+            self.camera.yaw,
+            self.gpu.config.width as f32,
+            self.gpu.config.height as f32,
         );
 
         #[cfg(not(target_arch = "wasm32"))]

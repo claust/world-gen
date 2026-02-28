@@ -8,5 +8,7 @@ pub mod sky;
 pub mod terrain_compute;
 pub mod world;
 
+mod hud_font;
+mod hud_pass;
 mod instanced_pass;
 mod terrain_pass;
