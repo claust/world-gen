@@ -8,10 +8,12 @@ use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{
     ChunkTerrain, FernInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
 };
+use crate::world_core::config::FernsConfig;
 use crate::world_core::layer::Layer;
 
 pub struct FernsLayer {
     seed: u32,
+    config: FernsConfig,
 }
 
 pub struct FernsInput<'a> {
@@ -21,8 +23,8 @@ pub struct FernsInput<'a> {
 }
 
 impl FernsLayer {
-    pub fn new(seed: u32) -> Self {
-        Self { seed }
+    pub fn new(seed: u32, config: FernsConfig) -> Self {
+        Self { seed, config }
     }
 }
 
@@ -41,7 +43,7 @@ impl<'a> Layer<FernsInput<'a>, Vec<FernInstance>> for FernsLayer {
         }
 
         let mut ferns = Vec::new();
-        let spacing = 5.0;
+        let spacing = self.config.grid_spacing;
         let cells_per_side = (CHUNK_SIZE_METERS / spacing) as i32;
 
         for gz in 0..cells_per_side {
@@ -73,13 +75,13 @@ impl<'a> Layer<FernsInput<'a>, Vec<FernInstance>> for FernsLayer {
                 let height = sample_field_bilinear(&terrain.heights, local_x, local_z);
                 let moisture = sample_field_bilinear(&terrain.moisture, local_x, local_z);
                 let biome = sample_biome_nearest(&biome_map.values, local_x, local_z);
-                let density = fern_density(biome, moisture);
+                let density = self.fern_density(biome, moisture);
                 if rnd > density {
                     continue;
                 }
 
                 let slope = estimate_slope(&terrain.heights, local_x, local_z);
-                if slope > 0.8 || height < -20.0 {
+                if slope > self.config.max_slope || height < self.config.min_height {
                     continue;
                 }
 
@@ -90,13 +92,13 @@ impl<'a> Layer<FernsInput<'a>, Vec<FernInstance>> for FernsLayer {
                     cell_id,
                 )) * std::f32::consts::TAU;
 
-                let scale = 0.7
+                let scale = self.config.scale_min
                     + hash_to_unit_float(hash4(
                         self.seed.wrapping_add(2501),
                         coord.x as u32,
                         coord.y as u32,
                         cell_id,
-                    )) * 0.7;
+                    )) * self.config.scale_range;
 
                 let world_x = coord.x as f32 * CHUNK_SIZE_METERS + local_x;
                 let world_z = coord.y as f32 * CHUNK_SIZE_METERS + local_z;
@@ -112,10 +114,16 @@ impl<'a> Layer<FernsInput<'a>, Vec<FernInstance>> for FernsLayer {
     }
 }
 
-fn fern_density(biome: Biome, moisture: f32) -> f32 {
-    match biome {
-        Biome::Forest => ((moisture - 0.55) * 1.5).clamp(0.0, 0.6),
-        Biome::Grassland => ((moisture - 0.5) * 0.15).clamp(0.0, 0.05),
-        Biome::Rock | Biome::Desert | Biome::Snow => 0.0,
+impl FernsLayer {
+    fn fern_density(&self, biome: Biome, moisture: f32) -> f32 {
+        let c = &self.config;
+        match biome {
+            Biome::Forest => ((moisture - c.forest_density_offset) * c.forest_density_scale)
+                .clamp(0.0, c.forest_density_max),
+            Biome::Grassland => ((moisture - c.grassland_density_offset)
+                * c.grassland_density_scale)
+                .clamp(0.0, c.grassland_density_max),
+            Biome::Rock | Biome::Desert | Biome::Snow => 0.0,
+        }
     }
 }

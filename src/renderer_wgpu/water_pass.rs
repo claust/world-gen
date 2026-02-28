@@ -5,7 +5,7 @@ use wgpu::util::DeviceExt;
 
 use super::geometry::Vertex;
 use super::pipeline::create_water_pipeline;
-use crate::world_core::chunk::{ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, SEA_LEVEL};
+use crate::world_core::chunk::{ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
 
 struct GpuWaterChunk {
     vertex_buffer: wgpu::Buffer,
@@ -16,6 +16,7 @@ pub struct WaterPass {
     index_buffer: wgpu::Buffer,
     index_count: u32,
     chunks: HashMap<IVec2, GpuWaterChunk>,
+    sea_level: f32,
 }
 
 impl WaterPass {
@@ -23,6 +24,7 @@ impl WaterPass {
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
         pipeline_layout: &wgpu::PipelineLayout,
+        sea_level: f32,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water-shader"),
@@ -84,6 +86,7 @@ impl WaterPass {
             index_buffer,
             index_count: indices.len() as u32,
             chunks: HashMap::new(),
+            sea_level,
         }
     }
 
@@ -117,7 +120,7 @@ impl WaterPass {
                     let wx = origin_x + x as f32 * cell_size;
                     let wz = origin_z + z as f32 * cell_size;
                     vertices.push(Vertex {
-                        position: [wx, SEA_LEVEL, wz],
+                        position: [wx, self.sea_level, wz],
                         normal: up,
                         color,
                     });

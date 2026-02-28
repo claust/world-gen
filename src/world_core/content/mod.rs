@@ -9,6 +9,7 @@ use self::houses::{HousesInput, HousesLayer};
 
 use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{ChunkContent, ChunkTerrain};
+use crate::world_core::config::GameConfig;
 use crate::world_core::layer::Layer;
 
 pub struct ContentInput<'a> {
@@ -24,11 +25,11 @@ pub struct ContentLayer {
 }
 
 impl ContentLayer {
-    pub fn new(seed: u32) -> Self {
+    pub fn new(seed: u32, config: &GameConfig) -> Self {
         Self {
-            flora: FloraLayer::new(seed),
-            houses: HousesLayer::new(seed),
-            ferns: FernsLayer::new(seed),
+            flora: FloraLayer::new(seed, config.flora.clone()),
+            houses: HousesLayer::new(seed, config.houses.clone()),
+            ferns: FernsLayer::new(seed, config.ferns.clone()),
         }
     }
 }

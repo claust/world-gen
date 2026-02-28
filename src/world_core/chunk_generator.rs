@@ -2,6 +2,7 @@ use glam::IVec2;
 
 use crate::world_core::biome_map::BiomeLayer;
 use crate::world_core::chunk::ChunkData;
+use crate::world_core::config::GameConfig;
 use crate::world_core::content::{ContentInput, ContentLayer};
 use crate::world_core::layer::Layer;
 use crate::world_core::terrain::TerrainLayer;
@@ -13,11 +14,13 @@ pub struct ChunkGenerator {
 }
 
 impl ChunkGenerator {
-    pub fn new(seed: u32) -> Self {
+    pub fn new(seed: u32, config: &GameConfig) -> Self {
         Self {
-            terrain_layer: TerrainLayer::new(seed),
-            biome_layer: BiomeLayer,
-            content_layer: ContentLayer::new(seed),
+            terrain_layer: TerrainLayer::new(seed, config.heightmap.clone(), config.sea_level),
+            biome_layer: BiomeLayer {
+                biome_config: config.biome.clone(),
+            },
+            content_layer: ContentLayer::new(seed, config),
         }
     }
 
@@ -41,12 +44,14 @@ impl ChunkGenerator {
 #[cfg(test)]
 mod tests {
     use super::ChunkGenerator;
+    use crate::world_core::config::GameConfig;
     use glam::IVec2;
 
     #[test]
     fn tree_generation_is_deterministic_for_same_seed_and_chunk() {
-        let a = ChunkGenerator::new(42).generate_chunk(IVec2::new(3, -2));
-        let b = ChunkGenerator::new(42).generate_chunk(IVec2::new(3, -2));
+        let config = GameConfig::default();
+        let a = ChunkGenerator::new(42, &config).generate_chunk(IVec2::new(3, -2));
+        let b = ChunkGenerator::new(42, &config).generate_chunk(IVec2::new(3, -2));
 
         assert_eq!(a.content.trees.len(), b.content.trees.len());
         for (ta, tb) in a.content.trees.iter().zip(b.content.trees.iter()) {

@@ -1,3 +1,5 @@
+use crate::world_core::config::BiomeConfig;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Biome {
     Snow,
@@ -7,17 +9,17 @@ pub enum Biome {
     Grassland,
 }
 
-pub fn classify(height: f32, moisture: f32) -> Biome {
-    if height > 165.0 {
+pub fn classify(height: f32, moisture: f32, config: &BiomeConfig) -> Biome {
+    if height > config.snow_height {
         return Biome::Snow;
     }
-    if height > 120.0 {
+    if height > config.rock_height {
         return Biome::Rock;
     }
-    if moisture < 0.3 {
+    if moisture < config.desert_moisture {
         return Biome::Desert;
     }
-    if moisture > 0.62 {
+    if moisture > config.forest_moisture {
         return Biome::Forest;
     }
     Biome::Grassland

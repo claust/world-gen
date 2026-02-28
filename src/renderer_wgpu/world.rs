@@ -25,6 +25,7 @@ impl WorldRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
+        sea_level: f32,
     ) -> Self {
         let frame_bg = FrameBindGroup::new(device);
         let terrain_material = MaterialBindGroup::new_terrain(device);
@@ -36,7 +37,7 @@ impl WorldRenderer {
         });
 
         let terrain = TerrainPass::new(device, config, &pipeline_layout);
-        let water = WaterPass::new(device, config, &pipeline_layout);
+        let water = WaterPass::new(device, config, &pipeline_layout, sea_level);
         let instanced = InstancedPass::new(device, config, &pipeline_layout);
         let hud = HudPass::new(device, queue, config);
 

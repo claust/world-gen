@@ -1,5 +1,6 @@
 use crate::world_core::biome::{classify, Biome};
 use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION};
+use crate::world_core::config::BiomeConfig;
 use crate::world_core::layer::Layer;
 
 #[derive(Clone)]
@@ -7,7 +8,9 @@ pub struct BiomeMap {
     pub values: Vec<Biome>,
 }
 
-pub struct BiomeLayer;
+pub struct BiomeLayer {
+    pub biome_config: BiomeConfig,
+}
 
 impl Layer<&ChunkTerrain, BiomeMap> for BiomeLayer {
     fn generate(&self, terrain: &ChunkTerrain) -> BiomeMap {
@@ -20,7 +23,7 @@ impl Layer<&ChunkTerrain, BiomeMap> for BiomeLayer {
             .heights
             .iter()
             .zip(terrain.moisture.iter())
-            .map(|(height, moisture)| classify(*height, *moisture))
+            .map(|(height, moisture)| classify(*height, *moisture, &self.biome_config))
             .collect();
 
         BiomeMap { values }

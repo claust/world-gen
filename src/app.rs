@@ -10,10 +10,13 @@ use winit::window::{CursorGrabMode, Window};
 use crate::renderer_wgpu::camera::{CameraController, FlyCamera};
 use crate::renderer_wgpu::gpu_context::GpuContext;
 use crate::renderer_wgpu::world::WorldRenderer;
+use crate::world_core::config::GameConfig;
 use crate::world_runtime::WorldRuntime;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer_wgpu::camera::MoveDirection;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::world_core::save::{CameraSave, SaveData, WorldSave};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::world_runtime::RuntimeStats;
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,19 +67,35 @@ impl AppState {
         debug_api_config: DebugApiConfig,
         cursor_captured: bool,
     ) -> Result<Self> {
+        let config = GameConfig::load();
+        let save = SaveData::load();
+
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
+        let mut world_renderer =
+            WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config, config.sea_level);
 
-        let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
-        camera.yaw = 1.02;
-        camera.pitch = -0.38;
+        let (cam_pos, cam_yaw, cam_pitch) = match &save {
+            Some(s) => (
+                Vec3::new(
+                    s.camera.position[0],
+                    s.camera.position[1],
+                    s.camera.position[2],
+                ),
+                s.camera.yaw,
+                s.camera.pitch,
+            ),
+            None => (Vec3::new(96.0, 150.0, 16.0), 1.02, -0.38),
+        };
+        let mut camera = FlyCamera::new(cam_pos);
+        camera.yaw = cam_yaw;
+        camera.pitch = cam_pitch;
         let camera_controller = CameraController::new(180.0, 0.0022);
 
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let mut world = WorldRuntime::new(42, 1, threads, 9.5, 0.04)?;
+        let mut world = WorldRuntime::new(&config, save.as_ref(), threads)?;
         world.update(0.0, camera.position);
 
         world_renderer.sync_chunks(&gpu.device, &gpu.queue, world.chunks());
@@ -110,16 +129,19 @@ impl AppState {
 
     #[cfg(target_arch = "wasm32")]
     pub async fn new_web(window: &'static Window, cursor_captured: bool) -> Result<Self> {
+        let config = GameConfig::default();
+
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer = WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config);
+        let mut world_renderer =
+            WorldRenderer::new(&gpu.device, &gpu.queue, &gpu.config, config.sea_level);
 
         let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         camera.yaw = 1.02;
         camera.pitch = -0.38;
         let camera_controller = CameraController::new(180.0, 0.0022);
 
-        let mut world = WorldRuntime::new(42, 1, 1, 9.5, 0.04)?;
+        let mut world = WorldRuntime::new(&config, None, 1)?;
         world.update(0.0, camera.position);
 
         world_renderer.sync_chunks(&gpu.device, &gpu.queue, world.chunks());
@@ -565,6 +587,29 @@ impl AppState {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn save_game(&self) {
+        let save = SaveData {
+            camera: CameraSave {
+                position: [
+                    self.camera.position.x,
+                    self.camera.position.y,
+                    self.camera.position.z,
+                ],
+                yaw: self.camera.yaw,
+                pitch: self.camera.pitch,
+            },
+            world: WorldSave {
+                seed: self.world.seed(),
+                hour: self.world.hour(),
+                day_speed: self.world.day_speed(),
+            },
+        };
+        if let Err(e) = save.save() {
+            log::warn!("failed to save game state: {e}");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn handle_screenshot(
         &mut self,
         command_id: String,
@@ -660,7 +705,10 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                 app.process_window_event(&event);
 
                 match event {
-                    WindowEvent::CloseRequested => target.exit(),
+                    WindowEvent::CloseRequested => {
+                        app.save_game();
+                        target.exit();
+                    }
                     WindowEvent::KeyboardInput { event, .. }
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>

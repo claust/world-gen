@@ -18,3 +18,4 @@ captures/
 # wasm-pack build output
 /pkg/
 /web/pkg
+save.json
