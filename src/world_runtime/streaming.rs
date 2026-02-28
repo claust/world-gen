@@ -219,6 +219,7 @@ impl StreamingWorld {
         if let Ok(loader) = PlatformLoader::new_loader(self.seed, self.thread_count, new_config) {
             self.loaded.clear();
             self.loader = loader;
+            self.load_radius = config.world.load_radius;
         }
     }
 
