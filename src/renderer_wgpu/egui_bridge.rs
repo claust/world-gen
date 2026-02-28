@@ -135,8 +135,9 @@ impl EguiBridge {
                 self.ctx.wants_keyboard_input()
             }
 
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+            WindowEvent::ScaleFactorChanged { scale_factor, new_inner_size } => {
                 self.pixels_per_point = *scale_factor as f32;
+                self.screen_size = (new_inner_size.width, new_inner_size.height);
                 false
             }
 
