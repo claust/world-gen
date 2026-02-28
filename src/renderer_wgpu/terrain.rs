@@ -8,7 +8,7 @@ use crate::renderer_wgpu::pipeline::DepthTexture;
 use crate::world_core::biome::Biome;
 use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{
-    ChunkData, ChunkTerrain, TreeInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
+    ChunkData, ChunkTerrain, HouseInstance, TreeInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
 };
 
 struct GpuChunk {
@@ -40,6 +40,7 @@ pub struct TerrainRenderer {
     depth: DepthTexture,
     terrain_chunk_meshes: HashMap<IVec2, GpuChunk>,
     tree_chunk_meshes: HashMap<IVec2, GpuChunk>,
+    house_chunk_meshes: HashMap<IVec2, GpuChunk>,
 }
 
 impl TerrainRenderer {
@@ -156,6 +157,7 @@ impl TerrainRenderer {
             depth: DepthTexture::new(device, config, "terrain-depth"),
             terrain_chunk_meshes: HashMap::new(),
             tree_chunk_meshes: HashMap::new(),
+            house_chunk_meshes: HashMap::new(),
         }
     }
 
@@ -182,6 +184,8 @@ impl TerrainRenderer {
         self.terrain_chunk_meshes
             .retain(|coord, _| chunks.contains_key(coord));
         self.tree_chunk_meshes
+            .retain(|coord, _| chunks.contains_key(coord));
+        self.house_chunk_meshes
             .retain(|coord, _| chunks.contains_key(coord));
 
         for (coord, chunk) in chunks {
@@ -238,6 +242,33 @@ impl TerrainRenderer {
                     );
                 }
             }
+
+            if !self.house_chunk_meshes.contains_key(coord) {
+                if let Some(cpu_mesh) = build_house_mesh(&chunk.content.houses) {
+                    let vertex_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("house-vertex-buffer"),
+                            contents: bytemuck::cast_slice(cpu_mesh.vertices.as_slice()),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+
+                    let index_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("house-index-buffer"),
+                            contents: bytemuck::cast_slice(cpu_mesh.indices.as_slice()),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+
+                    self.house_chunk_meshes.insert(
+                        *coord,
+                        GpuChunk {
+                            vertex_buffer,
+                            index_buffer,
+                            index_count: cpu_mesh.indices.len() as u32,
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -252,6 +283,12 @@ impl TerrainRenderer {
         }
 
         for mesh in self.tree_chunk_meshes.values() {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        }
+
+        for mesh in self.house_chunk_meshes.values() {
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
@@ -373,6 +410,115 @@ fn build_tree_mesh(trees: &[TreeInstance]) -> Option<CpuChunkMesh> {
             tree.canopy_radius,
             Vec3::new(0.14, 0.38, 0.16),
         );
+    }
+
+    Some(CpuChunkMesh { vertices, indices })
+}
+
+fn build_house_mesh(houses: &[HouseInstance]) -> Option<CpuChunkMesh> {
+    if houses.is_empty() {
+        return None;
+    }
+
+    let mut vertices = Vec::with_capacity(houses.len() * 48);
+    let mut indices = Vec::with_capacity(houses.len() * 72);
+
+    let wall_color = Vec3::new(0.72, 0.63, 0.46);
+    let roof_color = Vec3::new(0.55, 0.22, 0.15);
+
+    // House dimensions (local space, before rotation)
+    let half_w = 2.5; // half-width along X (long side)
+    let half_d = 2.0; // half-depth along Z
+    let wall_h = 3.0; // wall height
+    let roof_h = 2.0; // roof peak above walls
+
+    for house in houses {
+        let cos_r = house.rotation.cos();
+        let sin_r = house.rotation.sin();
+
+        // Rotate a local (x, z) offset by house.rotation around Y
+        let rot = |lx: f32, lz: f32| -> Vec3 {
+            Vec3::new(lx * cos_r - lz * sin_r, 0.0, lx * sin_r + lz * cos_r)
+        };
+
+        let base = house.position;
+
+        // 4 base corners and 4 top-of-wall corners
+        let bl = base + rot(-half_w, -half_d);
+        let br = base + rot(half_w, -half_d);
+        let fr = base + rot(half_w, half_d);
+        let fl = base + rot(-half_w, half_d);
+
+        let tbl = bl + Vec3::Y * wall_h;
+        let tbr = br + Vec3::Y * wall_h;
+        let tfr = fr + Vec3::Y * wall_h;
+        let tfl = fl + Vec3::Y * wall_h;
+
+        // Roof ridge runs along the X axis (long side)
+        let ridge_l = base + rot(-half_w, 0.0) + Vec3::Y * (wall_h + roof_h);
+        let ridge_r = base + rot(half_w, 0.0) + Vec3::Y * (wall_h + roof_h);
+
+        // --- Walls (4 sides) ---
+        let n_front = rot(0.0, 1.0);
+        append_quad(
+            &mut vertices,
+            &mut indices,
+            [fl, fr, tfr, tfl],
+            n_front,
+            wall_color,
+        );
+
+        let n_back = rot(0.0, -1.0);
+        append_quad(
+            &mut vertices,
+            &mut indices,
+            [br, bl, tbl, tbr],
+            n_back,
+            wall_color,
+        );
+
+        let n_right = rot(1.0, 0.0);
+        append_quad(
+            &mut vertices,
+            &mut indices,
+            [fr, br, tbr, tfr],
+            n_right,
+            wall_color,
+        );
+
+        let n_left = rot(-1.0, 0.0);
+        append_quad(
+            &mut vertices,
+            &mut indices,
+            [bl, fl, tfl, tbl],
+            n_left,
+            wall_color,
+        );
+
+        // --- Roof slopes (2 quads) ---
+        let roof_n_front = rot(0.0, 1.0) * half_d + Vec3::Y * roof_h;
+        let roof_n_front = roof_n_front.normalize_or_zero();
+        append_quad(
+            &mut vertices,
+            &mut indices,
+            [tfl, tfr, ridge_r, ridge_l],
+            roof_n_front,
+            roof_color,
+        );
+
+        let roof_n_back = rot(0.0, -1.0) * half_d + Vec3::Y * roof_h;
+        let roof_n_back = roof_n_back.normalize_or_zero();
+        append_quad(
+            &mut vertices,
+            &mut indices,
+            [tbr, tbl, ridge_l, ridge_r],
+            roof_n_back,
+            roof_color,
+        );
+
+        // --- Gable ends (2 triangles) ---
+        append_triangle(&mut vertices, &mut indices, tbl, tfl, ridge_l, roof_color);
+        append_triangle(&mut vertices, &mut indices, tfr, tbr, ridge_r, roof_color);
     }
 
     Some(CpuChunkMesh { vertices, indices })

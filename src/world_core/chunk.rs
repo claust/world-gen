@@ -12,9 +12,16 @@ pub struct TreeInstance {
     pub canopy_radius: f32,
 }
 
+#[derive(Clone)]
+pub struct HouseInstance {
+    pub position: Vec3,
+    pub rotation: f32,
+}
+
 #[derive(Clone, Default)]
 pub struct ChunkContent {
     pub trees: Vec<TreeInstance>,
+    pub houses: Vec<HouseInstance>,
 }
 
 #[derive(Clone)]

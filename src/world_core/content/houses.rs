@@ -6,28 +6,28 @@ use super::sampling::{
 use crate::world_core::biome::Biome;
 use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{
-    ChunkTerrain, TreeInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
+    ChunkTerrain, HouseInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
 };
 use crate::world_core::layer::Layer;
 
-pub struct FloraLayer {
+pub struct HousesLayer {
     seed: u32,
 }
 
-pub struct FloraInput<'a> {
+pub struct HousesInput<'a> {
     pub coord: IVec2,
     pub terrain: &'a ChunkTerrain,
     pub biome_map: &'a BiomeMap,
 }
 
-impl FloraLayer {
+impl HousesLayer {
     pub fn new(seed: u32) -> Self {
         Self { seed }
     }
 }
 
-impl<'a> Layer<FloraInput<'a>, Vec<TreeInstance>> for FloraLayer {
-    fn generate(&self, input: FloraInput<'a>) -> Vec<TreeInstance> {
+impl<'a> Layer<HousesInput<'a>, Vec<HouseInstance>> for HousesLayer {
+    fn generate(&self, input: HousesInput<'a>) -> Vec<HouseInstance> {
         let coord = input.coord;
         let terrain = input.terrain;
         let biome_map = input.biome_map;
@@ -40,24 +40,28 @@ impl<'a> Layer<FloraInput<'a>, Vec<TreeInstance>> for FloraLayer {
             return Vec::new();
         }
 
-        let mut trees = Vec::new();
-        let spacing = 11.0;
+        let mut houses = Vec::new();
+        let spacing = 40.0;
         let cells_per_side = (CHUNK_SIZE_METERS / spacing) as i32;
 
         for gz in 0..cells_per_side {
             for gx in 0..cells_per_side {
                 let cell_id = ((gx as u32) << 16) | (gz as u32);
-                let rnd =
-                    hash_to_unit_float(hash4(self.seed, coord.x as u32, coord.y as u32, cell_id));
+                let rnd = hash_to_unit_float(hash4(
+                    self.seed.wrapping_add(1001),
+                    coord.x as u32,
+                    coord.y as u32,
+                    cell_id,
+                ));
 
                 let jitter_x = hash_to_unit_float(hash4(
-                    self.seed.wrapping_add(71),
+                    self.seed.wrapping_add(1071),
                     coord.x as u32,
                     coord.y as u32,
                     cell_id,
                 ));
                 let jitter_z = hash_to_unit_float(hash4(
-                    self.seed.wrapping_add(193),
+                    self.seed.wrapping_add(1193),
                     coord.x as u32,
                     coord.y as u32,
                     cell_id,
@@ -67,51 +71,37 @@ impl<'a> Layer<FloraInput<'a>, Vec<TreeInstance>> for FloraLayer {
                 let local_z = (gz as f32 + jitter_z) * spacing;
 
                 let height = sample_field_bilinear(&terrain.heights, local_x, local_z);
-                let moisture = sample_field_bilinear(&terrain.moisture, local_x, local_z);
                 let biome = sample_biome_nearest(&biome_map.values, local_x, local_z);
-                let density = biome_tree_density(biome, moisture);
+
+                let density = match biome {
+                    Biome::Grassland => 0.04,
+                    _ => 0.0,
+                };
                 if rnd > density {
                     continue;
                 }
 
                 let slope = estimate_slope(&terrain.heights, local_x, local_z);
-                if slope > 1.0 || height < -20.0 {
+                if slope > 0.3 || !(0.0..=100.0).contains(&height) {
                     continue;
                 }
 
-                let trunk_height = 4.5
-                    + hash_to_unit_float(hash4(
-                        self.seed.wrapping_add(401),
-                        coord.x as u32,
-                        coord.y as u32,
-                        cell_id,
-                    )) * 7.5;
-                let canopy_radius = 1.7
-                    + hash_to_unit_float(hash4(
-                        self.seed.wrapping_add(809),
-                        coord.x as u32,
-                        coord.y as u32,
-                        cell_id,
-                    )) * 2.5;
+                let rotation = hash_to_unit_float(hash4(
+                    self.seed.wrapping_add(1401),
+                    coord.x as u32,
+                    coord.y as u32,
+                    cell_id,
+                )) * std::f32::consts::TAU;
 
                 let world_x = coord.x as f32 * CHUNK_SIZE_METERS + local_x;
                 let world_z = coord.y as f32 * CHUNK_SIZE_METERS + local_z;
-                trees.push(TreeInstance {
+                houses.push(HouseInstance {
                     position: Vec3::new(world_x, height, world_z),
-                    trunk_height,
-                    canopy_radius,
+                    rotation,
                 });
             }
         }
 
-        trees
-    }
-}
-
-fn biome_tree_density(biome: Biome, moisture: f32) -> f32 {
-    match biome {
-        Biome::Forest => (0.42 + (moisture - 0.62) * 0.7).clamp(0.30, 0.72),
-        Biome::Grassland => (0.02 + moisture * 0.08).clamp(0.01, 0.11),
-        Biome::Rock | Biome::Desert | Biome::Snow => 0.0,
+        houses
     }
 }
