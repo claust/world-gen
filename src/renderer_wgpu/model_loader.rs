@@ -133,6 +133,7 @@ fn compute_smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 
 /// Try to load a GLB from `assets/models/{name}.glb`. Returns `None` if the file
 /// doesn't exist (allowing fallback to procedural meshes). Other IO errors are
 /// logged as warnings.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn try_load_model(device: &wgpu::Device, name: &str) -> Option<PrototypeMesh> {
     let path = format!("assets/models/{name}.glb");
     let bytes = match std::fs::read(&path) {
