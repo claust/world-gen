@@ -1,9 +1,9 @@
-struct HudUniform {
+struct MinimapUniform {
     screen_size: vec2<f32>,
     _pad: vec2<f32>,
 };
 
-@group(0) @binding(0) var<uniform> hud: HudUniform;
+@group(0) @binding(0) var<uniform> hud: MinimapUniform;
 
 @group(1) @binding(0) var map_texture: texture_2d<f32>;
 @group(1) @binding(1) var map_sampler: sampler;

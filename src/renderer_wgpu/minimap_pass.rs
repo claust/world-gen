@@ -15,6 +15,9 @@ const MINIMAP_MARGIN: f32 = 15.0;
 const BORDER_WIDTH: f32 = 2.0;
 const INITIAL_VERTEX_CAP: usize = 256;
 
+/// How fast the display viewport converges to the real bounding box (per second).
+const PAN_SPEED: f32 = 4.0;
+
 /// Sentinel UV marking a vertex as solid-color (no texture sampling).
 const NO_UV: [f32; 2] = [-1.0, -1.0];
 
@@ -35,10 +38,14 @@ pub struct MinimapPass {
     vertex_cap: usize,
     vertex_count: u32,
     last_chunk_set: HashSet<IVec2>,
-    /// World-space bounding box of loaded chunks (min corner).
-    world_origin: [f32; 2],
-    /// World-space extent (width, height) of loaded chunks.
-    world_extent: [f32; 2],
+    /// Bounding box used when the texture was rasterized.
+    tex_origin: [f32; 2],
+    tex_extent: [f32; 2],
+    /// Smoothly animated display viewport (lerps toward tex values).
+    display_origin: [f32; 2],
+    display_extent: [f32; 2],
+    /// Whether we've rasterized at least once.
+    initialized: bool,
 }
 
 impl MinimapPass {
@@ -123,6 +130,8 @@ impl MinimapPass {
             label: Some("minimap-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
 
@@ -207,8 +216,11 @@ impl MinimapPass {
             vertex_cap: INITIAL_VERTEX_CAP,
             vertex_count: 0,
             last_chunk_set: HashSet::new(),
-            world_origin: [0.0; 2],
-            world_extent: [1.0; 2],
+            tex_origin: [0.0; 2],
+            tex_extent: [1.0; 2],
+            display_origin: [0.0; 2],
+            display_extent: [1.0; 2],
+            initialized: false,
         }
     }
 
@@ -243,8 +255,15 @@ impl MinimapPass {
             max_z = max_z.max(wz + CHUNK_SIZE_METERS);
         }
 
-        self.world_origin = [min_x, min_z];
-        self.world_extent = [(max_x - min_x).max(1.0), (max_z - min_z).max(1.0)];
+        self.tex_origin = [min_x, min_z];
+        self.tex_extent = [(max_x - min_x).max(1.0), (max_z - min_z).max(1.0)];
+
+        // First rasterize: snap display viewport immediately.
+        if !self.initialized {
+            self.display_origin = self.tex_origin;
+            self.display_extent = self.tex_extent;
+            self.initialized = true;
+        }
 
         let side = CHUNK_GRID_RESOLUTION;
         let mut pixels = vec![0u8; (MAP_TEX_SIZE * MAP_TEX_SIZE * 4) as usize];
@@ -257,8 +276,8 @@ impl MinimapPass {
                 let u = px as f32 / MAP_TEX_SIZE as f32;
                 let v = py as f32 / MAP_TEX_SIZE as f32;
 
-                let world_z = min_z + u * self.world_extent[1]; // right = east = +Z
-                let world_x = max_x - v * self.world_extent[0]; // top = north = max X
+                let world_z = min_z + u * self.tex_extent[1]; // right = east = +Z
+                let world_x = max_x - v * self.tex_extent[0]; // top = north = max X
 
                 // Find which chunk this falls in
                 let cx = (world_x / CHUNK_SIZE_METERS).floor() as i32;
@@ -317,12 +336,20 @@ impl MinimapPass {
         &mut self,
         queue: &wgpu::Queue,
         device: &wgpu::Device,
+        dt: f32,
         camera_pos: glam::Vec3,
         camera_yaw: f32,
         camera_fov: f32,
         screen_w: f32,
         screen_h: f32,
     ) {
+        // Smoothly animate display viewport toward the actual texture bounding box.
+        let t = (dt * PAN_SPEED).min(1.0);
+        for i in 0..2 {
+            self.display_origin[i] += (self.tex_origin[i] - self.display_origin[i]) * t;
+            self.display_extent[i] += (self.tex_extent[i] - self.display_extent[i]) * t;
+        }
+
         // Update screen-size uniform
         queue.write_buffer(
             &self.uniform_buffer,
@@ -347,17 +374,42 @@ impl MinimapPass {
         let bh = MINIMAP_PX + BORDER_WIDTH * 2.0;
         push_solid_quad(&mut verts, bx, by, bw, bh, border_color);
 
-        // --- Textured map quad ---
-        let map_color = [1.0, 1.0, 1.0, 0.92]; // slight transparency
-        push_textured_quad(&mut verts, map_x, map_y, MINIMAP_PX, MINIMAP_PX, map_color);
+        // --- Textured map quad with viewport-mapped UVs ---
+        // The texture was rasterized covering [tex_origin, tex_origin+tex_extent].
+        // The display viewport is [display_origin, display_origin+display_extent].
+        // Map display edges to texture UV space.
+        //
+        // Texture UV mapping (from rasterize_texture):
+        //   u = (world_z - tex_origin_z) / tex_extent_z        (right = east = +Z)
+        //   v = 1 - (world_x - tex_origin_x) / tex_extent_x   (top = north = max X)
+        let d = &self.display_origin;
+        let de = &self.display_extent;
+        let t_o = &self.tex_origin;
+        let t_e = &self.tex_extent;
 
-        // --- Camera position on minimap ---
-        // +X = north (up on minimap), +Z = east (right on minimap)
-        if self.world_extent[0] > 0.0 && self.world_extent[1] > 0.0 {
+        let u0 = (d[1] - t_o[1]) / t_e[1]; // left edge (west)
+        let u1 = (d[1] + de[1] - t_o[1]) / t_e[1]; // right edge (east)
+        let v0 = 1.0 - (d[0] + de[0] - t_o[0]) / t_e[0]; // top edge (north = max X)
+        let v1 = 1.0 - (d[0] - t_o[0]) / t_e[0]; // bottom edge (south = min X)
+
+        let map_color = [1.0, 1.0, 1.0, 0.92];
+        push_textured_quad_uv(
+            &mut verts,
+            map_x,
+            map_y,
+            MINIMAP_PX,
+            MINIMAP_PX,
+            [u0, v0],
+            [u1, v1],
+            map_color,
+        );
+
+        // --- Camera position on minimap (using display viewport) ---
+        if de[0] > 0.0 && de[1] > 0.0 {
             // Horizontal: Z maps to east (right)
-            let cam_u = (camera_pos.z - self.world_origin[1]) / self.world_extent[1];
+            let cam_u = (camera_pos.z - d[1]) / de[1];
             // Vertical: X maps to north (up), flip so top = max X
-            let cam_v = 1.0 - (camera_pos.x - self.world_origin[0]) / self.world_extent[0];
+            let cam_v = 1.0 - (camera_pos.x - d[0]) / de[0];
 
             let cam_map_x = map_x + cam_u.clamp(0.0, 1.0) * MINIMAP_PX;
             let cam_map_y = map_y + cam_v.clamp(0.0, 1.0) * MINIMAP_PX;
@@ -487,8 +539,18 @@ fn push_solid_quad(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, c
     ]);
 }
 
-/// Push a textured quad (2 triangles, 6 vertices) with UV [0,0]→[1,1].
-fn push_textured_quad(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+/// Push a textured quad with explicit UV bounds.
+#[allow(clippy::too_many_arguments)]
+fn push_textured_quad_uv(
+    verts: &mut Vec<HudVertex>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+    color: [f32; 4],
+) {
     let tl = [x, y];
     let tr = [x + w, y];
     let bl = [x, y + h];
@@ -497,32 +559,32 @@ fn push_textured_quad(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32
     verts.extend_from_slice(&[
         HudVertex {
             position: tl,
-            uv: [0.0, 0.0],
+            uv: [uv_min[0], uv_min[1]],
             color,
         },
         HudVertex {
             position: tr,
-            uv: [1.0, 0.0],
+            uv: [uv_max[0], uv_min[1]],
             color,
         },
         HudVertex {
             position: bl,
-            uv: [0.0, 1.0],
+            uv: [uv_min[0], uv_max[1]],
             color,
         },
         HudVertex {
             position: bl,
-            uv: [0.0, 1.0],
+            uv: [uv_min[0], uv_max[1]],
             color,
         },
         HudVertex {
             position: tr,
-            uv: [1.0, 0.0],
+            uv: [uv_max[0], uv_min[1]],
             color,
         },
         HudVertex {
             position: br,
-            uv: [1.0, 1.0],
+            uv: [uv_max[0], uv_max[1]],
             color,
         },
     ]);

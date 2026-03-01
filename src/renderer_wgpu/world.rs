@@ -125,6 +125,7 @@ impl WorldRenderer {
         &mut self,
         queue: &wgpu::Queue,
         device: &wgpu::Device,
+        dt: f32,
         camera_pos: Vec3,
         camera_yaw: f32,
         camera_fov: f32,
@@ -132,7 +133,7 @@ impl WorldRenderer {
         screen_h: f32,
     ) {
         self.minimap.update(
-            queue, device, camera_pos, camera_yaw, camera_fov, screen_w, screen_h,
+            queue, device, dt, camera_pos, camera_yaw, camera_fov, screen_w, screen_h,
         );
     }
 

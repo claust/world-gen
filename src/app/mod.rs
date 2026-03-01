@@ -300,6 +300,7 @@ impl AppState {
         self.world_renderer.update_minimap(
             &self.gpu.queue,
             &self.gpu.device,
+            dt,
             self.camera.position,
             self.camera.yaw,
             self.camera.fov_y_radians,
