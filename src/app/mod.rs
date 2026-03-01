@@ -16,7 +16,7 @@ use crate::renderer_wgpu::egui_bridge::EguiBridge;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer_wgpu::egui_pass::EguiPass;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::ui::ConfigPanel;
+use crate::ui::{ConfigPanel, MenuAction, StartMenu};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::world_core::save::{CameraSave, SaveData, WorldSave};
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,13 +42,19 @@ pub use event_loop::run_event_loop;
 #[cfg(target_arch = "wasm32")]
 pub use event_loop::run_event_loop_web;
 
+#[cfg(not(target_arch = "wasm32"))]
+enum Screen {
+    StartMenu,
+    Playing,
+}
+
 pub struct AppState {
     window: &'static Window,
     gpu: GpuContext,
     world_renderer: WorldRenderer,
     camera: FlyCamera,
     camera_controller: CameraController,
-    world: WorldRuntime,
+    world: Option<WorldRuntime>,
     focused: bool,
     cursor_captured: bool,
     last_frame: Instant,
@@ -69,6 +75,16 @@ pub struct AppState {
     egui_pass: EguiPass,
     #[cfg(not(target_arch = "wasm32"))]
     config_panel: ConfigPanel,
+    #[cfg(not(target_arch = "wasm32"))]
+    screen: Screen,
+    #[cfg(not(target_arch = "wasm32"))]
+    start_menu: StartMenu,
+    #[cfg(not(target_arch = "wasm32"))]
+    save: Option<SaveData>,
+    #[cfg(not(target_arch = "wasm32"))]
+    config: GameConfig,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_menu_action: Option<MenuAction>,
 }
 
 impl AppState {
@@ -76,14 +92,14 @@ impl AppState {
     pub async fn new(
         window: &'static Window,
         debug_api_config: DebugApiConfig,
-        cursor_captured: bool,
+        _cursor_captured: bool,
     ) -> Result<Self> {
         let config = GameConfig::load();
         let save = SaveData::load();
 
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer = WorldRenderer::new(
+        let world_renderer = WorldRenderer::new(
             &gpu.device,
             &gpu.queue,
             &gpu.config,
@@ -91,30 +107,12 @@ impl AppState {
             config.world.load_radius,
         );
 
-        let (cam_pos, cam_yaw, cam_pitch) = match &save {
-            Some(s) => (
-                Vec3::new(
-                    s.camera.position[0],
-                    s.camera.position[1],
-                    s.camera.position[2],
-                ),
-                s.camera.yaw,
-                s.camera.pitch,
-            ),
-            None => (Vec3::new(96.0, 150.0, 16.0), 1.02, -0.38),
-        };
-        let mut camera = FlyCamera::new(cam_pos);
-        camera.yaw = cam_yaw;
-        camera.pitch = cam_pitch;
+        // Menu camera — fixed position looking at the sky
+        let camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         let camera_controller = CameraController::new(180.0, 0.0022);
 
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-        let mut world = WorldRuntime::new(&config, save.as_ref(), threads)?;
-        world.update(0.0, camera.position);
-
-        world_renderer.sync_chunks(&gpu.device, &gpu.queue, world.chunks());
+        // World is deferred until the player clicks Start/Resume
+        let save_exists = save.is_some();
 
         let debug_api = start_debug_api(&debug_api_config)?;
         if let Some(api) = &debug_api {
@@ -134,10 +132,10 @@ impl AppState {
             world_renderer,
             camera,
             camera_controller,
-            world,
+            world: None,
             debug_api,
             focused: true,
-            cursor_captured,
+            cursor_captured: false,
             last_frame: Instant::now(),
             last_telemetry_emit: Instant::now() - Duration::from_secs(1),
             frame_time_ms: 0.0,
@@ -148,6 +146,11 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
+            screen: Screen::StartMenu,
+            start_menu: StartMenu::new(save_exists),
+            save,
+            config,
+            pending_menu_action: None,
         })
     }
 
@@ -181,7 +184,7 @@ impl AppState {
             world_renderer,
             camera,
             camera_controller,
-            world,
+            world: Some(world),
             focused: true,
             cursor_captured,
             last_frame: Instant::now(),
@@ -226,6 +229,47 @@ impl AppState {
         self.camera_controller.reset_inputs();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn is_on_menu(&self) -> bool {
+        matches!(self.screen, Screen::StartMenu)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_game(&mut self, resume: bool) {
+        let save_ref = if resume { self.save.as_ref() } else { None };
+
+        // Set camera from save or defaults
+        let (cam_pos, cam_yaw, cam_pitch) = match save_ref {
+            Some(s) => (
+                Vec3::new(
+                    s.camera.position[0],
+                    s.camera.position[1],
+                    s.camera.position[2],
+                ),
+                s.camera.yaw,
+                s.camera.pitch,
+            ),
+            None => (Vec3::new(96.0, 150.0, 16.0), 1.02, -0.38),
+        };
+        self.camera = FlyCamera::new(cam_pos);
+        self.camera.yaw = cam_yaw;
+        self.camera.pitch = cam_pitch;
+
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let mut world = WorldRuntime::new(&self.config, save_ref, threads)
+            .expect("failed to create world runtime");
+        world.update(0.0, self.camera.position);
+
+        self.world_renderer
+            .sync_chunks(&self.gpu.device, &self.gpu.queue, world.chunks());
+
+        self.world = Some(world);
+        self.screen = Screen::Playing;
+        self.capture_cursor();
+    }
+
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.gpu.resize(new_size);
         self.world_renderer
@@ -237,6 +281,19 @@ impl AppState {
 
     fn update(&mut self) {
         self.frame_index = self.frame_index.saturating_add(1);
+
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32();
+        self.last_frame = now;
+
+        self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
+        self.elapsed_seconds += dt;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.is_on_menu() {
+            self.update_menu(dt);
+            return;
+        }
 
         #[cfg(not(target_arch = "wasm32"))]
         self.apply_debug_commands();
@@ -254,29 +311,24 @@ impl AppState {
             }
         }
 
-        let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f32();
-        self.last_frame = now;
-
-        self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
-        self.elapsed_seconds += dt;
-
         self.camera_controller.update_camera(
             dt,
             &mut self.camera,
             self.focused && self.cursor_captured,
         );
 
-        clamp_camera_to_terrain(&mut self.camera, self.world.chunks());
+        let world = self.world.as_mut().unwrap();
 
-        self.world.update(dt, self.camera.position);
+        clamp_camera_to_terrain(&mut self.camera, world.chunks());
+
+        world.update(dt, self.camera.position);
         self.world_renderer
-            .sync_chunks(&self.gpu.device, &self.gpu.queue, self.world.chunks());
+            .sync_chunks(&self.gpu.device, &self.gpu.queue, world.chunks());
 
         let aspect = self.gpu.aspect();
         let view_proj = self.camera.view_projection(aspect);
-        let lighting = self.world.lighting();
-        let stats = self.world.stats();
+        let lighting = world.lighting();
+        let stats = world.stats();
         let palette = crate::renderer_wgpu::sky::sky_palette(stats.hour);
         self.world_renderer.update_frame(
             &self.gpu.queue,
@@ -313,17 +365,19 @@ impl AppState {
         // Apply config panel changes (debounced — only on pointer release)
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(new_config) = self.config_panel.take_dirty_config(self.egui_bridge.ctx()) {
-            self.world.reload_config(&new_config);
+            let world = self.world.as_mut().unwrap();
+            world.reload_config(&new_config);
             self.world_renderer
                 .set_sea_level(&self.gpu.queue, new_config.sea_level);
             self.world_renderer
                 .set_load_radius(new_config.world.load_radius);
-            let _ = self.world.set_day_speed(new_config.world.day_speed);
+            let _ = world.set_day_speed(new_config.world.day_speed);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
         self.publish_telemetry_if_due(&stats);
 
+        let day_speed = self.world.as_ref().unwrap().day_speed();
         self.window.set_title(&format!(
             "world-gen | {:.1}ms ({:.0}fps) | chunks: {}/{} | center: {},{} | hour: {:.1} | day_speed: {:.2}",
             self.frame_time_ms,
@@ -333,8 +387,37 @@ impl AppState {
             stats.center_chunk.x,
             stats.center_chunk.y,
             stats.hour,
-            self.world.day_speed(),
+            day_speed,
         ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn update_menu(&mut self, _dt: f32) {
+        // Advance a virtual hour for the animated sky background
+        let menu_day_speed = 0.5;
+        let menu_hour = (self.elapsed_seconds * menu_day_speed) % 24.0;
+
+        // Reuse WorldClock's sun direction formula
+        let angle = (menu_hour / 24.0) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+        let altitude = angle.sin();
+        let azimuth = angle.cos();
+        let light_dir = Vec3::new(azimuth * 0.45, altitude, 0.75).normalize();
+        let day = (light_dir.y * 0.5 + 0.5).clamp(0.0, 1.0);
+        let ambient = 0.1 + day * 0.35;
+
+        let aspect = self.gpu.aspect();
+        let view_proj = self.camera.view_projection(aspect);
+        let palette = crate::renderer_wgpu::sky::sky_palette(menu_hour);
+
+        self.world_renderer.update_frame(
+            &self.gpu.queue,
+            view_proj,
+            self.camera.position,
+            self.elapsed_seconds,
+            menu_hour,
+        );
+        self.world_renderer
+            .update_material(&self.gpu.queue, light_dir, ambient, &palette);
     }
 
     fn render(&mut self) -> Result<(), SurfaceError> {
@@ -349,6 +432,11 @@ impl AppState {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("world-gen-render-encoder"),
             });
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let is_menu = self.is_on_menu();
+        #[cfg(target_arch = "wasm32")]
+        let is_menu = false;
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -373,34 +461,52 @@ impl AppState {
                 occlusion_query_set: None,
             });
 
-            self.world_renderer.render(&mut pass);
+            if is_menu {
+                self.world_renderer.render_sky_only(&mut pass);
+            } else {
+                self.world_renderer.render(&mut pass);
+            }
         }
 
         // egui overlay pass (renders on top of 3D scene)
         #[cfg(not(target_arch = "wasm32"))]
-        if self.config_panel.is_visible() {
-            let raw_input = self.egui_bridge.take_raw_input();
-            let full_output = self.egui_bridge.ctx().run(raw_input, |ctx| {
-                self.config_panel.ui(ctx);
-            });
+        {
+            let show_egui = is_menu || self.config_panel.is_visible();
+            if show_egui {
+                let raw_input = self.egui_bridge.take_raw_input();
+                let mut menu_action = None;
+                let full_output = self
+                    .egui_bridge
+                    .ctx()
+                    .run(raw_input, |ctx| match self.screen {
+                        Screen::StartMenu => {
+                            menu_action = self.start_menu.ui(ctx);
+                        }
+                        Screen::Playing => {
+                            self.config_panel.ui(ctx);
+                        }
+                    });
 
-            self.egui_bridge
-                .handle_platform_output(self.window, &full_output.platform_output);
+                self.egui_bridge
+                    .handle_platform_output(self.window, &full_output.platform_output);
 
-            let screen = egui_wgpu::ScreenDescriptor {
-                size_in_pixels: [self.gpu.config.width, self.gpu.config.height],
-                pixels_per_point: self.egui_bridge.pixels_per_point(),
-            };
+                let screen = egui_wgpu::ScreenDescriptor {
+                    size_in_pixels: [self.gpu.config.width, self.gpu.config.height],
+                    pixels_per_point: self.egui_bridge.pixels_per_point(),
+                };
 
-            self.egui_pass.render(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &mut encoder,
-                &view,
-                screen,
-                full_output,
-                self.egui_bridge.ctx(),
-            );
+                self.egui_pass.render(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &mut encoder,
+                    &view,
+                    screen,
+                    full_output,
+                    self.egui_bridge.ctx(),
+                );
+
+                self.pending_menu_action = menu_action;
+            }
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -417,6 +523,7 @@ impl AppState {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn save_game(&self) {
+        let Some(world) = &self.world else { return };
         let save = SaveData {
             camera: CameraSave {
                 position: [
@@ -428,9 +535,9 @@ impl AppState {
                 pitch: self.camera.pitch,
             },
             world: WorldSave {
-                seed: self.world.seed(),
-                hour: self.world.hour(),
-                day_speed: self.world.day_speed(),
+                seed: world.seed(),
+                hour: world.hour(),
+                day_speed: world.day_speed(),
             },
         };
         if let Err(e) = save.save() {
