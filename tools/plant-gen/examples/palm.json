@@ -1,0 +1,48 @@
+{
+  "name": "Coconut Palm",
+  "body_plan": {
+    "kind": "tree",
+    "stem_count": 1,
+    "max_height": [12, 20]
+  },
+  "trunk": {
+    "taper": 0.12,
+    "base_flare": 0.2,
+    "straightness": 0.65,
+    "thickness_ratio": 0.025
+  },
+  "branching": {
+    "apical_dominance": 1.0,
+    "max_depth": 0,
+    "arrangement": { "type": "spiral", "angle": 137.5 },
+    "branches_per_node": [0, 0],
+    "insertion_angle": {
+      "base": [0, 0],
+      "tip": [0, 0]
+    },
+    "length_profile": "dome",
+    "child_length_ratio": 0.5,
+    "child_thickness_ratio": 0.5,
+    "gravity_response": 0.0,
+    "randomness": 0.0
+  },
+  "crown": {
+    "shape": "fan_top",
+    "crown_base": 0.85,
+    "aspect_ratio": 1.0,
+    "density": 0.6,
+    "asymmetry": 0.1
+  },
+  "foliage": {
+    "style": "palm_frond",
+    "leaf_size": [1.5, 3.0],
+    "cluster_strategy": { "type": "ring", "count": 16 },
+    "droop": 0.6,
+    "coverage": 1.0
+  },
+  "color": {
+    "bark": { "h": 35, "s": 0.25, "l": 0.35 },
+    "leaf": { "h": 125, "s": 0.55, "l": 0.30 },
+    "leaf_variance": 0.12
+  }
+}

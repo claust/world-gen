@@ -1,0 +1,48 @@
+{
+  "name": "Weeping Willow",
+  "body_plan": {
+    "kind": "tree",
+    "stem_count": 1,
+    "max_height": [10, 15]
+  },
+  "trunk": {
+    "taper": 0.35,
+    "base_flare": 0.25,
+    "straightness": 0.75,
+    "thickness_ratio": 0.045
+  },
+  "branching": {
+    "apical_dominance": 0.35,
+    "max_depth": 3,
+    "arrangement": { "type": "spiral", "angle": 137.5 },
+    "branches_per_node": [2, 4],
+    "insertion_angle": {
+      "base": [50, 65],
+      "tip": [35, 45]
+    },
+    "length_profile": "dome",
+    "child_length_ratio": 0.8,
+    "child_thickness_ratio": 0.6,
+    "gravity_response": 0.95,
+    "randomness": 0.3
+  },
+  "crown": {
+    "shape": "weeping",
+    "crown_base": 0.2,
+    "aspect_ratio": 1.4,
+    "density": 0.55,
+    "asymmetry": 0.15
+  },
+  "foliage": {
+    "style": "broadleaf",
+    "leaf_size": [0.04, 0.08],
+    "cluster_strategy": { "type": "individual" },
+    "droop": 0.85,
+    "coverage": 0.9
+  },
+  "color": {
+    "bark": { "h": 30, "s": 0.30, "l": 0.30 },
+    "leaf": { "h": 100, "s": 0.45, "l": 0.40 },
+    "leaf_variance": 0.12
+  }
+}

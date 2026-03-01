@@ -1,0 +1,48 @@
+{
+  "name": "Berry Shrub",
+  "body_plan": {
+    "kind": "shrub",
+    "stem_count": 7,
+    "max_height": [1.5, 2.5]
+  },
+  "trunk": {
+    "taper": 0.3,
+    "base_flare": 0.05,
+    "straightness": 0.6,
+    "thickness_ratio": 0.04
+  },
+  "branching": {
+    "apical_dominance": 0.1,
+    "max_depth": 2,
+    "arrangement": { "type": "random" },
+    "branches_per_node": [2, 3],
+    "insertion_angle": {
+      "base": [35, 50],
+      "tip": [30, 40]
+    },
+    "length_profile": "dome",
+    "child_length_ratio": 0.6,
+    "child_thickness_ratio": 0.55,
+    "gravity_response": 0.15,
+    "randomness": 0.5
+  },
+  "crown": {
+    "shape": "dome",
+    "crown_base": 0.0,
+    "aspect_ratio": 1.2,
+    "density": 0.9,
+    "asymmetry": 0.1
+  },
+  "foliage": {
+    "style": "broadleaf",
+    "leaf_size": [0.01, 0.025],
+    "cluster_strategy": { "type": "dense_mass" },
+    "droop": 0.1,
+    "coverage": 0.8
+  },
+  "color": {
+    "bark": { "h": 20, "s": 0.35, "l": 0.28 },
+    "leaf": { "h": 130, "s": 0.55, "l": 0.28 },
+    "leaf_variance": 0.2
+  }
+}

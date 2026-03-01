@@ -19,3 +19,6 @@ captures/
 /pkg/
 /web/pkg
 save.json
+
+# Plant generator output
+tools/plant-gen/examples/*.svg
