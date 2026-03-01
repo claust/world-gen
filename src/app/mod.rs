@@ -299,6 +299,16 @@ impl AppState {
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );
+        self.world_renderer.update_minimap(
+            &self.gpu.queue,
+            &self.gpu.device,
+            dt,
+            self.camera.position,
+            self.camera.yaw,
+            self.camera.fov_y_radians,
+            self.gpu.config.width as f32,
+            self.gpu.config.height as f32,
+        );
 
         // Apply config panel changes (debounced — only on pointer release)
         #[cfg(not(target_arch = "wasm32"))]

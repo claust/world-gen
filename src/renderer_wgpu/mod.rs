@@ -20,5 +20,7 @@ pub mod world;
 mod hud_font;
 mod hud_pass;
 mod instanced_pass;
+mod minimap_colors;
+mod minimap_pass;
 mod terrain_pass;
 mod water_pass;

@@ -5,6 +5,7 @@ use glam::{IVec2, Mat4, Vec3};
 use super::hud_pass::HudPass;
 use super::instanced_pass::InstancedPass;
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
+use super::minimap_pass::MinimapPass;
 use super::sky::SkyPalette;
 use super::sky_pass::SkyPass;
 use super::terrain_pass::TerrainPass;
@@ -21,6 +22,7 @@ pub struct WorldRenderer {
     water: WaterPass,
     instanced: InstancedPass,
     hud: HudPass,
+    minimap: MinimapPass,
     fog_color: [f32; 3],
     fog_start: f32,
     fog_end: f32,
@@ -48,6 +50,7 @@ impl WorldRenderer {
         let water = WaterPass::new(device, config, &pipeline_layout, sea_level);
         let instanced = InstancedPass::new(device, config, &pipeline_layout);
         let hud = HudPass::new(device, queue, config);
+        let minimap = MinimapPass::new(device, queue, config);
 
         let r = load_radius as f32;
         let fog_start = r * 256.0 * 0.6;
@@ -63,6 +66,7 @@ impl WorldRenderer {
             water,
             instanced,
             hud,
+            minimap,
             fog_color,
             fog_start,
             fog_end,
@@ -127,6 +131,23 @@ impl WorldRenderer {
             .update(queue, device, camera_pos, camera_yaw, screen_w, screen_h);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_minimap(
+        &mut self,
+        queue: &wgpu::Queue,
+        device: &wgpu::Device,
+        dt: f32,
+        camera_pos: Vec3,
+        camera_yaw: f32,
+        camera_fov: f32,
+        screen_w: f32,
+        screen_h: f32,
+    ) {
+        self.minimap.update(
+            queue, device, dt, camera_pos, camera_yaw, camera_fov, screen_w, screen_h,
+        );
+    }
+
     pub fn sync_chunks(
         &mut self,
         device: &wgpu::Device,
@@ -144,6 +165,7 @@ impl WorldRenderer {
 
         self.water.sync_chunks(device, chunks);
         self.instanced.sync_chunks(device, chunks);
+        self.minimap.sync_chunks(queue, chunks);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -160,6 +182,7 @@ impl WorldRenderer {
         self.instanced.render(pass);
         self.water.render(pass);
         self.hud.render(pass);
+        self.minimap.render(pass);
     }
 
     pub fn clear_color(&self) -> wgpu::Color {
