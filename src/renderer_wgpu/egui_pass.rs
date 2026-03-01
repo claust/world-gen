@@ -6,7 +6,16 @@ pub struct EguiPass {
 
 impl EguiPass {
     pub fn new(device: &wgpu::Device, output_format: wgpu::TextureFormat) -> Self {
-        let renderer = egui_wgpu::Renderer::new(device, output_format, None, 1, false);
+        let renderer = egui_wgpu::Renderer::new(
+            device,
+            output_format,
+            egui_wgpu::RendererOptions {
+                depth_stencil_format: None,
+                msaa_samples: 1,
+                dithering: false,
+                ..Default::default()
+            },
+        );
         Self { renderer }
     }
 
@@ -40,6 +49,7 @@ impl EguiPass {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
