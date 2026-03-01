@@ -1,5 +1,6 @@
 struct FrameUniform {
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
     camera_position: vec4<f32>,
     time: vec4<f32>,
 };
@@ -9,6 +10,9 @@ struct MaterialUniform {
     ambient: vec4<f32>,
     fog_color: vec4<f32>,
     fog_params: vec4<f32>,
+    sun_color: vec4<f32>,
+    sky_zenith: vec4<f32>,
+    sky_horizon: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: FrameUniform;
@@ -42,8 +46,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(input.world_normal);
     let l = normalize(material.light_direction.xyz);
     let direct = max(dot(n, l), 0.0);
-    let shade = material.ambient.x + direct * 0.82;
-    let color = input.albedo * shade;
+    let color = input.albedo * material.ambient.x + input.albedo * direct * 0.82 * material.sun_color.rgb;
 
     let dist = distance(input.world_position, frame.camera_position.xyz);
     let fog_start = material.fog_params.x;

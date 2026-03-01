@@ -5,6 +5,8 @@ use glam::{IVec2, Mat4, Vec3};
 use super::hud_pass::HudPass;
 use super::instanced_pass::InstancedPass;
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
+use super::sky::SkyPalette;
+use super::sky_pass::SkyPass;
 use super::terrain_pass::TerrainPass;
 use super::water_pass::WaterPass;
 use crate::renderer_wgpu::pipeline::DepthTexture;
@@ -14,6 +16,7 @@ pub struct WorldRenderer {
     frame_bg: FrameBindGroup,
     terrain_material: MaterialBindGroup,
     depth: DepthTexture,
+    sky: SkyPass,
     terrain: TerrainPass,
     water: WaterPass,
     instanced: InstancedPass,
@@ -40,6 +43,7 @@ impl WorldRenderer {
             push_constant_ranges: &[],
         });
 
+        let sky = SkyPass::new(device, config, &pipeline_layout);
         let terrain = TerrainPass::new(device, config, &pipeline_layout);
         let water = WaterPass::new(device, config, &pipeline_layout, sea_level);
         let instanced = InstancedPass::new(device, config, &pipeline_layout);
@@ -54,6 +58,7 @@ impl WorldRenderer {
             frame_bg,
             terrain_material,
             depth: DepthTexture::new(device, config, "terrain-depth"),
+            sky,
             terrain,
             water,
             instanced,
@@ -92,14 +97,20 @@ impl WorldRenderer {
         );
     }
 
-    pub fn update_material(&self, queue: &wgpu::Queue, light_direction: Vec3, ambient: f32) {
+    pub fn update_material(
+        &mut self,
+        queue: &wgpu::Queue,
+        light_direction: Vec3,
+        ambient: f32,
+        palette: &SkyPalette,
+    ) {
+        self.fog_color = palette.horizon;
         self.terrain_material.update_terrain(
             queue,
             light_direction,
             ambient,
-            self.fog_color,
-            self.fog_start,
-            self.fog_end,
+            [self.fog_start, self.fog_end, 0.0, 0.0],
+            palette,
         );
     }
 
@@ -144,10 +155,20 @@ impl WorldRenderer {
         pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
 
+        self.sky.render(pass);
         self.terrain.render(pass);
         self.instanced.render(pass);
         self.water.render(pass);
         self.hud.render(pass);
+    }
+
+    pub fn clear_color(&self) -> wgpu::Color {
+        wgpu::Color {
+            r: self.fog_color[0] as f64,
+            g: self.fog_color[1] as f64,
+            b: self.fog_color[2] as f64,
+            a: 1.0,
+        }
     }
 
     pub fn depth_view(&self) -> &wgpu::TextureView {

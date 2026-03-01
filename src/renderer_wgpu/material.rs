@@ -6,6 +6,7 @@ use wgpu::util::DeviceExt;
 #[derive(Clone, Copy, Zeroable, Pod)]
 pub struct FrameUniform {
     pub view_proj: [[f32; 4]; 4],
+    pub inv_view_proj: [[f32; 4]; 4],
     pub camera_position: [f32; 4],
     pub time: [f32; 4],
 }
@@ -14,6 +15,7 @@ impl FrameUniform {
     pub fn new(view_proj: Mat4, camera_position: Vec3, elapsed: f32, hour: f32) -> Self {
         Self {
             view_proj: view_proj.to_cols_array_2d(),
+            inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             camera_position: [camera_position.x, camera_position.y, camera_position.z, 0.0],
             time: [elapsed, hour, 0.0, 0.0],
         }
@@ -27,6 +29,9 @@ pub struct TerrainMaterialUniform {
     pub ambient: [f32; 4],
     pub fog_color: [f32; 4],
     pub fog_params: [f32; 4],
+    pub sun_color: [f32; 4],
+    pub sky_zenith: [f32; 4],
+    pub sky_horizon: [f32; 4],
 }
 
 pub struct FrameBindGroup {
@@ -106,6 +111,9 @@ impl MaterialBindGroup {
             ambient: [0.2, 0.2, 0.2, 0.0],
             fog_color: [0.45, 0.68, 0.96, 1.0],
             fog_params: [0.0, 1000.0, 0.0, 0.0],
+            sun_color: [1.0, 1.0, 0.95, 0.0],
+            sky_zenith: [0.35, 0.55, 0.90, 0.0],
+            sky_horizon: [0.55, 0.75, 0.95, 0.0],
         };
 
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -135,15 +143,18 @@ impl MaterialBindGroup {
         queue: &wgpu::Queue,
         light_dir: Vec3,
         ambient: f32,
-        fog_color: [f32; 3],
-        fog_start: f32,
-        fog_end: f32,
+        fog: [f32; 4],
+        palette: &super::sky::SkyPalette,
     ) {
+        let p = palette;
         let data = TerrainMaterialUniform {
             light_direction: [light_dir.x, light_dir.y, light_dir.z, 0.0],
             ambient: [ambient, ambient, ambient, 0.0],
-            fog_color: [fog_color[0], fog_color[1], fog_color[2], 1.0],
-            fog_params: [fog_start, fog_end, 0.0, 0.0],
+            fog_color: [p.horizon[0], p.horizon[1], p.horizon[2], 1.0],
+            fog_params: fog,
+            sun_color: [p.sun_color[0], p.sun_color[1], p.sun_color[2], 0.0],
+            sky_zenith: [p.zenith[0], p.zenith[1], p.zenith[2], 0.0],
+            sky_horizon: [p.horizon[0], p.horizon[1], p.horizon[2], 0.0],
         };
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&[data]));
     }

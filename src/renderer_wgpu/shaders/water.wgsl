@@ -1,5 +1,6 @@
 struct FrameUniform {
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
     camera_position: vec4<f32>,
     time: vec4<f32>,
 };
@@ -9,6 +10,9 @@ struct MaterialUniform {
     ambient: vec4<f32>,
     fog_color: vec4<f32>,
     fog_params: vec4<f32>,
+    sun_color: vec4<f32>,
+    sky_zenith: vec4<f32>,
+    sky_horizon: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: FrameUniform;
@@ -70,7 +74,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = mix(0.45, 0.85, fresnel * fresnel);
 
     // Deep blue-green water color
-    let water_color = vec3<f32>(0.12, 0.30, 0.45) * shade + vec3<f32>(1.0, 0.95, 0.8) * spec * 0.6;
+    let water_color = vec3<f32>(0.12, 0.30, 0.45) * shade + material.sun_color.rgb * spec * 0.6;
 
     // Apply fog to RGB only, preserve alpha
     let dist = distance(input.world_position, frame.camera_position.xyz);
