@@ -33,9 +33,10 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Sample unconditionally (uniform control flow required by WebGPU)
+    let alpha = textureSample(font_texture, font_sampler, max(in.uv, vec2(0.0))).r;
     if (in.uv.x < 0.0) {
         return in.color;
     }
-    let alpha = textureSample(font_texture, font_sampler, in.uv).r;
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
