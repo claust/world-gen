@@ -258,8 +258,14 @@ impl AppState {
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let mut world = WorldRuntime::new(&self.config, save_ref, threads)
-            .expect("failed to create world runtime");
+        let mut world = match WorldRuntime::new(&self.config, save_ref, threads) {
+            Ok(world) => world,
+            Err(err) => {
+                eprintln!("failed to create world runtime: {err}");
+                // Keep the current screen (e.g., menu) instead of crashing.
+                return;
+            }
+        };
         world.update(0.0, self.camera.position);
 
         self.world_renderer
