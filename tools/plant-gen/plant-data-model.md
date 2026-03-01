@@ -148,12 +148,58 @@ Ordered by how much visual difference they create (most impactful first):
 
 For LOD: drop detail from the bottom up. At distance, only silhouette and color matter.
 
+## Rendering Pipeline
+
+### Artifacts
+
+The plant-gen tool produces two output formats from the same species JSON:
+
+- **SVG** (`.svg`): 2D side-view sketch for rapid parameter iteration. Instant feedback, viewable in any browser. Good for tuning crown silhouette, branch structure, and color. Cannot show 3D depth or how the tree looks from other angles.
+- **GLB** (`.glb`): Full 3D mesh viewable in Blender, VS Code (glTF extension), online glTF viewers, or any tool that supports glTF 2.0. Branches are tapered 8-sided cylinders, foliage is low-poly icosahedra. Vertex colors encode bark/leaf materials.
+
+### Design-Time Workflow
+
+```
+Species JSON ──→ render.ts ──→ SVG  (2D sketch, instant iteration)
+                            └──→ GLB  (3D mesh, preview in any viewer)
+```
+
+Edit JSON parameters → run the tool → inspect output → repeat. The SVG is fastest for silhouette tuning. Switch to GLB when you need to verify 3D structure (branch depth distribution, how the spiral arrangement looks from above, etc.).
+
+### Runtime Pipeline (future, in-engine)
+
+```
+Species JSON + per-tree seed ──→ Rust mesh generator ──→ vertex/index buffers ──→ GPU upload
+```
+
+The Rust mesh generator will implement the same recursive branching algorithm as render.ts, producing vertex buffers directly. Trees are generated per-chunk on the CPU and uploaded to the GPU, following the same pattern as the existing terrain mesh pipeline. Each tree gets a unique seed derived from its world position, so every tree is different while remaining deterministic.
+
+### Mesh Structure
+
+Both the GLB output and the future runtime mesh share the same structure:
+
+- **Branches**: Tapered cylinders (8-sided cross-section) with per-vertex bark color
+- **Foliage**: Low-poly icosahedra (12 vertices, 20 faces) with per-vertex leaf color and hue/lightness variance
+- **Single mesh**: All geometry merged into one mesh with vertex colors distinguishing bark from foliage — matches the existing `tree.glb` convention used by the game renderer's `InstancedPass`
+
+### Why Not Just SVG?
+
+SVG is fundamentally 2D. It projects the tree onto a flat plane, losing the z-axis entirely. You cannot see:
+- How branches distribute in depth (spiral vs whorled looks the same in 2D)
+- What the tree looks like from above, at 3/4 angle, or in the game camera
+- How foliage clusters overlap in 3D space
+
+The SVG remains valuable as a fast sketch tool. The GLB provides the ground truth 3D preview.
+
 ## Rendering Tool
 
 ```bash
-bun tools/plant-gen/render.ts <species.json> [output.svg]
+bun tools/plant-gen/render.ts <species.json> [output.svg|.glb]
+bun tools/plant-gen/render.ts examples/oak.json                    # → oak.svg (default)
+bun tools/plant-gen/render.ts examples/oak.json oak.glb             # → oak.glb
+bun tools/plant-gen/render.ts examples/oak.json --format glb        # → oak.glb
 ```
 
-Reads a species JSON file and generates a side-view SVG visualization. If no output path is given, replaces `.json` with `.svg`.
+Reads a species JSON and generates either SVG or GLB based on output extension or `--format` flag. Default is SVG.
 
 Example species files are in `tools/plant-gen/examples/`.
