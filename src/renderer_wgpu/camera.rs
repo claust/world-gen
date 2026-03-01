@@ -209,7 +209,7 @@ impl CameraController {
 
     pub fn update_camera(&mut self, dt_seconds: f32, camera: &mut FlyCamera, focused: bool) {
         if focused {
-            camera.yaw -= self.mouse_delta.0 as f32 * self.look_sensitivity;
+            camera.yaw += self.mouse_delta.0 as f32 * self.look_sensitivity;
             camera.pitch -= self.mouse_delta.1 as f32 * self.look_sensitivity;
             camera.pitch = camera.pitch.clamp(-1.54, 1.54);
         }
@@ -217,16 +217,17 @@ impl CameraController {
 
         let movement = self.movement.effective();
 
-        if movement.contains(MoveMask::LEFT) {
-            camera.yaw += self.turn_speed * dt_seconds;
-        }
-        if movement.contains(MoveMask::RIGHT) {
-            camera.yaw -= self.turn_speed * dt_seconds;
-        }
-
         let mut direction = Vec3::ZERO;
         let forward = camera.forward();
         let flat_forward = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        let flat_right = Vec3::Y.cross(flat_forward).normalize_or_zero();
+
+        if movement.contains(MoveMask::LEFT) {
+            direction += flat_right;
+        }
+        if movement.contains(MoveMask::RIGHT) {
+            direction -= flat_right;
+        }
 
         if movement.contains(MoveMask::FORWARD) {
             direction += flat_forward;

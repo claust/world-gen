@@ -20,26 +20,29 @@ impl AppState {
 
         for command in commands {
             let applied = match command.command {
-                CommandKind::SetDaySpeed { value } => match self.world.set_day_speed(value) {
-                    Ok(day_speed) => CommandAppliedEvent {
-                        id: command.id,
-                        frame: self.frame_index,
-                        ok: true,
-                        message: "day speed set".to_string(),
-                        day_speed: Some(day_speed),
-                        object_id: None,
-                        object_position: None,
-                    },
-                    Err(message) => CommandAppliedEvent {
-                        id: command.id,
-                        frame: self.frame_index,
-                        ok: false,
-                        message,
-                        day_speed: Some(self.world.day_speed()),
-                        object_id: None,
-                        object_position: None,
-                    },
-                },
+                CommandKind::SetDaySpeed { value } => {
+                    let world = self.world.as_mut().unwrap();
+                    match world.set_day_speed(value) {
+                        Ok(day_speed) => CommandAppliedEvent {
+                            id: command.id,
+                            frame: self.frame_index,
+                            ok: true,
+                            message: "day speed set".to_string(),
+                            day_speed: Some(day_speed),
+                            object_id: None,
+                            object_position: None,
+                        },
+                        Err(message) => CommandAppliedEvent {
+                            id: command.id,
+                            frame: self.frame_index,
+                            ok: false,
+                            message,
+                            day_speed: Some(world.day_speed()),
+                            object_id: None,
+                            object_position: None,
+                        },
+                    }
+                }
                 CommandKind::SetMoveKey { key, pressed } => {
                     let direction = match key {
                         MoveKey::W => MoveDirection::Forward,
@@ -94,7 +97,7 @@ impl AppState {
                     let cam_pos = self.camera.position;
                     let mut best: Option<(String, [f32; 3], f32)> = None;
 
-                    for (coord, chunk) in self.world.chunks() {
+                    for (coord, chunk) in self.world.as_ref().unwrap().chunks() {
                         let items: Box<dyn Iterator<Item = (usize, glam::Vec3)>> = match kind {
                             ObjectKind::House => Box::new(
                                 chunk
@@ -181,7 +184,8 @@ impl AppState {
                     distance,
                 } => {
                     let dist = distance.unwrap_or(15.0);
-                    let result = parse_and_find_object(object_id, self.world.chunks());
+                    let result =
+                        parse_and_find_object(object_id, self.world.as_ref().unwrap().chunks());
 
                     match result {
                         Some(target) => {
@@ -290,7 +294,7 @@ impl AppState {
             frame_time_ms: self.frame_time_ms,
             fps: 1000.0 / self.frame_time_ms.max(0.01),
             hour: stats.hour,
-            day_speed: self.world.day_speed(),
+            day_speed: self.world.as_ref().unwrap().day_speed(),
             camera: CameraSnapshot {
                 x: self.camera.position.x,
                 y: self.camera.position.y,

@@ -22,19 +22,21 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     if key_event.state == ElementState::Pressed
                         && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F1))
                     {
-                        app.config_panel.toggle();
-                        if app.config_panel.is_visible() {
-                            app.release_cursor();
-                        } else {
-                            app.capture_cursor();
+                        if !app.is_on_menu() {
+                            app.config_panel.toggle();
+                            if app.config_panel.is_visible() {
+                                app.release_cursor();
+                            } else {
+                                app.capture_cursor();
+                            }
                         }
                         return;
                     }
                 }
 
-                // When config panel is visible, feed events to egui first [native only]
+                // Feed events to egui when on start menu or config panel visible [native only]
                 #[cfg(not(target_arch = "wasm32"))]
-                let egui_wants_event = if app.config_panel.is_visible() {
+                let egui_wants_event = if app.is_on_menu() || app.config_panel.is_visible() {
                     app.egui_bridge.on_window_event(&event)
                 } else {
                     false
@@ -59,11 +61,13 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     {
                         #[cfg(not(target_arch = "wasm32"))]
                         {
-                            if app.config_panel.is_visible() {
-                                app.config_panel.toggle();
-                                app.capture_cursor();
-                            } else {
-                                app.release_cursor();
+                            if !app.is_on_menu() {
+                                if app.config_panel.is_visible() {
+                                    app.config_panel.toggle();
+                                    app.capture_cursor();
+                                } else {
+                                    app.release_cursor();
+                                }
                             }
                         }
                         #[cfg(target_arch = "wasm32")]
@@ -75,8 +79,8 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         ..
                     } if app.focused && !app.cursor_captured => {
                         #[cfg(not(target_arch = "wasm32"))]
-                        if app.config_panel.is_visible() {
-                            // Don't capture cursor when config panel is open
+                        if app.is_on_menu() || app.config_panel.is_visible() {
+                            // Don't capture cursor on start menu or when config panel is open
                         } else {
                             app.capture_cursor();
                         }
@@ -95,14 +99,25 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                                 log::error!("surface error: {e}");
                             }
                         }
+
+                        // Process menu actions (needs access to `target` for Exit)
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(action) = app.pending_menu_action.take() {
+                            use crate::ui::MenuAction;
+                            match action {
+                                MenuAction::NewGame => app.start_game(false),
+                                MenuAction::ResumeGame => app.start_game(true),
+                                MenuAction::Exit => target.exit(),
+                            }
+                        }
                     }
                     _ => {}
                 }
             }
             Event::DeviceEvent { event, .. } => {
-                // Block mouse delta when config panel is visible [native only]
+                // Block mouse delta when on start menu or config panel is visible [native only]
                 #[cfg(not(target_arch = "wasm32"))]
-                if app.config_panel.is_visible() {
+                if app.is_on_menu() || app.config_panel.is_visible() {
                     // skip device events
                 } else {
                     app.process_device_event(&event);

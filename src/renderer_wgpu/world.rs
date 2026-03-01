@@ -173,6 +173,13 @@ impl WorldRenderer {
         self.instanced.apply_model_reloads(device, reloads);
     }
 
+    /// Render only the sky pass (used for menu background).
+    pub fn render_sky_only<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
+        pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
+        self.sky.render(pass);
+    }
+
     pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
