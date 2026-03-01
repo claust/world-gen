@@ -91,6 +91,9 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             Err(SurfaceError::Lost) => app.resize(app.gpu.size),
                             Err(SurfaceError::OutOfMemory) => target.exit(),
                             Err(SurfaceError::Timeout | SurfaceError::Outdated) => {}
+                            Err(e) => {
+                                log::error!("surface error: {e}");
+                            }
                         }
                     }
                     _ => {}
@@ -185,6 +188,9 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                                 log::error!("out of GPU memory");
                             }
                             Err(SurfaceError::Timeout | SurfaceError::Outdated) => {}
+                            Err(e) => {
+                                log::error!("surface error: {e}");
+                            }
                         }
                     }
                     _ => {}

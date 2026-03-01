@@ -19,7 +19,7 @@ impl GpuContext {
         } else {
             wgpu::Backends::all()
         };
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
             ..Default::default()
         });
@@ -45,15 +45,13 @@ impl GpuContext {
         };
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("world-gen-device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits,
-                    memory_hints: wgpu::MemoryHints::default(),
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("world-gen-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits,
+                memory_hints: wgpu::MemoryHints::default(),
+                ..Default::default()
+            })
             .await
             .map_err(|e| anyhow::anyhow!("failed to request GPU device: {e}"))?;
 
@@ -75,7 +73,11 @@ impl GpuContext {
         };
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: if cfg!(target_arch = "wasm32") {
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+            } else {
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
+            },
             format,
             width: size.width.max(1),
             height: size.height.max(1),

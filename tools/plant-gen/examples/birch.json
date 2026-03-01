@@ -1,0 +1,48 @@
+{
+  "name": "Birch",
+  "body_plan": {
+    "kind": "tree",
+    "stem_count": 1,
+    "max_height": [12, 18]
+  },
+  "trunk": {
+    "taper": 0.35,
+    "base_flare": 0.1,
+    "straightness": 0.8,
+    "thickness_ratio": 0.022
+  },
+  "branching": {
+    "apical_dominance": 0.7,
+    "max_depth": 3,
+    "arrangement": { "type": "spiral", "angle": 137.5 },
+    "branches_per_node": [2, 3],
+    "insertion_angle": {
+      "base": [45, 55],
+      "tip": [25, 35]
+    },
+    "length_profile": "dome",
+    "child_length_ratio": 0.6,
+    "child_thickness_ratio": 0.55,
+    "gravity_response": 0.6,
+    "randomness": 0.25
+  },
+  "crown": {
+    "shape": "oval",
+    "crown_base": 0.35,
+    "aspect_ratio": 0.65,
+    "density": 0.3,
+    "asymmetry": 0.15
+  },
+  "foliage": {
+    "style": "broadleaf",
+    "leaf_size": [0.015, 0.03],
+    "cluster_strategy": { "type": "individual" },
+    "droop": 0.4,
+    "coverage": 0.5
+  },
+  "color": {
+    "bark": { "h": 40, "s": 0.08, "l": 0.85 },
+    "leaf": { "h": 110, "s": 0.55, "l": 0.45 },
+    "leaf_variance": 0.2
+  }
+}
