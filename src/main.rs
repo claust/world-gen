@@ -48,8 +48,8 @@ fn main() -> anyhow::Result<()> {
             .context("failed to create window")?,
     ));
 
-    let cursor_captured = app::try_grab_window_cursor(window);
-    let app = pollster::block_on(AppState::new(window, debug_api, cursor_captured))?;
+    // Don't capture cursor at startup — start screen needs a free cursor
+    let app = pollster::block_on(AppState::new(window, debug_api, false))?;
 
     app::run_event_loop(app, event_loop)
 }
