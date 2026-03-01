@@ -3,17 +3,20 @@ use glam::IVec2;
 use rayon::prelude::*;
 
 use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
+use crate::world_core::config::HeightmapConfig;
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::layer::Layer;
 
 pub struct TerrainLayer {
     heightmap: Heightmap,
+    sea_level: f32,
 }
 
 impl TerrainLayer {
-    pub fn new(seed: u32) -> Self {
+    pub fn new(seed: u32, heightmap_config: HeightmapConfig, sea_level: f32) -> Self {
         Self {
-            heightmap: Heightmap::new(seed),
+            heightmap: Heightmap::new(seed, heightmap_config),
+            sea_level,
         }
     }
 }
@@ -55,6 +58,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         ChunkTerrain {
             heights,
             moisture,
+            has_water: min_height < self.sea_level,
             min_height,
             max_height,
         }

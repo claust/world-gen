@@ -1,5 +1,21 @@
 // Binary entry point — native only.
 // On wasm32, the cdylib entry point in lib.rs is used instead.
+#![allow(unexpected_cfgs)] // objc crate's msg_send! macro checks cfg(feature = "cargo-clippy")
+
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    use objc::runtime::{Class, Object};
+    use objc::{msg_send, sel, sel_impl};
+
+    let icon_data = include_bytes!("../assets/icon/icon_1024.png");
+    unsafe {
+        let ns_data: *mut Object = msg_send![Class::get("NSData").unwrap(), dataWithBytes:icon_data.as_ptr() length:icon_data.len()];
+        let alloc: *mut Object = msg_send![Class::get("NSImage").unwrap(), alloc];
+        let ns_image: *mut Object = msg_send![alloc, initWithData: ns_data];
+        let app: *mut Object = msg_send![Class::get("NSApplication").unwrap(), sharedApplication];
+        let _: () = msg_send![app, setApplicationIconImage: ns_image];
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
@@ -20,6 +36,10 @@ fn main() -> anyhow::Result<()> {
     );
 
     let event_loop = EventLoop::new()?;
+
+    #[cfg(target_os = "macos")]
+    set_macos_dock_icon();
+
     let window = Box::leak(Box::new(
         WindowBuilder::new()
             .with_title("world-gen")

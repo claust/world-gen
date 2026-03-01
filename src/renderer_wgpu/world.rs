@@ -5,7 +5,11 @@ use glam::{IVec2, Mat4, Vec3};
 use super::hud_pass::HudPass;
 use super::instanced_pass::InstancedPass;
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
+use super::minimap_pass::MinimapPass;
+use super::sky::SkyPalette;
+use super::sky_pass::SkyPass;
 use super::terrain_pass::TerrainPass;
+use super::water_pass::WaterPass;
 use crate::renderer_wgpu::pipeline::DepthTexture;
 use crate::world_core::chunk::ChunkData;
 
@@ -13,9 +17,15 @@ pub struct WorldRenderer {
     frame_bg: FrameBindGroup,
     terrain_material: MaterialBindGroup,
     depth: DepthTexture,
+    sky: SkyPass,
     terrain: TerrainPass,
+    water: WaterPass,
     instanced: InstancedPass,
     hud: HudPass,
+    minimap: MinimapPass,
+    fog_color: [f32; 3],
+    fog_start: f32,
+    fog_end: f32,
 }
 
 impl WorldRenderer {
@@ -23,6 +33,8 @@ impl WorldRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
+        sea_level: f32,
+        load_radius: i32,
     ) -> Self {
         let frame_bg = FrameBindGroup::new(device);
         let terrain_material = MaterialBindGroup::new_terrain(device);
@@ -33,18 +45,42 @@ impl WorldRenderer {
             push_constant_ranges: &[],
         });
 
+        let sky = SkyPass::new(device, config, &pipeline_layout);
         let terrain = TerrainPass::new(device, config, &pipeline_layout);
+        let water = WaterPass::new(device, config, &pipeline_layout, sea_level);
         let instanced = InstancedPass::new(device, config, &pipeline_layout);
         let hud = HudPass::new(device, queue, config);
+        let minimap = MinimapPass::new(device, queue, config);
+
+        let r = load_radius as f32;
+        let fog_start = r * 256.0 * 0.6;
+        let fog_end = (r + 0.5) * 256.0;
+        let fog_color = [0.45, 0.68, 0.96];
 
         Self {
             frame_bg,
             terrain_material,
             depth: DepthTexture::new(device, config, "terrain-depth"),
+            sky,
             terrain,
+            water,
             instanced,
             hud,
+            minimap,
+            fog_color,
+            fog_start,
+            fog_end,
         }
+    }
+
+    pub fn set_sea_level(&mut self, _queue: &wgpu::Queue, sea_level: f32) {
+        self.water.set_sea_level(sea_level);
+    }
+
+    pub fn set_load_radius(&mut self, load_radius: i32) {
+        let r = load_radius as f32;
+        self.fog_start = r * 256.0 * 0.6;
+        self.fog_end = (r + 0.5) * 256.0;
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
@@ -65,9 +101,21 @@ impl WorldRenderer {
         );
     }
 
-    pub fn update_material(&self, queue: &wgpu::Queue, light_direction: Vec3, ambient: f32) {
-        self.terrain_material
-            .update_terrain(queue, light_direction, ambient);
+    pub fn update_material(
+        &mut self,
+        queue: &wgpu::Queue,
+        light_direction: Vec3,
+        ambient: f32,
+        palette: &SkyPalette,
+    ) {
+        self.fog_color = palette.horizon;
+        self.terrain_material.update_terrain(
+            queue,
+            light_direction,
+            ambient,
+            [self.fog_start, self.fog_end, 0.0, 0.0],
+            palette,
+        );
     }
 
     pub fn update_hud(
@@ -81,6 +129,23 @@ impl WorldRenderer {
     ) {
         self.hud
             .update(queue, device, camera_pos, camera_yaw, screen_w, screen_h);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_minimap(
+        &mut self,
+        queue: &wgpu::Queue,
+        device: &wgpu::Device,
+        dt: f32,
+        camera_pos: Vec3,
+        camera_yaw: f32,
+        camera_fov: f32,
+        screen_w: f32,
+        screen_h: f32,
+    ) {
+        self.minimap.update(
+            queue, device, dt, camera_pos, camera_yaw, camera_fov, screen_w, screen_h,
+        );
     }
 
     pub fn sync_chunks(
@@ -98,7 +163,9 @@ impl WorldRenderer {
             queue.submit(Some(encoder.finish()));
         }
 
+        self.water.sync_chunks(device, chunks);
         self.instanced.sync_chunks(device, chunks);
+        self.minimap.sync_chunks(queue, chunks);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -110,9 +177,21 @@ impl WorldRenderer {
         pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
 
+        self.sky.render(pass);
         self.terrain.render(pass);
         self.instanced.render(pass);
+        self.water.render(pass);
         self.hud.render(pass);
+        self.minimap.render(pass);
+    }
+
+    pub fn clear_color(&self) -> wgpu::Color {
+        wgpu::Color {
+            r: self.fog_color[0] as f64,
+            g: self.fog_color[1] as f64,
+            b: self.fog_color[2] as f64,
+            a: 1.0,
+        }
     }
 
     pub fn depth_view(&self) -> &wgpu::TextureView {

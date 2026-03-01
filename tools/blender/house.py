@@ -134,11 +134,12 @@ def build_roof(mat):
     ]
 
     # Faces: front slope, back slope, left gable, right gable
+    # Winding order must produce outward-facing normals (right-hand rule)
     faces = [
-        (3, 2, 5, 4),  # front slope
-        (1, 0, 4, 5),  # back slope
-        (0, 3, 4),      # left gable
-        (2, 1, 5),      # right gable
+        (4, 5, 2, 3),  # front slope
+        (5, 4, 0, 1),  # back slope
+        (4, 3, 0),      # left gable
+        (5, 1, 2),      # right gable
     ]
 
     mesh = bpy.data.meshes.new("RoofMesh")

@@ -33,12 +33,26 @@ Three-layer split:
 
 HTTP + WebSocket server (axum) exposing telemetry and commands. Companion monitor app lives in `tools/debug-monitor/` (Bun + React).
 
-### Visual feedback loop with `take_screenshot`
+### Debug CLI (`tools/debug-cli/cli.ts`)
 
-The debug API's `take_screenshot` command captures the current GPU frame to `captures/` (`latest.png` + timestamped history). Use this for a closed feedback loop: make a change, rebuild, send a screenshot command via the debug API, read the resulting `captures/latest.png` to verify the visual result, and iterate. The debug API is enabled by default on `127.0.0.1:7777`.
+Bun+TypeScript CLI for sending debug API commands and receiving results as JSON. Preferred over raw curl — it handles the HTTP POST + WebSocket response flow in one call.
 
 ```bash
-curl -X POST http://127.0.0.1:7777/api/command \
-  -H 'Content-Type: application/json' \
-  -d '{"id":"ss-1","type":"take_screenshot"}'
+bun tools/debug-cli/cli.ts state                              # get telemetry
+bun tools/debug-cli/cli.ts screenshot                          # capture frame
+bun tools/debug-cli/cli.ts find_nearest --kind house           # find nearest object
+bun tools/debug-cli/cli.ts look_at --id house-0_0-3 --distance 20  # inspect object
+bun tools/debug-cli/cli.ts set_camera_position --x 100 --y 150 --z 100
+bun tools/debug-cli/cli.ts set_camera_look --yaw 1.5 --pitch -0.3
+bun tools/debug-cli/cli.ts set_day_speed --value 0.1
+bun tools/debug-cli/cli.ts move --key w --duration 500
+```
+
+### Visual feedback loop with `take_screenshot`
+
+The debug API's `take_screenshot` command captures the current GPU frame to `captures/` (`latest.png` + timestamped history). Use this for a closed feedback loop: make a change, rebuild, take a screenshot, read `captures/latest.png` to verify the visual result, and iterate. The debug API is enabled by default on `127.0.0.1:7777`.
+
+```bash
+bun tools/debug-cli/cli.ts screenshot
+# Then read captures/latest.png to see the result
 ```

@@ -34,9 +34,11 @@ type CommandApplied = {
   ok: boolean;
   message: string;
   day_speed?: number;
+  object_id?: string;
+  object_position?: [number, number, number];
 };
 
-type MoveKey = "w" | "a" | "s" | "d";
+type MoveKey = "w" | "a" | "s" | "d" | "up" | "down";
 
 type WsEvent =
   | { type: "telemetry"; payload: Telemetry }
@@ -68,6 +70,8 @@ function App() {
     a: 0,
     s: 0,
     d: 0,
+    up: 0,
+    down: 0,
   });
 
   const [connection, setConnection] = useState<"connecting" | "connected" | "disconnected">(
@@ -77,7 +81,18 @@ function App() {
   const [lastAck, setLastAck] = useState<CommandApplied | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [daySpeedInput, setDaySpeedInput] = useState("0.04");
+  const [teleportX, setTeleportX] = useState("");
+  const [teleportY, setTeleportY] = useState("");
+  const [teleportZ, setTeleportZ] = useState("");
+  const [lookYaw, setLookYaw] = useState("");
+  const [lookPitch, setLookPitch] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [findKind, setFindKind] = useState<"house" | "tree">("house");
+  const [foundObject, setFoundObject] = useState<{
+    id: string;
+    position: [number, number, number];
+  } | null>(null);
+  const [lookAtDistance, setLookAtDistance] = useState("15");
 
   const sendCommand = useCallback(
     async (command: Record<string, unknown>) => {
@@ -139,7 +154,7 @@ function App() {
   );
 
   const releaseAllMoveKeys = useCallback(() => {
-    const keys: MoveKey[] = ["w", "a", "s", "d"];
+    const keys: MoveKey[] = ["w", "a", "s", "d", "up", "down"];
     for (const key of keys) {
       if (keyHoldCountsRef.current[key] > 0) {
         keyHoldCountsRef.current[key] = 0;
@@ -195,6 +210,12 @@ function App() {
             if (parsed.payload.ok && typeof parsed.payload.day_speed === "number") {
               setDaySpeedInput(parsed.payload.day_speed.toFixed(2));
             }
+            if (parsed.payload.ok && parsed.payload.object_id && parsed.payload.object_position) {
+              setFoundObject({
+                id: parsed.payload.object_id,
+                position: parsed.payload.object_position,
+              });
+            }
           }
         } catch {
           setError("failed to parse websocket event");
@@ -241,6 +262,11 @@ function App() {
         case "KeyD":
         case "ArrowRight":
           return "d";
+        case "Space":
+          return "up";
+        case "ShiftLeft":
+        case "ShiftRight":
+          return "down";
         default:
           return null;
       }
@@ -306,6 +332,88 @@ function App() {
       setError(message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const submitTeleport = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+
+    const x = teleportX === "" ? (telemetry?.camera.x ?? 0) : Number(teleportX);
+    const y = teleportY === "" ? (telemetry?.camera.y ?? 0) : Number(teleportY);
+    const z = teleportZ === "" ? (telemetry?.camera.z ?? 0) : Number(teleportZ);
+
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      setError("teleport coordinates must be numbers");
+      return;
+    }
+
+    try {
+      await sendCommand({
+        type: "set_camera_position",
+        x,
+        y,
+        z,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    }
+  };
+
+  const submitLook = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+
+    const yaw = lookYaw === "" ? (telemetry?.camera.yaw ?? 0) : Number(lookYaw);
+    const pitch = lookPitch === "" ? (telemetry?.camera.pitch ?? 0) : Number(lookPitch);
+
+    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {
+      setError("yaw and pitch must be numbers");
+      return;
+    }
+
+    try {
+      await sendCommand({
+        type: "set_camera_look",
+        yaw,
+        pitch,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    }
+  };
+
+  const submitFindNearest = async () => {
+    setError(null);
+    try {
+      await sendCommand({ type: "find_nearest", kind: findKind });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    }
+  };
+
+  const submitLookAt = async () => {
+    if (!foundObject) return;
+    setError(null);
+
+    const dist = Number(lookAtDistance);
+    if (!Number.isFinite(dist) || dist <= 0) {
+      setError("distance must be a positive number");
+      return;
+    }
+
+    try {
+      await sendCommand({
+        type: "look_at_object",
+        object_id: foundObject.id,
+        distance: dist,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
     }
   };
 
@@ -392,8 +500,13 @@ function App() {
                 </Button>
               </form>
               <div className="space-y-2">
-                <div className="text-sm">Navigation (WASD / Arrow keys)</div>
+                <div className="text-sm">Navigation (WASD / Arrow keys / Space / Shift)</div>
                 <div className="grid w-fit grid-cols-3 gap-2">
+                  <div />
+                  <Button type="button" variant="outline" {...buttonHandlers("up")}>
+                    Up
+                  </Button>
+                  <div />
                   <div />
                   <Button type="button" variant="outline" {...buttonHandlers("w")}>
                     W
@@ -408,7 +521,122 @@ function App() {
                   <Button type="button" variant="outline" {...buttonHandlers("d")}>
                     D
                   </Button>
+                  <div />
+                  <Button type="button" variant="outline" {...buttonHandlers("down")}>
+                    Down
+                  </Button>
+                  <div />
                 </div>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <div className="text-sm">Teleport</div>
+                <form className="flex items-end gap-2" onSubmit={submitTeleport}>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">X</label>
+                    <Input
+                      aria-label="x"
+                      className="w-20"
+                      value={teleportX}
+                      onChange={(e) => setTeleportX(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.x.toFixed(1) : "0"}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Y</label>
+                    <Input
+                      aria-label="y"
+                      className="w-20"
+                      value={teleportY}
+                      onChange={(e) => setTeleportY(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.y.toFixed(1) : "0"}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Z</label>
+                    <Input
+                      aria-label="z"
+                      className="w-20"
+                      value={teleportZ}
+                      onChange={(e) => setTeleportZ(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.z.toFixed(1) : "0"}
+                    />
+                  </div>
+                  <Button type="submit">Go</Button>
+                </form>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <div className="text-sm">Camera Look (radians)</div>
+                <form className="flex items-end gap-2" onSubmit={submitLook}>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Yaw</label>
+                    <Input
+                      aria-label="yaw"
+                      className="w-24"
+                      value={lookYaw}
+                      onChange={(e) => setLookYaw(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.yaw.toFixed(2) : "0"}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Pitch</label>
+                    <Input
+                      aria-label="pitch"
+                      className="w-24"
+                      value={lookPitch}
+                      onChange={(e) => setLookPitch(e.target.value)}
+                      placeholder={telemetry ? telemetry.camera.pitch.toFixed(2) : "0"}
+                    />
+                  </div>
+                  <Button type="submit">Set</Button>
+                </form>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <div className="text-sm">Find &amp; Inspect</div>
+                <div className="flex items-end gap-2">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Kind</label>
+                    <select
+                      className="flex h-9 w-24 rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-sm"
+                      value={findKind}
+                      onChange={(e) => setFindKind(e.target.value as "house" | "tree")}
+                    >
+                      <option value="house">House</option>
+                      <option value="tree">Tree</option>
+                    </select>
+                  </div>
+                  <Button type="button" onClick={submitFindNearest}>
+                    Find Nearest
+                  </Button>
+                </div>
+                {foundObject ? (
+                  <div className="space-y-2 rounded-md border border-input p-2 text-xs">
+                    <div>
+                      Found: <span className="font-mono">{foundObject.id}</span>
+                    </div>
+                    <div>
+                      Position: ({foundObject.position[0].toFixed(1)},{" "}
+                      {foundObject.position[1].toFixed(1)}, {foundObject.position[2].toFixed(1)})
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">Distance</label>
+                        <Input
+                          aria-label="look at distance"
+                          className="w-20"
+                          value={lookAtDistance}
+                          onChange={(e) => setLookAtDistance(e.target.value)}
+                          placeholder="15"
+                        />
+                      </div>
+                      <Button type="button" onClick={submitLookAt}>
+                        Look At
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <Separator />
               <div className="text-sm">

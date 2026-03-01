@@ -8,10 +8,13 @@ use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{
     ChunkTerrain, HouseInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
 };
+use crate::world_core::config::HousesConfig;
 use crate::world_core::layer::Layer;
 
 pub struct HousesLayer {
     seed: u32,
+    config: HousesConfig,
+    sea_level: f32,
 }
 
 pub struct HousesInput<'a> {
@@ -21,8 +24,12 @@ pub struct HousesInput<'a> {
 }
 
 impl HousesLayer {
-    pub fn new(seed: u32) -> Self {
-        Self { seed }
+    pub fn new(seed: u32, config: HousesConfig, sea_level: f32) -> Self {
+        Self {
+            seed,
+            config,
+            sea_level,
+        }
     }
 }
 
@@ -41,7 +48,7 @@ impl<'a> Layer<HousesInput<'a>, Vec<HouseInstance>> for HousesLayer {
         }
 
         let mut houses = Vec::new();
-        let spacing = 40.0;
+        let spacing = self.config.grid_spacing;
         let cells_per_side = (CHUNK_SIZE_METERS / spacing) as i32;
 
         for gz in 0..cells_per_side {
@@ -74,7 +81,7 @@ impl<'a> Layer<HousesInput<'a>, Vec<HouseInstance>> for HousesLayer {
                 let biome = sample_biome_nearest(&biome_map.values, local_x, local_z);
 
                 let density = match biome {
-                    Biome::Grassland => 0.04,
+                    Biome::Grassland => self.config.grassland_density,
                     _ => 0.0,
                 };
                 if rnd > density {
@@ -82,7 +89,10 @@ impl<'a> Layer<HousesInput<'a>, Vec<HouseInstance>> for HousesLayer {
                 }
 
                 let slope = estimate_slope(&terrain.heights, local_x, local_z);
-                if slope > 0.3 || !(0.0..=100.0).contains(&height) {
+                if slope > self.config.max_slope
+                    || height < self.sea_level
+                    || !(self.config.height_min..=self.config.height_max).contains(&height)
+                {
                     continue;
                 }
 

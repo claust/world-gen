@@ -30,10 +30,18 @@ if [ "${#staged_rust_files[@]}" -gt 0 ]; then
     failed=1
   fi
 
-  echo "pre-commit: running clippy"
+  echo "pre-commit: running clippy (native)"
   if ! cargo clippy --all-targets --all-features -- -D warnings; then
-    echo "pre-commit: clippy failed. Fix the diagnostics above."
+    echo "pre-commit: clippy (native) failed. Fix the diagnostics above."
     failed=1
+  fi
+
+  if rustup target list --installed | grep -q wasm32-unknown-unknown; then
+    echo "pre-commit: running clippy (wasm32)"
+    if ! cargo clippy --target wasm32-unknown-unknown --lib -- -D warnings; then
+      echo "pre-commit: clippy (wasm32) failed. Fix the diagnostics above."
+      failed=1
+    fi
   fi
 fi
 

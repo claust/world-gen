@@ -1,12 +1,9 @@
 # World Gen
 
 ## Project Overview
-Add your brief project purpose/vision here.
+A procedurally generated 3D world with mountains, forests, rivers, and other natural landscapes — built entirely from scratch in Rust using `wgpu`. The vision is to create a beautiful, explorable open world with rich biomes and terrain variety, all generated on the fly.
 
-## What This Repository Contains
-- A Rust + `wgpu` prototype for rendering a procedurally generated terrain world.
-- A flyable MVP with streaming chunks, camera movement, and day/night lighting.
-- A clean split between world core logic, runtime orchestration, and rendering adapters.
+This is an educational project focused on learning Rust and building a homemade 3D engine from the ground up — no Unity, no Unreal, no off-the-shelf game engine. Everything from the rendering pipeline to the terrain generation is written using LLM's.
 
 ## Prerequisites
 - macOS/Linux/Windows
@@ -46,42 +43,33 @@ cargo check
 ```
 
 ## Debugging
-### Debug API + Monitor (MVP)
-Run the game with the local debug API enabled:
+### Debug API + CLI
+Run the game with the debug API enabled:
 
 ```bash
 cargo run --release -- --debug-api
 ```
 
-Default bind is `127.0.0.1:7777`.
-
-Optional overrides:
+Default bind is `127.0.0.1:7777`. Optional override:
 
 ```bash
-WORLD_GEN_DEBUG_API=true cargo run --release
 cargo run --release -- --debug-api --debug-api-bind 127.0.0.1:9000
 ```
 
-Run the monitor app (separate Bun + React + Tailwind + shadcn project):
+Use the debug CLI (requires [Bun](https://bun.sh)) to interact with the running game:
 
 ```bash
-cd tools/debug-monitor
-bun install
-bun dev
+bun tools/debug-cli/cli.ts state                                    # get telemetry
+bun tools/debug-cli/cli.ts screenshot                                # capture frame to captures/
+bun tools/debug-cli/cli.ts set_day_speed --value 0.1                 # set day/night cycle speed
+bun tools/debug-cli/cli.ts set_camera_position --x 100 --y 150 --z 100  # teleport camera
+bun tools/debug-cli/cli.ts set_camera_look --yaw 1.5 --pitch -0.3   # set camera orientation
+bun tools/debug-cli/cli.ts find_nearest --kind house                 # find nearest object
+bun tools/debug-cli/cli.ts look_at --id house-0_0-3 --distance 20   # look at a specific object
+bun tools/debug-cli/cli.ts move --key w --duration 500               # move camera
 ```
 
-If debug API is on a non-default loopback port:
-
-```bash
-cd tools/debug-monitor
-VITE_DEBUG_API_BASE=http://127.0.0.1:9000 bun dev
-```
-
-Available API routes:
-- `GET /health`
-- `GET /api/state`
-- `POST /api/command`
-- `GET /ws`
+If the debug API is on a non-default port, pass `--api http://127.0.0.1:9000`.
 
 ### Debug In VS Code (`F5`)
 - Open this folder (`/Users/claus/Repos/world-gen`) as the workspace root.

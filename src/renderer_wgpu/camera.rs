@@ -8,6 +8,8 @@ pub enum MoveDirection {
     Backward,
     Left,
     Right,
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +21,8 @@ impl MoveMask {
     const LEFT: Self = Self(1 << 1);
     const BACKWARD: Self = Self(1 << 2);
     const RIGHT: Self = Self(1 << 3);
+    const UP: Self = Self(1 << 4);
+    const DOWN: Self = Self(1 << 5);
 
     fn from_direction(direction: MoveDirection) -> Self {
         match direction {
@@ -26,6 +30,8 @@ impl MoveMask {
             MoveDirection::Backward => Self::BACKWARD,
             MoveDirection::Left => Self::LEFT,
             MoveDirection::Right => Self::RIGHT,
+            MoveDirection::Up => Self::UP,
+            MoveDirection::Down => Self::DOWN,
         }
     }
 
@@ -228,10 +234,10 @@ impl CameraController {
         if movement.contains(MoveMask::BACKWARD) {
             direction -= flat_forward;
         }
-        if self.local_move_up {
+        if self.local_move_up || movement.contains(MoveMask::UP) {
             direction += Vec3::Y;
         }
-        if self.local_move_down {
+        if self.local_move_down || movement.contains(MoveMask::DOWN) {
             direction -= Vec3::Y;
         }
 

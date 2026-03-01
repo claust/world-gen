@@ -1,6 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod debug_api;
 pub mod renderer_wgpu;
+pub mod ui;
 pub mod world_core;
 pub mod world_runtime;
 

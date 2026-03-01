@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use glam::{IVec2, Vec3};
 
 use crate::world_core::chunk::ChunkData;
+use crate::world_core::config::GameConfig;
+use crate::world_core::save::SaveData;
 use crate::world_core::time::WorldClock;
 use crate::world_runtime::streaming::StreamingWorld;
 
@@ -25,16 +28,29 @@ pub struct WorldRuntime {
 
 impl WorldRuntime {
     pub fn new(
-        seed: u32,
-        load_radius: i32,
+        config: &GameConfig,
+        save: Option<&SaveData>,
         threads: usize,
-        start_hour: f32,
-        day_speed: f32,
     ) -> anyhow::Result<Self> {
+        let seed = save.map(|s| s.world.seed).unwrap_or(config.world.seed);
+        let start_hour = save
+            .map(|s| s.world.hour)
+            .unwrap_or(config.world.start_hour);
+        let day_speed = save
+            .map(|s| s.world.day_speed)
+            .unwrap_or(config.world.day_speed);
+        let load_radius = config.world.load_radius;
+
+        let arc_config = Arc::new(config.clone());
+
         Ok(Self {
-            streaming: StreamingWorld::new(seed, load_radius, threads)?,
+            streaming: StreamingWorld::new(seed, load_radius, threads, arc_config)?,
             clock: WorldClock::new(start_hour, day_speed),
         })
+    }
+
+    pub fn reload_config(&mut self, config: &GameConfig) {
+        self.streaming.reload_config(config);
     }
 
     pub fn update(&mut self, dt_seconds: f32, camera_position: Vec3) {
@@ -63,6 +79,10 @@ impl WorldRuntime {
         }
     }
 
+    pub fn seed(&self) -> u32 {
+        self.streaming.seed()
+    }
+
     pub fn day_speed(&self) -> f32 {
         self.clock.day_speed()
     }
@@ -77,5 +97,9 @@ impl WorldRuntime {
 
         self.clock.set_day_speed(value);
         Ok(self.clock.day_speed())
+    }
+
+    pub fn hour(&self) -> f32 {
+        self.clock.hour()
     }
 }

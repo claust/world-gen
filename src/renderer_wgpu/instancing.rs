@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use glam::Vec3;
 use wgpu::util::DeviceExt;
 
-use super::geometry::{append_box, append_octahedron, append_quad, append_triangle, Vertex};
+use super::geometry::Vertex;
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
-use crate::world_core::chunk::{HouseInstance, TreeInstance};
+use crate::world_core::chunk::{FernInstance, HouseInstance, TreeInstance};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Zeroable, Pod)]
@@ -30,77 +29,24 @@ pub struct GpuInstanceChunk {
     pub instance_count: u32,
 }
 
-/// Registry of named prototype meshes. Tries to load GLB models from
-/// `assets/models/`, falling back to procedural geometry when files are missing.
+/// Registry of named prototype meshes loaded from GLB models in `assets/models/`.
 pub struct ModelRegistry {
     pub models: HashMap<String, PrototypeMesh>,
-    /// True when the "tree" model is a single unified mesh (loaded from GLB)
-    /// rather than the separate trunk/canopy procedural meshes.
-    pub unified_tree: bool,
 }
 
 impl ModelRegistry {
+    #[allow(unused_variables, unused_mut)]
     pub fn new(device: &wgpu::Device) -> Self {
         let mut models = HashMap::new();
-        let mut unified_tree = false;
 
-        // Try loading GLB models, fall back to procedural geometry
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            if let Some(mesh) = model_loader::try_load_model(device, "tree") {
-                models.insert("tree".to_string(), mesh);
-                unified_tree = true;
-            }
-
-            if let Some(mesh) = model_loader::try_load_model(device, "house") {
-                models.insert("house".to_string(), mesh);
+        for name in ["tree", "house", "fern"] {
+            if let Some(mesh) = model_loader::try_load_model(device, name) {
+                models.insert(name.to_string(), mesh);
             }
         }
 
-        // Suppress unused_mut on wasm32 where the cfg block above is compiled out
-        let _ = &mut unified_tree;
-
-        // Procedural fallbacks
-        let mut verts = Vec::new();
-        let mut idxs = Vec::new();
-
-        if !models.contains_key("tree") {
-            // Separate trunk and canopy meshes (legacy procedural)
-            append_box(
-                &mut verts,
-                &mut idxs,
-                Vec3::ZERO,
-                Vec3::splat(0.5),
-                Vec3::ONE,
-            );
-            models.insert(
-                "trunk".to_string(),
-                upload_prototype(device, &verts, &idxs, "unit-box"),
-            );
-
-            verts.clear();
-            idxs.clear();
-            append_octahedron(&mut verts, &mut idxs, Vec3::ZERO, 1.0, Vec3::ONE);
-            models.insert(
-                "canopy".to_string(),
-                upload_prototype(device, &verts, &idxs, "unit-octahedron"),
-            );
-        }
-
-        if !models.contains_key("house") {
-            verts.clear();
-            idxs.clear();
-            build_house_prototype(&mut verts, &mut idxs);
-            models.insert(
-                "house".to_string(),
-                upload_prototype(device, &verts, &idxs, "house-prototype"),
-            );
-        }
-
-        Self {
-            models,
-            unified_tree,
-        }
+        Self { models }
     }
 
     pub fn get(&self, name: &str) -> Option<&PrototypeMesh> {
@@ -108,20 +54,8 @@ impl ModelRegistry {
     }
 
     /// Replace a prototype mesh by name, dropping the old GPU buffers.
-    /// Returns `true` if a procedural→GLB tree transition occurred
-    /// (meaning tree instance buffers need to be rebuilt).
-    pub fn hot_swap(&mut self, name: &str, mesh: PrototypeMesh) -> bool {
+    pub fn hot_swap(&mut self, name: &str, mesh: PrototypeMesh) {
         self.models.insert(name.to_string(), mesh);
-
-        let mut tree_transition = false;
-        if name == "tree" && !self.unified_tree {
-            self.unified_tree = true;
-            self.models.remove("trunk");
-            self.models.remove("canopy");
-            tree_transition = true;
-        }
-
-        tree_transition
     }
 }
 
@@ -148,67 +82,7 @@ pub fn upload_prototype(
     }
 }
 
-fn build_house_prototype(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>) {
-    let wall_color = Vec3::new(0.72, 0.63, 0.46);
-    let roof_color = Vec3::new(0.55, 0.22, 0.15);
-    let half_w = 2.5;
-    let half_d = 2.0;
-    let wall_h = 3.0;
-    let roof_h = 2.0;
-
-    let bl = Vec3::new(-half_w, 0.0, -half_d);
-    let br = Vec3::new(half_w, 0.0, -half_d);
-    let fr = Vec3::new(half_w, 0.0, half_d);
-    let fl = Vec3::new(-half_w, 0.0, half_d);
-    let tbl = bl + Vec3::Y * wall_h;
-    let tbr = br + Vec3::Y * wall_h;
-    let tfr = fr + Vec3::Y * wall_h;
-    let tfl = fl + Vec3::Y * wall_h;
-    let ridge_l = Vec3::new(-half_w, wall_h + roof_h, 0.0);
-    let ridge_r = Vec3::new(half_w, wall_h + roof_h, 0.0);
-
-    // Walls
-    append_quad(vertices, indices, [fl, fr, tfr, tfl], Vec3::Z, wall_color);
-    append_quad(
-        vertices,
-        indices,
-        [br, bl, tbl, tbr],
-        Vec3::NEG_Z,
-        wall_color,
-    );
-    append_quad(vertices, indices, [fr, br, tbr, tfr], Vec3::X, wall_color);
-    append_quad(
-        vertices,
-        indices,
-        [bl, fl, tfl, tbl],
-        Vec3::NEG_X,
-        wall_color,
-    );
-
-    // Roof slopes
-    let roof_n_front = (Vec3::Z * half_d + Vec3::Y * roof_h).normalize();
-    append_quad(
-        vertices,
-        indices,
-        [tfl, tfr, ridge_r, ridge_l],
-        roof_n_front,
-        roof_color,
-    );
-    let roof_n_back = (Vec3::NEG_Z * half_d + Vec3::Y * roof_h).normalize();
-    append_quad(
-        vertices,
-        indices,
-        [tbr, tbl, ridge_l, ridge_r],
-        roof_n_back,
-        roof_color,
-    );
-
-    // Gable ends
-    append_triangle(vertices, indices, tbl, tfl, ridge_l, roof_color);
-    append_triangle(vertices, indices, tfr, tbr, ridge_r, roof_color);
-}
-
-/// Build instances for a unified tree model (single mesh with baked trunk + canopy).
+/// Build instances for a tree model (single mesh with baked trunk + canopy).
 /// Uses average height as uniform scale, positioned at the tree base.
 pub fn build_tree_instances(trees: &[TreeInstance]) -> Vec<InstanceData> {
     trees
@@ -227,36 +101,15 @@ pub fn build_tree_instances(trees: &[TreeInstance]) -> Vec<InstanceData> {
         .collect()
 }
 
-pub fn build_trunk_instances(trees: &[TreeInstance]) -> Vec<InstanceData> {
-    trees
+pub fn build_fern_instances(ferns: &[FernInstance]) -> Vec<InstanceData> {
+    ferns
         .iter()
-        .map(|t| InstanceData {
-            position: [
-                t.position.x,
-                t.position.y + t.trunk_height * 0.5,
-                t.position.z,
-            ],
-            rotation_y: 0.0,
-            scale: [0.30, t.trunk_height * 0.5, 0.30],
+        .map(|f| InstanceData {
+            position: [f.position.x, f.position.y, f.position.z],
+            rotation_y: f.rotation,
+            scale: [f.scale, f.scale, f.scale],
             _pad: 0.0,
-            color: [0.33, 0.22, 0.11, 1.0],
-        })
-        .collect()
-}
-
-pub fn build_canopy_instances(trees: &[TreeInstance]) -> Vec<InstanceData> {
-    trees
-        .iter()
-        .map(|t| InstanceData {
-            position: [
-                t.position.x,
-                t.position.y + t.trunk_height + t.canopy_radius,
-                t.position.z,
-            ],
-            rotation_y: 0.0,
-            scale: [t.canopy_radius, t.canopy_radius, t.canopy_radius],
-            _pad: 0.0,
-            color: [0.14, 0.38, 0.16, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
         })
         .collect()
 }
