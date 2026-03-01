@@ -4,7 +4,6 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use super::geometry::Vertex;
-#[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
 use crate::world_core::chunk::{FernInstance, HouseInstance, TreeInstance};
 
@@ -35,7 +34,6 @@ pub struct ModelRegistry {
 }
 
 impl ModelRegistry {
-    #[allow(unused_variables, unused_mut)]
     pub fn new(device: &wgpu::Device) -> Self {
         let mut models = HashMap::new();
 
@@ -43,6 +41,24 @@ impl ModelRegistry {
         for name in ["tree", "house", "fern"] {
             if let Some(mesh) = model_loader::try_load_model(device, name) {
                 models.insert(name.to_string(), mesh);
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let embedded: &[(&str, &[u8])] = &[
+                ("tree", include_bytes!("../../assets/models/tree.glb")),
+                ("house", include_bytes!("../../assets/models/house.glb")),
+                ("fern", include_bytes!("../../assets/models/fern.glb")),
+            ];
+            for (name, bytes) in embedded {
+                match model_loader::load_glb(device, bytes, name) {
+                    Ok(mesh) => {
+                        log::info!("Loaded embedded model: {name}");
+                        models.insert(name.to_string(), mesh);
+                    }
+                    Err(e) => log::warn!("Failed to load embedded model {name}: {e:#}"),
+                }
             }
         }
 
