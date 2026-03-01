@@ -13,6 +13,7 @@ pub mod material;
 pub mod model_loader;
 pub mod pipeline;
 pub mod sky;
+mod sky_pass;
 pub mod terrain_compute;
 pub mod world;
 

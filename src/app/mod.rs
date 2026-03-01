@@ -277,6 +277,7 @@ impl AppState {
         let view_proj = self.camera.view_projection(aspect);
         let lighting = self.world.lighting();
         let stats = self.world.stats();
+        let palette = crate::renderer_wgpu::sky::sky_palette(stats.hour);
         self.world_renderer.update_frame(
             &self.gpu.queue,
             view_proj,
@@ -288,6 +289,7 @@ impl AppState {
             &self.gpu.queue,
             lighting.sun_direction,
             lighting.ambient,
+            &palette,
         );
         self.world_renderer.update_hud(
             &self.gpu.queue,
@@ -355,7 +357,7 @@ impl AppState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::renderer_wgpu::sky::clear_color()),
+                        load: wgpu::LoadOp::Clear(self.world_renderer.clear_color()),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
