@@ -29,7 +29,7 @@ fn vs_main(@builtin(vertex_index) id: u32) -> VertexOutput {
     let uv = vec2<f32>(f32((id << 1u) & 2u), f32(id & 2u));
     var out: VertexOutput;
     out.clip_position = vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0);
-    out.ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    out.ndc = out.clip_position.xy;
     return out;
 }
 
