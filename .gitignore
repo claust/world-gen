@@ -23,3 +23,4 @@ save.json
 # Plant generator output
 tools/plant-gen/examples/*.svg
 tools/plant-gen/examples/*.glb
+tools/plant-gen/examples/*.png
