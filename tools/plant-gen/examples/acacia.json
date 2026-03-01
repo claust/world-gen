@@ -1,0 +1,48 @@
+{
+  "name": "Acacia",
+  "body_plan": {
+    "kind": "tree",
+    "stem_count": 1,
+    "max_height": [8, 14]
+  },
+  "trunk": {
+    "taper": 0.3,
+    "base_flare": 0.15,
+    "straightness": 0.7,
+    "thickness_ratio": 0.04
+  },
+  "branching": {
+    "apical_dominance": 0.55,
+    "max_depth": 2,
+    "arrangement": { "type": "spiral", "angle": 137.5 },
+    "branches_per_node": [2, 3],
+    "insertion_angle": {
+      "base": [75, 85],
+      "tip": [70, 80]
+    },
+    "length_profile": "vase",
+    "child_length_ratio": 0.7,
+    "child_thickness_ratio": 0.65,
+    "gravity_response": 0.15,
+    "randomness": 0.35
+  },
+  "crown": {
+    "shape": "umbrella",
+    "crown_base": 0.55,
+    "aspect_ratio": 2.0,
+    "density": 0.45,
+    "asymmetry": 0.25
+  },
+  "foliage": {
+    "style": "broadleaf",
+    "leaf_size": [0.008, 0.015],
+    "cluster_strategy": { "type": "dense_mass" },
+    "droop": 0.1,
+    "coverage": 0.6
+  },
+  "color": {
+    "bark": { "h": 30, "s": 0.35, "l": 0.28 },
+    "leaf": { "h": 95, "s": 0.40, "l": 0.38 },
+    "leaf_variance": 0.18
+  }
+}

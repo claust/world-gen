@@ -1,0 +1,48 @@
+{
+  "name": "Spruce",
+  "body_plan": {
+    "kind": "tree",
+    "stem_count": 1,
+    "max_height": [15, 25]
+  },
+  "trunk": {
+    "taper": 0.5,
+    "base_flare": 0.15,
+    "straightness": 0.95,
+    "thickness_ratio": 0.03
+  },
+  "branching": {
+    "apical_dominance": 0.95,
+    "max_depth": 2,
+    "arrangement": { "type": "whorled", "count": 5 },
+    "branches_per_node": [3, 5],
+    "insertion_angle": {
+      "base": [65, 75],
+      "tip": [40, 50]
+    },
+    "length_profile": "conical",
+    "child_length_ratio": 0.55,
+    "child_thickness_ratio": 0.5,
+    "gravity_response": 0.25,
+    "randomness": 0.15
+  },
+  "crown": {
+    "shape": "conical",
+    "crown_base": 0.1,
+    "aspect_ratio": 0.55,
+    "density": 0.85,
+    "asymmetry": 0.05
+  },
+  "foliage": {
+    "style": "needle",
+    "leaf_size": [0.01, 0.02],
+    "cluster_strategy": { "type": "dense_mass" },
+    "droop": 0.15,
+    "coverage": 0.9
+  },
+  "color": {
+    "bark": { "h": 20, "s": 0.30, "l": 0.25 },
+    "leaf": { "h": 140, "s": 0.45, "l": 0.22 },
+    "leaf_variance": 0.10
+  }
+}

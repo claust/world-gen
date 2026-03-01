@@ -1,0 +1,48 @@
+{
+  "name": "Oak",
+  "body_plan": {
+    "kind": "tree",
+    "stem_count": 1,
+    "max_height": [12, 18]
+  },
+  "trunk": {
+    "taper": 0.4,
+    "base_flare": 0.35,
+    "straightness": 0.82,
+    "thickness_ratio": 0.05
+  },
+  "branching": {
+    "apical_dominance": 0.3,
+    "max_depth": 3,
+    "arrangement": { "type": "spiral", "angle": 137.5 },
+    "branches_per_node": [2, 4],
+    "insertion_angle": {
+      "base": [65, 80],
+      "tip": [35, 50]
+    },
+    "length_profile": "dome",
+    "child_length_ratio": 0.65,
+    "child_thickness_ratio": 0.7,
+    "gravity_response": 0.45,
+    "randomness": 0.4
+  },
+  "crown": {
+    "shape": "dome",
+    "crown_base": 0.25,
+    "aspect_ratio": 1.3,
+    "density": 0.7,
+    "asymmetry": 0.2
+  },
+  "foliage": {
+    "style": "broadleaf",
+    "leaf_size": [0.02, 0.05],
+    "cluster_strategy": { "type": "clusters", "count": 5 },
+    "droop": 0.3,
+    "coverage": 0.4
+  },
+  "color": {
+    "bark": { "h": 25, "s": 0.40, "l": 0.22 },
+    "leaf": { "h": 115, "s": 0.50, "l": 0.32 },
+    "leaf_variance": 0.15
+  }
+}
