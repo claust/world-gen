@@ -33,10 +33,11 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Sample unconditionally (uniform control flow required by WebGPU)
+    let tex = textureSample(map_texture, map_sampler, max(in.uv, vec2(0.0)));
     // Solid-color vertices use negative UV as sentinel
     if (in.uv.x < 0.0) {
         return in.color;
     }
-    let tex = textureSample(map_texture, map_sampler, in.uv);
     return vec4<f32>(tex.rgb, tex.a * in.color.a);
 }
