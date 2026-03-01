@@ -20,7 +20,10 @@ impl StartMenu {
         let mut action = None;
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(Color32::from_black_alpha(120)))
+            .frame({
+                #[allow(deprecated)]
+                egui::Frame::none().fill(Color32::from_black_alpha(120))
+            })
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(ui.available_height() * 0.3);
