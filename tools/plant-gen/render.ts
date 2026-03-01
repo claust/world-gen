@@ -46,7 +46,7 @@ interface SpeciesJson {
     gravity_response: number; randomness: number;
   };
   crown: { shape: string; crown_base: number; aspect_ratio: number; density: number; asymmetry: number };
-  foliage: { style: string; leaf_size: [number, number]; cluster_strategy: { type: string; count?: number }; droop: number; coverage: number };
+  foliage: { style: string; leaf_size: [number, number]; cluster_strategy: { type: string; count?: number }; droop: number; coverage: number }; // coverage: reserved, not yet used by renderer
   color: { bark: { h: number; s: number; l: number }; leaf: { h: number; s: number; l: number }; leaf_variance?: number };
 }
 
@@ -83,10 +83,10 @@ class RNG {
   constructor(seed: number) { this.s = (seed | 0) || 1; }
   next(): number {
     this.s ^= this.s << 13; this.s ^= this.s >> 17; this.s ^= this.s << 5;
-    return (this.s >>> 0) / 0xffffffff;
+    return (this.s >>> 0) / 0x100000000;
   }
   range(a: number, b: number): number { return a + this.next() * (b - a); }
-  int(a: number, b: number): number { return Math.floor(this.range(a, b + 0.999)); }
+  int(a: number, b: number): number { return a + Math.floor(this.next() * (b - a + 1)); }
   static hash(s: string): number {
     let h = 5381;
     for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
@@ -681,7 +681,7 @@ function main() {
   let outputPath = args[1];
   if (!outputPath) {
     const ext = format === "glb" ? ".glb" : ".svg";
-    outputPath = inputPath.replace(/\.json$/i, ext);
+    outputPath = /\.json$/i.test(inputPath) ? inputPath.replace(/\.json$/i, ext) : `${inputPath}${ext}`;
   }
   const isGlb = format === "glb" || outputPath.endsWith(".glb");
 

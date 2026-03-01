@@ -26,7 +26,8 @@ Reference document for the parametric plant species system. Every plant — from
     "max_depth": 3,                // recursion levels (0 = no branches, 1-4 = detail)
     "arrangement": {               // how branches attach to parent
       "type": "spiral",            // spiral | whorled | opposite | random
-      "angle": 137.5               // spiral: golden angle; whorled: branches per whorl
+      "angle": 137.5,              // spiral: golden angle (degrees) between successive branches
+      "count": 4                   // whorled: branches per whorl; opposite: pairs per node
     },
     "branches_per_node": [2, 4],   // [min, max] branches at each attachment point
     "insertion_angle": {           // angle from parent axis (degrees), varies along trunk
