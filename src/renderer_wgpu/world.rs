@@ -149,6 +149,11 @@ impl WorldRenderer {
         );
     }
 
+    pub fn clear_chunks(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let empty = HashMap::new();
+        self.sync_chunks(device, queue, &empty);
+    }
+
     pub fn sync_chunks(
         &mut self,
         device: &wgpu::Device,

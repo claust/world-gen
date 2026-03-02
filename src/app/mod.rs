@@ -269,6 +269,13 @@ impl AppState {
     }
 
     fn start_game(&mut self, resume: bool) {
+        // If resuming and the world is still alive in memory, just switch back
+        if resume && self.world.is_some() {
+            self.screen = Screen::Playing;
+            self.capture_cursor();
+            return;
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         let save_ref = if resume { self.save.as_ref() } else { None };
         #[cfg(target_arch = "wasm32")]
@@ -293,6 +300,11 @@ impl AppState {
         self.camera = FlyCamera::new(cam_pos);
         self.camera.yaw = cam_yaw;
         self.camera.pitch = cam_pitch;
+
+        // Starting a new game drops any existing world and clears GPU chunk caches
+        self.world = None;
+        self.world_renderer
+            .clear_chunks(&self.gpu.device, &self.gpu.queue);
 
         #[cfg(not(target_arch = "wasm32"))]
         let threads = std::thread::available_parallelism()
@@ -704,24 +716,40 @@ impl AppState {
     #[cfg(not(target_arch = "wasm32"))]
     fn save_game(&self) {
         let Some(world) = &self.world else { return };
-        let save = SaveData {
+        let save = Self::build_save_data(&self.camera, world);
+        if let Err(e) = save.save() {
+            log::warn!("failed to save game state: {e}");
+        }
+    }
+
+    /// Save to disk and update the in-memory save (for mid-session resume).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_and_update(&mut self) {
+        let Some(world) = &self.world else { return };
+        let save = Self::build_save_data(&self.camera, world);
+        match save.save() {
+            Ok(()) => {
+                self.save = Some(save);
+            }
+            Err(e) => {
+                log::warn!("failed to save game state: {e}");
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn build_save_data(camera: &FlyCamera, world: &WorldRuntime) -> SaveData {
+        SaveData {
             camera: CameraSave {
-                position: [
-                    self.camera.position.x,
-                    self.camera.position.y,
-                    self.camera.position.z,
-                ],
-                yaw: self.camera.yaw,
-                pitch: self.camera.pitch,
+                position: [camera.position.x, camera.position.y, camera.position.z],
+                yaw: camera.yaw,
+                pitch: camera.pitch,
             },
             world: WorldSave {
                 seed: world.seed(),
                 hour: world.hour(),
                 day_speed: world.day_speed(),
             },
-        };
-        if let Err(e) = save.save() {
-            log::warn!("failed to save game state: {e}");
         }
     }
 }
