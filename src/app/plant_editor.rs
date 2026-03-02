@@ -204,15 +204,94 @@ impl MeshGenerator {
 
 fn merge_params(base: &SpeciesConfig, params: &PlantParams) -> SpeciesConfig {
     let mut spec = base.clone();
+
+    // Body Plan
+    spec.body_plan.kind = params.body_kind.clone();
+    spec.body_plan.stem_count = params.stem_count;
+    let (h_min, h_max) = min_max_f32(params.max_height_min, params.max_height_max);
+    spec.body_plan.max_height = [h_min, h_max];
+
+    // Trunk
+    spec.trunk.taper = params.taper;
+    spec.trunk.base_flare = params.base_flare;
+    spec.trunk.straightness = params.straightness;
+    spec.trunk.thickness_ratio = params.thickness_ratio;
+
+    // Crown
     spec.crown.shape = params.crown_shape.clone();
     spec.crown.crown_base = params.crown_base;
     spec.crown.aspect_ratio = params.aspect_ratio;
     spec.crown.density = params.crown_density;
+    spec.crown.asymmetry = params.asymmetry;
+
+    // Branching
     spec.branching.apical_dominance = params.apical_dominance;
     spec.branching.gravity_response = params.gravity_response;
     spec.branching.length_profile = params.length_profile.clone();
+    spec.branching.max_depth = params.max_depth;
+    spec.branching.arrangement.kind = params.arrangement_type.clone();
+    spec.branching.arrangement.angle = if params.arrangement_type == "spiral" {
+        Some(params.arrangement_angle)
+    } else {
+        None
+    };
+    let (bpn_min, bpn_max) =
+        min_max_u32(params.branches_per_node_min, params.branches_per_node_max);
+    spec.branching.branches_per_node = [bpn_min, bpn_max];
+    let (iab_min, iab_max) = min_max_f32(
+        params.insertion_angle_base_min,
+        params.insertion_angle_base_max,
+    );
+    spec.branching.insertion_angle.base = [iab_min, iab_max];
+    let (iat_min, iat_max) = min_max_f32(
+        params.insertion_angle_tip_min,
+        params.insertion_angle_tip_max,
+    );
+    spec.branching.insertion_angle.tip = [iat_min, iat_max];
+    spec.branching.child_length_ratio = params.child_length_ratio;
+    spec.branching.child_thickness_ratio = params.child_thickness_ratio;
+    spec.branching.randomness = params.randomness;
+
+    // Foliage
     spec.foliage.style = params.foliage_style.clone();
+    let (ls_min, ls_max) = min_max_f32(params.leaf_size_min, params.leaf_size_max);
+    spec.foliage.leaf_size = [ls_min, ls_max];
+    spec.foliage.cluster_strategy.kind = params.cluster_type.clone();
+    spec.foliage.cluster_strategy.count =
+        if params.cluster_type == "clusters" || params.cluster_type == "ring" {
+            Some(params.cluster_count)
+        } else {
+            None
+        };
+    spec.foliage.droop = params.droop;
+    spec.foliage.coverage = params.coverage;
+
+    // Color
+    spec.color.bark.h = params.bark_h;
+    spec.color.bark.s = params.bark_s;
+    spec.color.bark.l = params.bark_l;
+    spec.color.leaf.h = params.leaf_h;
+    spec.color.leaf.s = params.leaf_s;
+    spec.color.leaf.l = params.leaf_l;
+    spec.color.leaf_variance = Some(params.leaf_variance);
+
     spec
+}
+
+fn min_max_f32(a: f32, b: f32) -> (f32, f32) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn min_max_u32(a: u32, b: u32) -> (u32, u32) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 fn create_ground_plane(device: &wgpu::Device) -> (PrototypeMesh, GpuInstanceChunk) {
