@@ -12,8 +12,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
 
         match event {
             Event::WindowEvent { window_id, event } if window_id == app.window.id() => {
-                // F1 toggles config panel (intercept before anything else) [native only]
-                #[cfg(not(target_arch = "wasm32"))]
+                // F1 toggles config panel (intercept before anything else)
                 if let WindowEvent::KeyboardInput {
                     event: ref key_event,
                     ..
@@ -34,15 +33,12 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     }
                 }
 
-                // Feed events to egui when on start menu or config panel visible [native only]
-                #[cfg(not(target_arch = "wasm32"))]
+                // Feed events to egui when on start menu or config panel visible
                 let egui_wants_event = if app.is_on_menu() || app.config_panel.is_visible() {
                     app.egui_bridge.on_window_event(&event)
                 } else {
                     false
                 };
-                #[cfg(target_arch = "wasm32")]
-                let egui_wants_event = false;
 
                 // Only forward to camera if egui didn't consume the event
                 if !egui_wants_event {
@@ -59,33 +55,25 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            if !app.is_on_menu() {
-                                if app.config_panel.is_visible() {
-                                    app.config_panel.toggle();
-                                    app.capture_cursor();
-                                } else {
-                                    app.release_cursor();
-                                }
+                        if !app.is_on_menu() {
+                            if app.config_panel.is_visible() {
+                                app.config_panel.toggle();
+                                app.capture_cursor();
+                            } else {
+                                app.release_cursor();
                             }
                         }
-                        #[cfg(target_arch = "wasm32")]
-                        app.release_cursor();
                     }
                     WindowEvent::MouseInput {
                         state: ElementState::Pressed,
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
-                        #[cfg(not(target_arch = "wasm32"))]
                         if app.is_on_menu() || app.config_panel.is_visible() {
                             // Don't capture cursor on start menu or when config panel is open
                         } else {
                             app.capture_cursor();
                         }
-                        #[cfg(target_arch = "wasm32")]
-                        app.capture_cursor();
                     }
                     WindowEvent::Resized(size) => app.resize(size),
                     WindowEvent::RedrawRequested => {
@@ -101,13 +89,15 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         }
 
                         // Process menu actions (needs access to `target` for Exit)
-                        #[cfg(not(target_arch = "wasm32"))]
                         if let Some(action) = app.pending_menu_action.take() {
                             use crate::ui::MenuAction;
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
-                                MenuAction::Exit => target.exit(),
+                                MenuAction::Exit => {
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    target.exit();
+                                }
                             }
                         }
                     }
@@ -115,15 +105,12 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                 }
             }
             Event::DeviceEvent { event, .. } => {
-                // Block mouse delta when on start menu or config panel is visible [native only]
-                #[cfg(not(target_arch = "wasm32"))]
+                // Block mouse delta when on start menu or config panel is visible
                 if app.is_on_menu() || app.config_panel.is_visible() {
                     // skip device events
                 } else {
                     app.process_device_event(&event);
                 }
-                #[cfg(target_arch = "wasm32")]
-                app.process_device_event(&event);
             }
             Event::AboutToWait => {
                 app.window.request_redraw();
@@ -177,21 +164,62 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
 
         match event {
             Event::WindowEvent { window_id, event } if window_id == app.window.id() => {
-                app.process_window_event(&event);
+                // F1 toggles config panel
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F1))
+                    {
+                        if !app.is_on_menu() {
+                            app.config_panel.toggle();
+                            if app.config_panel.is_visible() {
+                                app.release_cursor();
+                            } else {
+                                app.capture_cursor();
+                            }
+                        }
+                        return;
+                    }
+                }
+
+                // Feed events to egui when on start menu or config panel visible
+                let egui_wants_event = if app.is_on_menu() || app.config_panel.is_visible() {
+                    app.egui_bridge.on_window_event(&event)
+                } else {
+                    false
+                };
+
+                if !egui_wants_event {
+                    app.process_window_event(&event);
+                }
 
                 match event {
                     WindowEvent::KeyboardInput { event, .. }
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
-                        app.release_cursor();
+                        if !app.is_on_menu() {
+                            if app.config_panel.is_visible() {
+                                app.config_panel.toggle();
+                                app.capture_cursor();
+                            } else {
+                                app.release_cursor();
+                            }
+                        }
                     }
                     WindowEvent::MouseInput {
                         state: ElementState::Pressed,
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
-                        app.capture_cursor();
+                        if app.is_on_menu() || app.config_panel.is_visible() {
+                            // Don't capture cursor on start menu or when config panel is open
+                        } else {
+                            app.capture_cursor();
+                        }
                     }
                     WindowEvent::Resized(size) => app.resize(size),
                     WindowEvent::RedrawRequested => {
@@ -207,12 +235,26 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                                 log::error!("surface error: {e}");
                             }
                         }
+
+                        // Process menu actions
+                        if let Some(action) = app.pending_menu_action.take() {
+                            use crate::ui::MenuAction;
+                            match action {
+                                MenuAction::NewGame => app.start_game(false),
+                                MenuAction::ResumeGame => app.start_game(true),
+                                MenuAction::Exit => {} // No-op on WASM
+                            }
+                        }
                     }
                     _ => {}
                 }
             }
             Event::DeviceEvent { event, .. } => {
-                app.process_device_event(&event);
+                if app.is_on_menu() || app.config_panel.is_visible() {
+                    // skip device events
+                } else {
+                    app.process_device_event(&event);
+                }
             }
             Event::AboutToWait => {
                 app.window.request_redraw();

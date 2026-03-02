@@ -64,16 +64,19 @@ impl StartMenu {
                         });
                     }
 
-                    ui.add_space(12.0);
-
-                    if ui
-                        .add_sized(
-                            button_size,
-                            egui::Button::new(RichText::new("Exit").size(20.0)),
-                        )
-                        .clicked()
+                    #[cfg(not(target_arch = "wasm32"))]
                     {
-                        action = Some(MenuAction::Exit);
+                        ui.add_space(12.0);
+
+                        if ui
+                            .add_sized(
+                                button_size,
+                                egui::Button::new(RichText::new("Exit").size(20.0)),
+                            )
+                            .clicked()
+                        {
+                            action = Some(MenuAction::Exit);
+                        }
                     }
                 });
             });
