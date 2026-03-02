@@ -1,3 +1,4 @@
+use rand::Rng;
 use serde::Serialize;
 
 const CROWN_SHAPES: &[&str] = &[
@@ -29,6 +30,22 @@ impl Default for PlantParams {
             crown_base: 0.25,
             crown_density: 0.7,
             aspect_ratio: 1.3,
+        }
+    }
+}
+
+impl PlantParams {
+    pub fn randomize() -> Self {
+        let mut rng = rand::rng();
+        Self {
+            crown_shape: CROWN_SHAPES[rng.random_range(0..CROWN_SHAPES.len())].to_string(),
+            length_profile: LENGTH_PROFILES[rng.random_range(0..LENGTH_PROFILES.len())].to_string(),
+            foliage_style: FOLIAGE_STYLES[rng.random_range(0..FOLIAGE_STYLES.len())].to_string(),
+            apical_dominance: rng.random_range(0.0..1.0),
+            gravity_response: rng.random_range(0.0..1.0),
+            crown_base: rng.random_range(0.0..0.8),
+            crown_density: rng.random_range(0.2..1.0),
+            aspect_ratio: rng.random_range(0.5..2.0),
         }
     }
 }
@@ -147,10 +164,16 @@ impl PlantEditorPanel {
                     ui.add_space(8.0);
                     ui.separator();
 
-                    if ui.button("Reset Defaults").clicked() {
-                        self.params = PlantParams::default();
-                        self.dirty = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Randomize").clicked() {
+                            self.params = PlantParams::randomize();
+                            self.dirty = true;
+                        }
+                        if ui.button("Reset Defaults").clicked() {
+                            self.params = PlantParams::default();
+                            self.dirty = true;
+                        }
+                    });
 
                     ui.add_space(12.0);
 

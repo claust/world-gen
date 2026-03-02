@@ -1,37 +1,10 @@
 use glam::Vec3;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 use super::config::SpeciesConfig;
 use super::crown::{is_inside_crown, length_profile};
 use crate::world_core::content::sampling::hash4;
-
-/// Sequential RNG for tree generation, seeded from `hash4`.
-/// Uses xorshift32 internally for sequential draws within a single tree build.
-struct Rng {
-    s: u32,
-}
-
-impl Rng {
-    fn new(seed: u32) -> Self {
-        Self {
-            s: if seed == 0 { 1 } else { seed },
-        }
-    }
-
-    fn next_f32(&mut self) -> f32 {
-        self.s ^= self.s << 13;
-        self.s ^= self.s >> 17;
-        self.s ^= self.s << 5;
-        self.s as f32 / 4_294_967_296.0
-    }
-
-    fn range(&mut self, a: f32, b: f32) -> f32 {
-        a + self.next_f32() * (b - a)
-    }
-
-    fn int(&mut self, a: u32, b: u32) -> u32 {
-        a + (self.next_f32() * (b - a + 1) as f32).floor() as u32
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct BranchSegment {
@@ -70,10 +43,10 @@ fn branch_dir_3d(parent_dir: Vec3, insert_angle_rad: f32, rot_rad: f32) -> Vec3 
 }
 
 pub fn generate_tree(spec: &SpeciesConfig, seed: u32) -> TreeData {
-    let mut rng = Rng::new(hash4(seed, 0x504C_414E, 0x5452_4545, 0));
+    let mut rng = StdRng::seed_from_u64(hash4(seed, 0x504C_414E, 0x5452_4545, 0) as u64);
     let mut segments = Vec::new();
     let mut foliage = Vec::new();
-    let height = rng.range(spec.body_plan.max_height[0], spec.body_plan.max_height[1]);
+    let height = rng.random_range(spec.body_plan.max_height[0]..spec.body_plan.max_height[1]);
     let trunk_radius = height * spec.trunk.thickness_ratio;
     let stem_count = spec.body_plan.stem_count.max(1);
 
@@ -94,8 +67,8 @@ pub fn generate_tree(spec: &SpeciesConfig, seed: u32) -> TreeData {
             let spread = 0.3;
             let base = Vec3::new(a.cos() * spread, 0.0, a.sin() * spread);
             let dir = Vec3::new(a.cos() * 0.2, 1.0, a.sin() * 0.2).normalize();
-            let h = height * rng.range(0.65, 1.0);
-            let r = trunk_radius * rng.range(0.4, 0.7);
+            let h = height * rng.random_range(0.65..1.0);
+            let r = trunk_radius * rng.random_range(0.4..0.7);
             generate_stem(spec, &mut rng, base, dir, h, r, &mut segments, &mut foliage);
         }
     }
@@ -110,7 +83,7 @@ pub fn generate_tree(spec: &SpeciesConfig, seed: u32) -> TreeData {
 #[allow(clippy::too_many_arguments)]
 fn generate_stem(
     spec: &SpeciesConfig,
-    rng: &mut Rng,
+    rng: &mut StdRng,
     base: Vec3,
     direction: Vec3,
     height: f32,
@@ -132,9 +105,9 @@ fn generate_stem(
         let t1 = (i + 1) as f32 / n_seg as f32;
         let wobble = (1.0 - spec.trunk.straightness) * 0.06;
         dir = Vec3::new(
-            dir.x + rng.range(-wobble, wobble),
+            dir.x + rng.random_range(-wobble..wobble),
             dir.y,
-            dir.z + rng.range(-wobble, wobble),
+            dir.z + rng.random_range(-wobble..wobble),
         )
         .normalize();
 
@@ -173,7 +146,7 @@ fn generate_stem(
     let inter_node = height * 0.065;
     let num_nodes = (crown_height / inter_node).ceil().max(4.0) as u32;
 
-    let mut arrangement_rot = rng.next_f32() * std::f32::consts::TAU;
+    let mut arrangement_rot = rng.random::<f32>() * std::f32::consts::TAU;
     let arr_step = if spec.branching.arrangement.kind == "spiral" {
         (spec.branching.arrangement.angle.unwrap_or(137.5)).to_radians()
     } else if spec.branching.arrangement.kind == "opposite" {
@@ -198,37 +171,34 @@ fn generate_stem(
         let thick_here = base_radius * (1.0 - t_trunk * spec.trunk.taper * 0.7);
         let branch_thick = thick_here * spec.branching.child_thickness_ratio;
 
-        let count = rng.int(
-            spec.branching.branches_per_node[0],
-            spec.branching.branches_per_node[1],
+        let count = rng.random_range(
+            spec.branching.branches_per_node[0]..=spec.branching.branches_per_node[1],
         );
 
         if spec.branching.arrangement.kind == "whorled" {
-            arrangement_rot = rng.next_f32() * std::f32::consts::TAU;
+            arrangement_rot = rng.random::<f32>() * std::f32::consts::TAU;
         }
 
         for _b in 0..count {
-            let ang_base = rng.range(
-                spec.branching.insertion_angle.base[0],
-                spec.branching.insertion_angle.base[1],
+            let ang_base = rng.random_range(
+                spec.branching.insertion_angle.base[0]..spec.branching.insertion_angle.base[1],
             );
-            let ang_tip = rng.range(
-                spec.branching.insertion_angle.tip[0],
-                spec.branching.insertion_angle.tip[1],
+            let ang_tip = rng.random_range(
+                spec.branching.insertion_angle.tip[0]..spec.branching.insertion_angle.tip[1],
             );
             let insert_deg = ang_base + (ang_tip - ang_base) * t_trunk;
             let insert_rad = insert_deg.to_radians();
-            let random_rot = spec.branching.randomness * rng.range(-0.3, 0.3);
+            let random_rot = spec.branching.randomness * rng.random_range(-0.3..0.3);
             let br_dir = branch_dir_3d(local_dir, insert_rad, arrangement_rot + random_rot);
 
-            let len = base_len * rng.range(0.7, 1.3);
+            let len = base_len * rng.random_range(0.7..1.3);
 
             if spec.branching.arrangement.kind == "whorled" {
                 arrangement_rot += std::f32::consts::TAU / count as f32;
             } else if arr_step > 0.0 {
                 arrangement_rot += arr_step;
             } else {
-                arrangement_rot = rng.next_f32() * std::f32::consts::TAU;
+                arrangement_rot = rng.random::<f32>() * std::f32::consts::TAU;
             }
 
             generate_branch(
@@ -250,7 +220,7 @@ fn generate_stem(
 #[allow(clippy::too_many_arguments)]
 fn generate_branch(
     spec: &SpeciesConfig,
-    rng: &mut Rng,
+    rng: &mut StdRng,
     origin: Vec3,
     direction: Vec3,
     length: f32,
@@ -277,14 +247,14 @@ fn generate_branch(
     ) {
         if spec.foliage.style != "none" {
             let mid = (origin + end) * 0.5;
-            let r = rng.range(spec.foliage.leaf_size[0], spec.foliage.leaf_size[1])
+            let r = rng.random_range(spec.foliage.leaf_size[0]..spec.foliage.leaf_size[1])
                 * tree_height
                 * 0.06;
             foliage.push(FoliageBlob {
                 center: mid,
                 radius: r.max(0.2),
-                hue_shift: rng.range(-15.0, 15.0),
-                light_shift: rng.range(-0.08, 0.08),
+                hue_shift: rng.random_range(-15.0..15.0),
+                light_shift: rng.random_range(-0.08..0.08),
             });
         }
         return;
@@ -315,9 +285,9 @@ fn generate_branch(
         let cont_thick = thickness * spec.branching.child_thickness_ratio;
         let cont_dir = (eff_dir
             + Vec3::new(
-                rng.range(-0.05, 0.05) * spec.branching.randomness,
+                rng.random_range(-0.05..0.05) * spec.branching.randomness,
                 0.0,
-                rng.range(-0.05, 0.05) * spec.branching.randomness,
+                rng.random_range(-0.05..0.05) * spec.branching.randomness,
             ))
         .normalize();
         generate_branch(
@@ -334,18 +304,16 @@ fn generate_branch(
         );
     }
 
-    let num_children = rng.int(
-        spec.branching.branches_per_node[0],
-        spec.branching.branches_per_node[1],
-    );
-    let mut child_rot = rng.next_f32() * std::f32::consts::TAU;
+    let num_children =
+        rng.random_range(spec.branching.branches_per_node[0]..=spec.branching.branches_per_node[1]);
+    let mut child_rot = rng.random::<f32>() * std::f32::consts::TAU;
     for _i in 0..num_children {
-        let spread_angle = rng.range(0.3, 0.8);
-        let random_rot = spec.branching.randomness * rng.range(-0.3, 0.3);
+        let spread_angle = rng.random_range(0.3..0.8);
+        let random_rot = spec.branching.randomness * rng.random_range(-0.3..0.3);
         let child_dir = branch_dir_3d(eff_dir, spread_angle, child_rot + random_rot);
-        let child_len = length * spec.branching.child_length_ratio * rng.range(0.6, 1.1);
+        let child_len = length * spec.branching.child_length_ratio * rng.random_range(0.6..1.1);
         let child_thick = thickness * spec.branching.child_thickness_ratio;
-        child_rot += std::f32::consts::PI * 0.8 + rng.range(-0.2, 0.2);
+        child_rot += std::f32::consts::PI * 0.8 + rng.random_range(-0.2..0.2);
         generate_branch(
             spec,
             rng,
@@ -363,7 +331,7 @@ fn generate_branch(
 
 fn add_foliage(
     spec: &SpeciesConfig,
-    rng: &mut Rng,
+    rng: &mut StdRng,
     pos: Vec3,
     tree_height: f32,
     foliage: &mut Vec<FoliageBlob>,
@@ -387,13 +355,13 @@ fn add_foliage(
     for _i in 0..blob_count {
         foliage.push(FoliageBlob {
             center: Vec3::new(
-                pos.x + rng.range(-spread, spread),
-                pos.y + rng.range(-spread * 0.5, spread * 0.6),
-                pos.z + rng.range(-spread, spread),
+                pos.x + rng.random_range(-spread..spread),
+                pos.y + rng.random_range(-spread * 0.5..spread * 0.6),
+                pos.z + rng.random_range(-spread..spread),
             ),
-            radius: (size_base * rng.range(0.5, 1.3)).max(0.15),
-            hue_shift: rng.range(-1.0, 1.0) * variance * 100.0,
-            light_shift: rng.range(-1.0, 1.0) * variance,
+            radius: (size_base * rng.random_range(0.5..1.3)).max(0.15),
+            hue_shift: rng.random_range(-1.0..1.0) * variance * 100.0,
+            light_shift: rng.random_range(-1.0..1.0) * variance,
         });
     }
 }
@@ -401,7 +369,7 @@ fn add_foliage(
 #[allow(clippy::too_many_arguments)]
 fn generate_fronds(
     spec: &SpeciesConfig,
-    rng: &mut Rng,
+    rng: &mut StdRng,
     apex: Vec3,
     tree_height: f32,
     top_radius: f32,
@@ -436,13 +404,13 @@ fn generate_fronds(
             let ft = 0.25 + j as f32 * 0.15;
             foliage.push(FoliageBlob {
                 center: Vec3::new(
-                    apex.x + dx * ft + rng.range(-0.3, 0.3),
+                    apex.x + dx * ft + rng.random_range(-0.3..0.3),
                     apex.y + dy * ft,
-                    apex.z + dz * ft + rng.range(-0.3, 0.3),
+                    apex.z + dz * ft + rng.random_range(-0.3..0.3),
                 ),
                 radius: tree_height * 0.03 * (1.2 - ft * 0.5),
-                hue_shift: rng.range(-1.0, 1.0) * variance * 80.0,
-                light_shift: rng.range(-1.0, 1.0) * variance * 0.8,
+                hue_shift: rng.random_range(-1.0..1.0) * variance * 80.0,
+                light_shift: rng.random_range(-1.0..1.0) * variance * 0.8,
             });
         }
     }
