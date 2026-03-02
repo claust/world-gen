@@ -108,7 +108,7 @@ pub fn build_tree_instances(trees: &[TreeInstance]) -> Vec<InstanceData> {
             let scale = total_height / 10.0; // normalize to ~10m reference height
             InstanceData {
                 position: [t.position.x, t.position.y, t.position.z],
-                rotation_y: 0.0,
+                rotation_y: t.rotation,
                 scale: [scale, scale, scale],
                 _pad: 0.0,
                 color: [1.0, 1.0, 1.0, 1.0], // colors baked in the model

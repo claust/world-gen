@@ -15,6 +15,10 @@ impl StartMenu {
         Self { save_exists }
     }
 
+    pub fn set_save_exists(&mut self, value: bool) {
+        self.save_exists = value;
+    }
+
     /// Draw the start menu. Returns `Some(action)` when a button is clicked.
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<MenuAction> {
         let mut action = None;
@@ -64,16 +68,19 @@ impl StartMenu {
                         });
                     }
 
-                    ui.add_space(12.0);
-
-                    if ui
-                        .add_sized(
-                            button_size,
-                            egui::Button::new(RichText::new("Exit").size(20.0)),
-                        )
-                        .clicked()
+                    #[cfg(not(target_arch = "wasm32"))]
                     {
-                        action = Some(MenuAction::Exit);
+                        ui.add_space(12.0);
+
+                        if ui
+                            .add_sized(
+                                button_size,
+                                egui::Button::new(RichText::new("Exit").size(20.0)),
+                            )
+                            .clicked()
+                        {
+                            action = Some(MenuAction::Exit);
+                        }
                     }
                 });
             });

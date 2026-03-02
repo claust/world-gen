@@ -6,17 +6,14 @@ use winit::event::{DeviceEvent, WindowEvent};
 use winit::window::{CursorGrabMode, Window};
 
 use crate::renderer_wgpu::camera::{CameraController, FlyCamera};
+use crate::renderer_wgpu::egui_bridge::EguiBridge;
+use crate::renderer_wgpu::egui_pass::EguiPass;
 use crate::renderer_wgpu::gpu_context::GpuContext;
 use crate::renderer_wgpu::world::WorldRenderer;
+use crate::ui::{ConfigPanel, MenuAction, StartMenu};
 use crate::world_core::config::GameConfig;
 use crate::world_runtime::WorldRuntime;
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::renderer_wgpu::egui_bridge::EguiBridge;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::renderer_wgpu::egui_pass::EguiPass;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::ui::{ConfigPanel, MenuAction, StartMenu};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::world_core::save::{CameraSave, SaveData, WorldSave};
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,7 +39,6 @@ pub use event_loop::run_event_loop;
 #[cfg(target_arch = "wasm32")]
 pub use event_loop::run_event_loop_web;
 
-#[cfg(not(target_arch = "wasm32"))]
 enum Screen {
     StartMenu,
     Playing,
@@ -69,21 +65,14 @@ pub struct AppState {
     screenshot_pending: Option<String>,
     #[cfg(not(target_arch = "wasm32"))]
     asset_watcher: Option<AssetWatcher>,
-    #[cfg(not(target_arch = "wasm32"))]
     egui_bridge: EguiBridge,
-    #[cfg(not(target_arch = "wasm32"))]
     egui_pass: EguiPass,
-    #[cfg(not(target_arch = "wasm32"))]
     config_panel: ConfigPanel,
-    #[cfg(not(target_arch = "wasm32"))]
     screen: Screen,
-    #[cfg(not(target_arch = "wasm32"))]
     start_menu: StartMenu,
     #[cfg(not(target_arch = "wasm32"))]
     save: Option<SaveData>,
-    #[cfg(not(target_arch = "wasm32"))]
     config: GameConfig,
-    #[cfg(not(target_arch = "wasm32"))]
     pending_menu_action: Option<MenuAction>,
 }
 
@@ -155,12 +144,12 @@ impl AppState {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub async fn new_web(window: &'static Window, cursor_captured: bool) -> Result<Self> {
+    pub async fn new_web(window: &'static Window, _cursor_captured: bool) -> Result<Self> {
         let config = GameConfig::default();
 
         let gpu = GpuContext::new(window).await?;
 
-        let mut world_renderer = WorldRenderer::new(
+        let world_renderer = WorldRenderer::new(
             &gpu.device,
             &gpu.queue,
             &gpu.config,
@@ -168,15 +157,14 @@ impl AppState {
             config.world.load_radius,
         );
 
-        let mut camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
-        camera.yaw = 1.02;
-        camera.pitch = -0.38;
+        // Menu camera — fixed position looking at the sky
+        let camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         let camera_controller = CameraController::new(180.0, 0.0022);
 
-        let mut world = WorldRuntime::new(&config, None, 1)?;
-        world.update(0.0, camera.position);
-
-        world_renderer.sync_chunks(&gpu.device, &gpu.queue, world.chunks());
+        let scale_factor = window.scale_factor() as f32;
+        let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
+        let egui_pass = EguiPass::new(&gpu.device, gpu.config.format);
+        let config_panel = ConfigPanel::new(&config);
 
         Ok(Self {
             window,
@@ -184,13 +172,20 @@ impl AppState {
             world_renderer,
             camera,
             camera_controller,
-            world: Some(world),
+            world: None,
             focused: true,
-            cursor_captured,
+            cursor_captured: false,
             last_frame: Instant::now(),
             frame_time_ms: 0.0,
             elapsed_seconds: 0.0,
             frame_index: 0,
+            egui_bridge,
+            egui_pass,
+            config_panel,
+            screen: Screen::StartMenu,
+            start_menu: StartMenu::new(false), // no save files on WASM
+            config,
+            pending_menu_action: None,
         })
     }
 
@@ -229,14 +224,23 @@ impl AppState {
         self.camera_controller.reset_inputs();
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn is_on_menu(&self) -> bool {
         matches!(self.screen, Screen::StartMenu)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    fn return_to_menu(&mut self) {
+        self.screen = Screen::StartMenu;
+        self.start_menu.set_save_exists(true);
+    }
+
     fn start_game(&mut self, resume: bool) {
+        #[cfg(not(target_arch = "wasm32"))]
         let save_ref = if resume { self.save.as_ref() } else { None };
+        #[cfg(target_arch = "wasm32")]
+        let save_ref = {
+            let _ = resume;
+            None::<&crate::world_core::save::SaveData>
+        };
 
         // Set camera from save or defaults
         let (cam_pos, cam_yaw, cam_pitch) = match save_ref {
@@ -255,14 +259,17 @@ impl AppState {
         self.camera.yaw = cam_yaw;
         self.camera.pitch = cam_pitch;
 
+        #[cfg(not(target_arch = "wasm32"))]
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
+        #[cfg(target_arch = "wasm32")]
+        let threads = 1;
+
         let mut world = match WorldRuntime::new(&self.config, save_ref, threads) {
             Ok(world) => world,
             Err(err) => {
-                eprintln!("failed to create world runtime: {err}");
-                // Keep the current screen (e.g., menu) instead of crashing.
+                log::error!("failed to create world runtime: {err}");
                 return;
             }
         };
@@ -280,7 +287,6 @@ impl AppState {
         self.gpu.resize(new_size);
         self.world_renderer
             .resize(&self.gpu.device, &self.gpu.config);
-        #[cfg(not(target_arch = "wasm32"))]
         self.egui_bridge
             .resize(self.gpu.config.width, self.gpu.config.height);
     }
@@ -295,7 +301,6 @@ impl AppState {
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
         self.elapsed_seconds += dt;
 
-        #[cfg(not(target_arch = "wasm32"))]
         if self.is_on_menu() {
             self.update_menu(dt);
             return;
@@ -369,7 +374,6 @@ impl AppState {
         );
 
         // Apply config panel changes (debounced — only on pointer release)
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(new_config) = self.config_panel.take_dirty_config(self.egui_bridge.ctx()) {
             let world = self.world.as_mut().unwrap();
             world.reload_config(&new_config);
@@ -397,7 +401,6 @@ impl AppState {
         ));
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn update_menu(&mut self, _dt: f32) {
         // Advance a virtual hour for the animated sky background
         let menu_day_speed = 0.5;
@@ -439,10 +442,7 @@ impl AppState {
                 label: Some("world-gen-render-encoder"),
             });
 
-        #[cfg(not(target_arch = "wasm32"))]
         let is_menu = self.is_on_menu();
-        #[cfg(target_arch = "wasm32")]
-        let is_menu = false;
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -476,7 +476,6 @@ impl AppState {
         }
 
         // egui overlay pass (renders on top of 3D scene)
-        #[cfg(not(target_arch = "wasm32"))]
         {
             let show_egui = is_menu || self.config_panel.is_visible();
             if show_egui {
