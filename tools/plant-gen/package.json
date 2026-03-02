@@ -1,0 +1,21 @@
+{
+  "name": "plant-gen",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "oxlint . --type-aware --tsconfig tsconfig.json --deny-warnings",
+    "format": "oxfmt --write \"*.ts\"",
+    "format:check": "oxfmt --check \"*.ts\""
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "oxfmt": "^0.35.0",
+    "oxlint": "^1.50.0",
+    "oxlint-tsgolint": "^0.15.0",
+    "typescript": "~5.9.3"
+  }
+}
