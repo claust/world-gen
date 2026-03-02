@@ -5,7 +5,7 @@ use glam::IVec2;
 use super::geometry::Vertex;
 use super::instancing::{
     build_fern_instances, build_house_instances, build_tree_instances, upload_instances,
-    GpuInstanceChunk, InstanceData, ModelRegistry,
+    GpuInstanceChunk, InstanceData, ModelRegistry, PrototypeMesh,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
@@ -161,6 +161,22 @@ impl InstancedPass {
                     log::warn!("failed to hot-reload model {name}: {e:#}");
                 }
             }
+        }
+    }
+
+    /// Render arbitrary mesh/instance pairs through the instanced pipeline.
+    /// Used by the plant editor to render custom meshes outside the world's chunk system.
+    pub fn render_custom<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        meshes: &[(&'a PrototypeMesh, &'a GpuInstanceChunk)],
+    ) {
+        pass.set_pipeline(&self.pipeline);
+        for (mesh, instance) in meshes {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(1, instance.instance_buffer.slice(..));
+            pass.draw_indexed(0..mesh.index_count, 0, 0..instance.instance_count);
         }
     }
 
