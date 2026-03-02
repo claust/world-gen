@@ -85,10 +85,6 @@ jobs:
             os: macos-latest
             target: aarch64-apple-darwin
             artifact: world-gen-macos-aarch64
-          - name: macOS (Intel)
-            os: macos-13
-            target: x86_64-apple-darwin
-            artifact: world-gen-macos-x86_64
           - name: Windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -169,5 +165,4 @@ jobs:
             --title "${{ needs.build-wasm.outputs.tag }}" \
             artifacts/world-gen-web-zip/world-gen-web.zip \
             artifacts/world-gen-macos-aarch64/world-gen-macos-aarch64.zip \
-            artifacts/world-gen-macos-x86_64/world-gen-macos-x86_64.zip \
             artifacts/world-gen-windows-x86_64/world-gen-windows-x86_64.zip
