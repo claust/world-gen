@@ -301,8 +301,10 @@ impl AppState {
         self.camera.yaw = cam_yaw;
         self.camera.pitch = cam_pitch;
 
-        // Starting a new game drops any existing world
+        // Starting a new game drops any existing world and clears GPU chunk caches
         self.world = None;
+        self.world_renderer
+            .clear_chunks(&self.gpu.device, &self.gpu.queue);
 
         #[cfg(not(target_arch = "wasm32"))]
         let threads = std::thread::available_parallelism()
