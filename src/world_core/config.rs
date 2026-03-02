@@ -16,7 +16,7 @@ impl Default for GameConfig {
     fn default() -> Self {
         Self {
             world: WorldConfig::default(),
-            sea_level: 18.0,
+            sea_level: 40.0,
             biome: BiomeConfig::default(),
             heightmap: HeightmapConfig::default(),
             flora: FloraConfig::default(),
@@ -67,7 +67,7 @@ impl Default for WorldConfig {
         Self {
             seed: 42,
             load_radius: 3,
-            start_hour: 9.5,
+            start_hour: 5.5,
             day_speed: 0.04,
         }
     }

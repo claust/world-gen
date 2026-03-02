@@ -4,7 +4,7 @@ pub const CHUNK_SIZE_METERS: f32 = 256.0;
 pub const CHUNK_GRID_RESOLUTION: usize = 129;
 
 /// Global water surface height. Any terrain below this level is submerged.
-pub const SEA_LEVEL: f32 = 18.0;
+pub const SEA_LEVEL: f32 = 40.0;
 
 #[derive(Clone)]
 pub struct TreeInstance {

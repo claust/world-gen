@@ -1,13 +1,10 @@
-use std::sync::mpsc;
-
-use serde_json::Value;
-
 use crate::renderer_wgpu::geometry::Vertex;
 use crate::renderer_wgpu::instancing::{
     upload_instances, upload_prototype, GpuInstanceChunk, InstanceData, PrototypeMesh,
 };
-use crate::renderer_wgpu::model_loader;
 use crate::ui::plant_editor_panel::PlantParams;
+use crate::world_core::plant_gen::config::SpeciesConfig;
+use crate::world_core::plant_gen::{generate_plant_mesh, PlantMesh};
 
 /// Orbit camera constants for the plant editor.
 const ORBIT_TARGET_Y: f32 = 7.0;
@@ -18,9 +15,48 @@ const ORBIT_PANEL_OFFSET: f32 = 3.0;
 const ORBIT_SPEED: f32 = 1.5;
 /// Slow auto-orbit speed (radians/sec) when idle.
 const AUTO_ORBIT_SPEED: f32 = 0.15;
+/// Mouse drag sensitivity for horizontal orbit (radians per pixel).
+const MOUSE_ORBIT_SENSITIVITY: f32 = 0.005;
+/// Mouse drag sensitivity for vertical height adjustment (units per pixel).
+const MOUSE_HEIGHT_SENSITIVITY: f32 = 0.05;
+const MIN_ORBIT_HEIGHT: f32 = 1.0;
+const MAX_ORBIT_HEIGHT: f32 = 25.0;
+
+const SPECIES_PRESETS: &[(&str, &str)] = &[
+    (
+        "Oak",
+        include_str!("../world_core/plant_gen/species/oak.json"),
+    ),
+    (
+        "Birch",
+        include_str!("../world_core/plant_gen/species/birch.json"),
+    ),
+    (
+        "Acacia",
+        include_str!("../world_core/plant_gen/species/acacia.json"),
+    ),
+    (
+        "Palm",
+        include_str!("../world_core/plant_gen/species/palm.json"),
+    ),
+    (
+        "Shrub",
+        include_str!("../world_core/plant_gen/species/shrub.json"),
+    ),
+    (
+        "Spruce",
+        include_str!("../world_core/plant_gen/species/spruce.json"),
+    ),
+    (
+        "Willow",
+        include_str!("../world_core/plant_gen/species/willow.json"),
+    ),
+];
 
 pub struct PlantEditorState {
-    base_species: Value,
+    all_species: Vec<(String, SpeciesConfig)>,
+    base_species: SpeciesConfig,
+    seed: u32,
     pub tree_mesh: Option<PrototypeMesh>,
     pub tree_instance: Option<GpuInstanceChunk>,
     pub ground_mesh: PrototypeMesh,
@@ -32,18 +68,32 @@ pub struct PlantEditorState {
     pub orbit_right: bool,
     /// Auto-orbit: camera slowly circles until user interacts.
     pub auto_orbit: bool,
+    /// Is left mouse button held in viewport for drag-orbit.
+    pub mouse_dragging: bool,
+    /// Last known cursor position for computing drag deltas.
+    pub last_cursor_pos: Option<(f64, f64)>,
+    /// Current camera height (adjustable via vertical mouse drag).
+    pub orbit_height: f32,
 }
 
 impl PlantEditorState {
-    pub fn new(device: &wgpu::Device) -> Self {
-        let base_species: Value =
-            serde_json::from_str(include_str!("../../tools/plant-gen/examples/oak.json"))
-                .expect("invalid oak.json");
+    pub fn new(device: &wgpu::Device, seed: u32) -> Self {
+        let all_species: Vec<(String, SpeciesConfig)> = SPECIES_PRESETS
+            .iter()
+            .map(|(name, json)| {
+                let spec: SpeciesConfig = serde_json::from_str(json)
+                    .unwrap_or_else(|e| panic!("invalid {name}.json: {e}"));
+                (name.to_string(), spec)
+            })
+            .collect();
+        let base_species = all_species[0].1.clone();
 
         let (ground_mesh, ground_instance) = create_ground_plane(device);
 
         Self {
+            all_species,
             base_species,
+            seed,
             tree_mesh: None,
             tree_instance: None,
             ground_mesh,
@@ -53,12 +103,30 @@ impl PlantEditorState {
             orbit_left: false,
             orbit_right: false,
             auto_orbit: true,
+            mouse_dragging: false,
+            last_cursor_pos: None,
+            orbit_height: ORBIT_HEIGHT,
         }
+    }
+
+    pub fn species_names(&self) -> Vec<String> {
+        self.all_species
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Switch to a different base species. Returns the new PlantParams extracted from it.
+    pub fn set_base_species(&mut self, name: &str) -> PlantParams {
+        if let Some((_, spec)) = self.all_species.iter().find(|(n, _)| n == name) {
+            self.base_species = spec.clone();
+        }
+        PlantParams::from_species(&self.base_species)
     }
 
     pub fn request_generation(&mut self, params: &PlantParams) {
         let species = merge_params(&self.base_species, params);
-        self.generator.request(species);
+        self.generator.request(species, self.seed);
     }
 
     pub fn set_tree_mesh(&mut self, device: &wgpu::Device, mesh: PrototypeMesh) {
@@ -84,17 +152,43 @@ impl PlantEditorState {
             self.orbit_angle += AUTO_ORBIT_SPEED * dt;
         } else {
             if self.orbit_left {
-                self.orbit_angle -= ORBIT_SPEED * dt;
+                self.orbit_angle += ORBIT_SPEED * dt;
             }
             if self.orbit_right {
-                self.orbit_angle += ORBIT_SPEED * dt;
+                self.orbit_angle -= ORBIT_SPEED * dt;
             }
         }
     }
 
     /// Stop auto-orbit (called when user sends a debug API camera command).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn stop_auto_orbit(&mut self) {
         self.auto_orbit = false;
+    }
+
+    /// Start mouse drag orbit.
+    pub fn on_mouse_press(&mut self) {
+        self.mouse_dragging = true;
+        self.auto_orbit = false;
+    }
+
+    /// End mouse drag orbit.
+    pub fn on_mouse_release(&mut self) {
+        self.mouse_dragging = false;
+    }
+
+    /// Track cursor position and apply drag-orbit when dragging.
+    pub fn on_cursor_move(&mut self, x: f64, y: f64) {
+        if let Some((last_x, last_y)) = self.last_cursor_pos {
+            if self.mouse_dragging {
+                let dx = (x - last_x) as f32;
+                let dy = (y - last_y) as f32;
+                self.orbit_angle -= dx * MOUSE_ORBIT_SENSITIVITY;
+                self.orbit_height = (self.orbit_height + dy * MOUSE_HEIGHT_SENSITIVITY)
+                    .clamp(MIN_ORBIT_HEIGHT, MAX_ORBIT_HEIGHT);
+            }
+        }
+        self.last_cursor_pos = Some((x, y));
     }
 
     /// Compute camera position and look direction for the current orbit angle.
@@ -104,7 +198,7 @@ impl PlantEditorState {
 
         let cam_x = sin_a * ORBIT_DISTANCE + cos_a * ORBIT_PANEL_OFFSET;
         let cam_z = cos_a * ORBIT_DISTANCE - sin_a * ORBIT_PANEL_OFFSET;
-        let cam_pos = glam::Vec3::new(cam_x, ORBIT_HEIGHT, cam_z);
+        let cam_pos = glam::Vec3::new(cam_x, self.orbit_height, cam_z);
 
         let target = glam::Vec3::new(0.0, ORBIT_TARGET_Y, 0.0);
         let to_target = target - cam_pos;
@@ -114,127 +208,130 @@ impl PlantEditorState {
         (cam_pos, yaw, pitch)
     }
 
-    pub fn load_glb_result(&mut self, device: &wgpu::Device, glb_bytes: &[u8]) {
-        match model_loader::load_glb(device, glb_bytes, "plant-editor-tree") {
-            Ok(mesh) => self.set_tree_mesh(device, mesh),
-            Err(e) => log::warn!("failed to load generated plant GLB: {e:#}"),
-        }
+    /// Upload a generated PlantMesh as a GPU prototype.
+    pub fn load_plant_mesh(&mut self, device: &wgpu::Device, plant_mesh: &PlantMesh) {
+        let vertices: Vec<Vertex> = plant_mesh
+            .vertices
+            .iter()
+            .map(|v| Vertex {
+                position: v.position,
+                normal: v.normal,
+                color: v.color,
+            })
+            .collect();
+        let mesh = upload_prototype(device, &vertices, &plant_mesh.indices, "plant-editor-tree");
+        self.set_tree_mesh(device, mesh);
     }
 }
 
 pub struct MeshGenerator {
-    tx: mpsc::Sender<Vec<u8>>,
-    rx: mpsc::Receiver<Vec<u8>>,
-    busy: bool,
+    result: Option<PlantMesh>,
 }
 
 impl MeshGenerator {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
-        Self {
-            tx,
-            rx,
-            busy: false,
-        }
+        Self { result: None }
     }
 
-    pub fn request(&mut self, species_json: Value) {
-        self.busy = true;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || match generate_glb(species_json) {
-            Ok(bytes) => {
-                let _ = tx.send(bytes);
-            }
-            Err(e) => {
-                log::warn!("plant generation failed: {e}");
-            }
-        });
+    pub fn request(&mut self, species: SpeciesConfig, seed: u32) {
+        self.result = Some(generate_plant_mesh(&species, seed));
     }
 
-    pub fn poll(&mut self) -> Option<Vec<u8>> {
-        match self.rx.try_recv() {
-            Ok(bytes) => {
-                self.busy = false;
-                Some(bytes)
-            }
-            Err(_) => None,
-        }
-    }
-
-    pub fn is_busy(&self) -> bool {
-        self.busy
+    pub fn poll(&mut self) -> Option<PlantMesh> {
+        self.result.take()
     }
 }
 
-fn generate_glb(species: Value) -> anyhow::Result<Vec<u8>> {
-    let tmp_dir = std::env::temp_dir();
-    let json_path = tmp_dir.join("plant_editor_species.json");
-    let glb_path = tmp_dir.join("plant_editor_output.glb");
-
-    std::fs::write(&json_path, serde_json::to_string_pretty(&species)?)?;
-
-    let output = std::process::Command::new("bun")
-        .arg("tools/plant-gen/render.ts")
-        .arg(json_path.to_str().unwrap())
-        .arg(glb_path.to_str().unwrap())
-        .arg("--format")
-        .arg("glb")
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("bun render.ts failed: {stderr}");
-    }
-
-    let bytes = std::fs::read(&glb_path)?;
-    Ok(bytes)
-}
-
-fn merge_params(base: &Value, params: &PlantParams) -> Value {
+fn merge_params(base: &SpeciesConfig, params: &PlantParams) -> SpeciesConfig {
     let mut spec = base.clone();
 
-    if let Some(crown) = spec.get_mut("crown").and_then(|v| v.as_object_mut()) {
-        crown.insert(
-            "shape".to_string(),
-            Value::String(params.crown_shape.clone()),
-        );
-        crown.insert(
-            "crown_base".to_string(),
-            serde_json::json!(params.crown_base),
-        );
-        crown.insert(
-            "aspect_ratio".to_string(),
-            serde_json::json!(params.aspect_ratio),
-        );
-        crown.insert(
-            "density".to_string(),
-            serde_json::json!(params.crown_density),
-        );
-    }
+    // Body Plan
+    spec.body_plan.kind = params.body_kind.clone();
+    spec.body_plan.stem_count = params.stem_count;
+    let (h_min, h_max) = min_max_f32(params.max_height_min, params.max_height_max);
+    spec.body_plan.max_height = [h_min, h_max];
 
-    if let Some(branching) = spec.get_mut("branching").and_then(|v| v.as_object_mut()) {
-        branching.insert(
-            "apical_dominance".to_string(),
-            serde_json::json!(params.apical_dominance),
-        );
-        branching.insert(
-            "gravity_response".to_string(),
-            serde_json::json!(params.gravity_response),
-        );
-        branching.insert(
-            "length_profile".to_string(),
-            Value::String(params.length_profile.clone()),
-        );
-    }
+    // Trunk
+    spec.trunk.taper = params.taper;
+    spec.trunk.base_flare = params.base_flare;
+    spec.trunk.straightness = params.straightness;
+    spec.trunk.thickness_ratio = params.thickness_ratio;
 
-    if let Some(foliage) = spec.get_mut("foliage").and_then(|v| v.as_object_mut()) {
-        foliage.insert(
-            "style".to_string(),
-            Value::String(params.foliage_style.clone()),
-        );
-    }
+    // Crown
+    spec.crown.shape = params.crown_shape.clone();
+    spec.crown.crown_base = params.crown_base;
+    spec.crown.aspect_ratio = params.aspect_ratio;
+    spec.crown.density = params.crown_density;
+    spec.crown.asymmetry = params.asymmetry;
+
+    // Branching
+    spec.branching.apical_dominance = params.apical_dominance;
+    spec.branching.gravity_response = params.gravity_response;
+    spec.branching.length_profile = params.length_profile.clone();
+    spec.branching.max_depth = params.max_depth;
+    spec.branching.arrangement.kind = params.arrangement_type.clone();
+    spec.branching.arrangement.angle = if params.arrangement_type == "spiral" {
+        Some(params.arrangement_angle)
+    } else {
+        None
+    };
+    let (bpn_min, bpn_max) =
+        min_max_u32(params.branches_per_node_min, params.branches_per_node_max);
+    spec.branching.branches_per_node = [bpn_min, bpn_max];
+    let (iab_min, iab_max) = min_max_f32(
+        params.insertion_angle_base_min,
+        params.insertion_angle_base_max,
+    );
+    spec.branching.insertion_angle.base = [iab_min, iab_max];
+    let (iat_min, iat_max) = min_max_f32(
+        params.insertion_angle_tip_min,
+        params.insertion_angle_tip_max,
+    );
+    spec.branching.insertion_angle.tip = [iat_min, iat_max];
+    spec.branching.child_length_ratio = params.child_length_ratio;
+    spec.branching.child_thickness_ratio = params.child_thickness_ratio;
+    spec.branching.randomness = params.randomness;
+
+    // Foliage
+    spec.foliage.style = params.foliage_style.clone();
+    let (ls_min, ls_max) = min_max_f32(params.leaf_size_min, params.leaf_size_max);
+    spec.foliage.leaf_size = [ls_min, ls_max];
+    spec.foliage.cluster_strategy.kind = params.cluster_type.clone();
+    spec.foliage.cluster_strategy.count =
+        if params.cluster_type == "clusters" || params.cluster_type == "ring" {
+            Some(params.cluster_count)
+        } else {
+            None
+        };
+    spec.foliage.droop = params.droop;
+    spec.foliage.coverage = params.coverage;
+
+    // Color
+    spec.color.bark.h = params.bark_h;
+    spec.color.bark.s = params.bark_s;
+    spec.color.bark.l = params.bark_l;
+    spec.color.leaf.h = params.leaf_h;
+    spec.color.leaf.s = params.leaf_s;
+    spec.color.leaf.l = params.leaf_l;
+    spec.color.leaf_variance = Some(params.leaf_variance);
 
     spec
+}
+
+fn min_max_f32(a: f32, b: f32) -> (f32, f32) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn min_max_u32(a: u32, b: u32) -> (u32, u32) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 fn create_ground_plane(device: &wgpu::Device) -> (PrototypeMesh, GpuInstanceChunk) {

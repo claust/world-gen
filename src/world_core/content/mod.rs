@@ -1,7 +1,7 @@
 mod ferns;
 mod flora;
 mod houses;
-mod sampling;
+pub(crate) mod sampling;
 
 use self::ferns::{FernsInput, FernsLayer};
 use self::flora::{FloraInput, FloraLayer};

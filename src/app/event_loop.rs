@@ -58,19 +58,19 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     {
                         if !app.is_on_menu() {
                             if app.is_on_editor() {
-                                #[cfg(not(target_arch = "wasm32"))]
                                 app.leave_plant_editor();
                             } else {
                                 if app.config_panel.is_visible() {
                                     app.config_panel.toggle();
                                 }
+                                #[cfg(not(target_arch = "wasm32"))]
+                                app.save_and_update();
                                 app.release_cursor();
                                 app.return_to_menu();
                             }
                         }
                     }
                     // Left/Right arrow keys for plant editor orbit
-                    #[cfg(not(target_arch = "wasm32"))]
                     WindowEvent::KeyboardInput { ref event, .. }
                         if app.is_on_editor()
                             && matches!(
@@ -92,15 +92,36 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             }
                         }
                     }
+                    WindowEvent::CursorMoved { position, .. } if app.is_on_editor() => {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_cursor_move(position.x, position.y);
+                        }
+                    }
                     WindowEvent::MouseInput {
                         state: ElementState::Pressed,
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
-                        if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                        if app.is_on_editor() && !egui_wants_event {
+                            if let Some(editor) = &mut app.plant_editor {
+                                editor.on_mouse_press();
+                            }
+                        } else if app.is_on_menu()
+                            || app.config_panel.is_visible()
+                            || app.is_on_editor()
+                        {
                             // Don't capture cursor on menu, config panel, or plant editor
                         } else {
                             app.capture_cursor();
+                        }
+                    }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                        ..
+                    } if app.is_on_editor() => {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_mouse_release();
                         }
                     }
                     WindowEvent::Resized(size) => app.resize(size),
@@ -122,16 +143,12 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
-                                #[cfg(not(target_arch = "wasm32"))]
                                 MenuAction::PlantEditor => app.enter_plant_editor(),
-                                #[cfg(not(target_arch = "wasm32"))]
                                 MenuAction::LeaveEditor => app.leave_plant_editor(),
                                 MenuAction::Exit => {
                                     #[cfg(not(target_arch = "wasm32"))]
                                     target.exit();
                                 }
-                                #[cfg(target_arch = "wasm32")]
-                                _ => {}
                             }
                         }
                     }
@@ -237,11 +254,20 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
                         if !app.is_on_menu() {
-                            if app.config_panel.is_visible() {
-                                app.config_panel.toggle();
+                            if app.is_on_editor() {
+                                app.leave_plant_editor();
+                            } else {
+                                if app.config_panel.is_visible() {
+                                    app.config_panel.toggle();
+                                }
+                                app.release_cursor();
+                                app.return_to_menu();
                             }
-                            app.release_cursor();
-                            app.return_to_menu();
+                        }
+                    }
+                    WindowEvent::CursorMoved { position, .. } if app.is_on_editor() => {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_cursor_move(position.x, position.y);
                         }
                     }
                     WindowEvent::MouseInput {
@@ -249,10 +275,26 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
-                        if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                        if app.is_on_editor() && !egui_wants_event {
+                            if let Some(editor) = &mut app.plant_editor {
+                                editor.on_mouse_press();
+                            }
+                        } else if app.is_on_menu()
+                            || app.config_panel.is_visible()
+                            || app.is_on_editor()
+                        {
                             // Don't capture cursor on menu, config panel, or plant editor
                         } else {
                             app.capture_cursor();
+                        }
+                    }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                        ..
+                    } if app.is_on_editor() => {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_mouse_release();
                         }
                     }
                     WindowEvent::Resized(size) => app.resize(size),
@@ -276,7 +318,9 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
-                                _ => {} // PlantEditor/LeaveEditor/Exit are no-ops on WASM
+                                MenuAction::PlantEditor => app.enter_plant_editor(),
+                                MenuAction::LeaveEditor => app.leave_plant_editor(),
+                                MenuAction::Exit => {} // no-op on WASM
                             }
                         }
                     }

@@ -10,9 +10,7 @@ use crate::renderer_wgpu::egui_bridge::EguiBridge;
 use crate::renderer_wgpu::egui_pass::EguiPass;
 use crate::renderer_wgpu::gpu_context::GpuContext;
 use crate::renderer_wgpu::world::WorldRenderer;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::ui::PlantEditorPanel;
-use crate::ui::{ConfigPanel, MenuAction, StartMenu};
+use crate::ui::{ConfigPanel, MenuAction, PlantEditorPanel, StartMenu};
 use crate::world_core::config::GameConfig;
 use crate::world_runtime::WorldRuntime;
 
@@ -34,7 +32,6 @@ use web_time::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 mod debug_commands;
 mod event_loop;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod plant_editor;
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot;
@@ -43,7 +40,6 @@ pub use event_loop::run_event_loop;
 #[cfg(target_arch = "wasm32")]
 pub use event_loop::run_event_loop_web;
 
-#[allow(dead_code)] // PlantEditor is native-only but enum must be exhaustive everywhere
 enum Screen {
     StartMenu,
     Playing,
@@ -74,9 +70,7 @@ pub struct AppState {
     egui_bridge: EguiBridge,
     egui_pass: EguiPass,
     config_panel: ConfigPanel,
-    #[cfg(not(target_arch = "wasm32"))]
     plant_editor_panel: PlantEditorPanel,
-    #[cfg(not(target_arch = "wasm32"))]
     plant_editor: Option<plant_editor::PlantEditorState>,
     screen: Screen,
     start_menu: StartMenu,
@@ -145,7 +139,7 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
-            plant_editor_panel: PlantEditorPanel::new(),
+            plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
             start_menu: StartMenu::new(save_exists),
@@ -194,6 +188,8 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
+            plant_editor_panel: PlantEditorPanel::default(),
+            plant_editor: None,
             screen: Screen::StartMenu,
             start_menu: StartMenu::new(false), // no save files on WASM
             config,
@@ -249,15 +245,18 @@ impl AppState {
         self.start_menu.set_save_exists(true);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn enter_plant_editor(&mut self) {
-        use crate::ui::plant_editor_panel::PlantParams;
-
         self.screen = Screen::PlantEditor;
 
-        let mut editor = plant_editor::PlantEditorState::new(&self.gpu.device);
-        editor.request_generation(&PlantParams::default());
-        self.plant_editor_panel.set_generating(true);
+        let mut editor =
+            plant_editor::PlantEditorState::new(&self.gpu.device, self.config.world.seed);
+
+        // Initialize panel with species names and the first species' params
+        self.plant_editor_panel
+            .set_species_names(editor.species_names());
+        let initial_params = editor.set_base_species("Oak");
+        self.plant_editor_panel.set_params(initial_params.clone());
+        editor.request_generation(&initial_params);
 
         // Set camera from orbit
         let (cam_pos, yaw, pitch) = editor.orbit_camera();
@@ -268,14 +267,19 @@ impl AppState {
         self.plant_editor = Some(editor);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn leave_plant_editor(&mut self) {
         self.plant_editor = None;
-        self.plant_editor_panel.set_generating(false);
         self.screen = Screen::StartMenu;
     }
 
     fn start_game(&mut self, resume: bool) {
+        // If resuming and the world is still alive in memory, just switch back
+        if resume && self.world.is_some() {
+            self.screen = Screen::Playing;
+            self.capture_cursor();
+            return;
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         let save_ref = if resume { self.save.as_ref() } else { None };
         #[cfg(target_arch = "wasm32")]
@@ -300,6 +304,11 @@ impl AppState {
         self.camera = FlyCamera::new(cam_pos);
         self.camera.yaw = cam_yaw;
         self.camera.pitch = cam_pitch;
+
+        // Starting a new game drops any existing world and clears GPU chunk caches
+        self.world = None;
+        self.world_renderer
+            .clear_chunks(&self.gpu.device, &self.gpu.queue);
 
         #[cfg(not(target_arch = "wasm32"))]
         let threads = std::thread::available_parallelism()
@@ -348,7 +357,6 @@ impl AppState {
             return;
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
         if self.is_on_editor() {
             self.update_editor(dt);
             return;
@@ -449,7 +457,6 @@ impl AppState {
         ));
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn update_editor(&mut self, dt: f32) {
         // Update orbit camera
         if let Some(editor) = &mut self.plant_editor {
@@ -484,25 +491,41 @@ impl AppState {
             .update_material(&self.gpu.queue, light_dir, ambient, &palette);
 
         // Process debug commands in editor mode
+        #[cfg(not(target_arch = "wasm32"))]
         self.apply_editor_debug_commands();
 
-        // Check for dirty params (debounced on pointer release)
-        if let Some(params) = self
+        // Check for species preset change and/or dirty params
+        let species_change = self.plant_editor_panel.take_species_change();
+        let dirty_params = self
             .plant_editor_panel
-            .take_dirty_params(self.egui_bridge.ctx())
-        {
-            if let Some(editor) = &mut self.plant_editor {
-                editor.request_generation(&params);
+            .take_dirty_params(self.egui_bridge.ctx());
+
+        if let Some(editor) = &mut self.plant_editor {
+            match (species_change, dirty_params) {
+                (Some(name), Some(params)) => {
+                    // Both changed (e.g. Randomize picks random species + random params)
+                    editor.set_base_species(&name);
+                    editor.request_generation(&params);
+                }
+                (Some(name), None) => {
+                    // Species dropdown changed — use species defaults
+                    let new_params = editor.set_base_species(&name);
+                    self.plant_editor_panel.set_params(new_params.clone());
+                    editor.request_generation(&new_params);
+                }
+                (None, Some(params)) => {
+                    // Slider/combo changed — apply on current base
+                    editor.request_generation(&params);
+                }
+                (None, None) => {}
             }
         }
 
         // Poll for completed generation
         if let Some(editor) = &mut self.plant_editor {
-            if let Some(glb_bytes) = editor.generator.poll() {
-                editor.load_glb_result(&self.gpu.device, &glb_bytes);
+            if let Some(plant_mesh) = editor.generator.poll() {
+                editor.load_plant_mesh(&self.gpu.device, &plant_mesh);
             }
-            self.plant_editor_panel
-                .set_generating(editor.generator.is_busy());
         }
     }
 
@@ -640,7 +663,6 @@ impl AppState {
             });
 
             if is_editor {
-                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(editor) = &self.plant_editor {
                     let mut meshes = vec![(&editor.ground_mesh, &editor.ground_instance)];
                     if let (Some(m), Some(i)) = (&editor.tree_mesh, &editor.tree_instance) {
@@ -671,9 +693,7 @@ impl AppState {
                         Screen::Playing => {
                             self.config_panel.ui(ctx);
                         }
-                        Screen::PlantEditor =>
-                        {
-                            #[cfg(not(target_arch = "wasm32"))]
+                        Screen::PlantEditor => {
                             if self.plant_editor_panel.ui(ctx) {
                                 menu_action = Some(MenuAction::LeaveEditor);
                             }
@@ -717,24 +737,40 @@ impl AppState {
     #[cfg(not(target_arch = "wasm32"))]
     fn save_game(&self) {
         let Some(world) = &self.world else { return };
-        let save = SaveData {
+        let save = Self::build_save_data(&self.camera, world);
+        if let Err(e) = save.save() {
+            log::warn!("failed to save game state: {e}");
+        }
+    }
+
+    /// Save to disk and update the in-memory save (for mid-session resume).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_and_update(&mut self) {
+        let Some(world) = &self.world else { return };
+        let save = Self::build_save_data(&self.camera, world);
+        match save.save() {
+            Ok(()) => {
+                self.save = Some(save);
+            }
+            Err(e) => {
+                log::warn!("failed to save game state: {e}");
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn build_save_data(camera: &FlyCamera, world: &WorldRuntime) -> SaveData {
+        SaveData {
             camera: CameraSave {
-                position: [
-                    self.camera.position.x,
-                    self.camera.position.y,
-                    self.camera.position.z,
-                ],
-                yaw: self.camera.yaw,
-                pitch: self.camera.pitch,
+                position: [camera.position.x, camera.position.y, camera.position.z],
+                yaw: camera.yaw,
+                pitch: camera.pitch,
             },
             world: WorldSave {
                 seed: world.seed(),
                 hour: world.hour(),
                 day_speed: world.day_speed(),
             },
-        };
-        if let Err(e) = save.save() {
-            log::warn!("failed to save game state: {e}");
         }
     }
 }
