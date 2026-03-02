@@ -725,10 +725,14 @@ impl AppState {
     fn save_and_update(&mut self) {
         let Some(world) = &self.world else { return };
         let save = Self::build_save_data(&self.camera, world);
-        if let Err(e) = save.save() {
-            log::warn!("failed to save game state: {e}");
+        match save.save() {
+            Ok(()) => {
+                self.save = Some(save);
+            }
+            Err(e) => {
+                log::warn!("failed to save game state: {e}");
+            }
         }
-        self.save = Some(save);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
