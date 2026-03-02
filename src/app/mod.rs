@@ -494,22 +494,30 @@ impl AppState {
         #[cfg(not(target_arch = "wasm32"))]
         self.apply_editor_debug_commands();
 
-        // Check for species preset change
-        if let Some(species_name) = self.plant_editor_panel.take_species_change() {
-            if let Some(editor) = &mut self.plant_editor {
-                let new_params = editor.set_base_species(&species_name);
-                self.plant_editor_panel.set_params(new_params.clone());
-                editor.request_generation(&new_params);
-            }
-        }
-
-        // Check for dirty params (debounced on pointer release)
-        if let Some(params) = self
+        // Check for species preset change and/or dirty params
+        let species_change = self.plant_editor_panel.take_species_change();
+        let dirty_params = self
             .plant_editor_panel
-            .take_dirty_params(self.egui_bridge.ctx())
-        {
-            if let Some(editor) = &mut self.plant_editor {
-                editor.request_generation(&params);
+            .take_dirty_params(self.egui_bridge.ctx());
+
+        if let Some(editor) = &mut self.plant_editor {
+            match (species_change, dirty_params) {
+                (Some(name), Some(params)) => {
+                    // Both changed (e.g. Randomize picks random species + random params)
+                    editor.set_base_species(&name);
+                    editor.request_generation(&params);
+                }
+                (Some(name), None) => {
+                    // Species dropdown changed — use species defaults
+                    let new_params = editor.set_base_species(&name);
+                    self.plant_editor_panel.set_params(new_params.clone());
+                    editor.request_generation(&new_params);
+                }
+                (None, Some(params)) => {
+                    // Slider/combo changed — apply on current base
+                    editor.request_generation(&params);
+                }
+                (None, None) => {}
             }
         }
 

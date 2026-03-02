@@ -226,10 +226,20 @@ impl PlantEditorPanel {
 
                     ui.horizontal(|ui| {
                         if ui.button("Randomize").clicked() {
+                            if !self.species_names.is_empty() {
+                                let mut rng = rand::rng();
+                                let idx = rng.random_range(0..self.species_names.len());
+                                self.selected_species = self.species_names[idx].clone();
+                                self.species_changed = Some(self.selected_species.clone());
+                            }
                             self.params = PlantParams::randomize();
                             self.dirty = true;
                         }
                         if ui.button("Reset Defaults").clicked() {
+                            if let Some(first) = self.species_names.first() {
+                                self.selected_species = first.clone();
+                                self.species_changed = Some(first.clone());
+                            }
                             self.params = PlantParams::default();
                             self.dirty = true;
                         }
