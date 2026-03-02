@@ -58,10 +58,9 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         if !app.is_on_menu() {
                             if app.config_panel.is_visible() {
                                 app.config_panel.toggle();
-                                app.capture_cursor();
-                            } else {
-                                app.release_cursor();
                             }
+                            app.release_cursor();
+                            app.return_to_menu();
                         }
                     }
                     WindowEvent::MouseInput {
@@ -204,10 +203,9 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                         if !app.is_on_menu() {
                             if app.config_panel.is_visible() {
                                 app.config_panel.toggle();
-                                app.capture_cursor();
-                            } else {
-                                app.release_cursor();
                             }
+                            app.release_cursor();
+                            app.return_to_menu();
                         }
                     }
                     WindowEvent::MouseInput {

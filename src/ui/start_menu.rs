@@ -15,6 +15,10 @@ impl StartMenu {
         Self { save_exists }
     }
 
+    pub fn set_save_exists(&mut self, value: bool) {
+        self.save_exists = value;
+    }
+
     /// Draw the start menu. Returns `Some(action)` when a button is clicked.
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<MenuAction> {
         let mut action = None;

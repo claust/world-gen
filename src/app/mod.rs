@@ -228,6 +228,11 @@ impl AppState {
         matches!(self.screen, Screen::StartMenu)
     }
 
+    fn return_to_menu(&mut self) {
+        self.screen = Screen::StartMenu;
+        self.start_menu.set_save_exists(true);
+    }
+
     fn start_game(&mut self, resume: bool) {
         #[cfg(not(target_arch = "wasm32"))]
         let save_ref = if resume { self.save.as_ref() } else { None };
