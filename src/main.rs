@@ -1,5 +1,6 @@
 // Binary entry point — native only.
 // On wasm32, the cdylib entry point in lib.rs is used instead.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(unexpected_cfgs)] // objc crate's msg_send! macro checks cfg(feature = "cargo-clippy")
 
 #[cfg(target_os = "macos")]
