@@ -15,6 +15,12 @@ const ORBIT_PANEL_OFFSET: f32 = 3.0;
 const ORBIT_SPEED: f32 = 1.5;
 /// Slow auto-orbit speed (radians/sec) when idle.
 const AUTO_ORBIT_SPEED: f32 = 0.15;
+/// Mouse drag sensitivity for horizontal orbit (radians per pixel).
+const MOUSE_ORBIT_SENSITIVITY: f32 = 0.005;
+/// Mouse drag sensitivity for vertical height adjustment (units per pixel).
+const MOUSE_HEIGHT_SENSITIVITY: f32 = 0.05;
+const MIN_ORBIT_HEIGHT: f32 = 1.0;
+const MAX_ORBIT_HEIGHT: f32 = 25.0;
 
 const SPECIES_PRESETS: &[(&str, &str)] = &[
     (
@@ -62,6 +68,12 @@ pub struct PlantEditorState {
     pub orbit_right: bool,
     /// Auto-orbit: camera slowly circles until user interacts.
     pub auto_orbit: bool,
+    /// Is left mouse button held in viewport for drag-orbit.
+    pub mouse_dragging: bool,
+    /// Last known cursor position for computing drag deltas.
+    pub last_cursor_pos: Option<(f64, f64)>,
+    /// Current camera height (adjustable via vertical mouse drag).
+    pub orbit_height: f32,
 }
 
 impl PlantEditorState {
@@ -91,6 +103,9 @@ impl PlantEditorState {
             orbit_left: false,
             orbit_right: false,
             auto_orbit: true,
+            mouse_dragging: false,
+            last_cursor_pos: None,
+            orbit_height: ORBIT_HEIGHT,
         }
     }
 
@@ -137,10 +152,10 @@ impl PlantEditorState {
             self.orbit_angle += AUTO_ORBIT_SPEED * dt;
         } else {
             if self.orbit_left {
-                self.orbit_angle -= ORBIT_SPEED * dt;
+                self.orbit_angle += ORBIT_SPEED * dt;
             }
             if self.orbit_right {
-                self.orbit_angle += ORBIT_SPEED * dt;
+                self.orbit_angle -= ORBIT_SPEED * dt;
             }
         }
     }
@@ -151,6 +166,31 @@ impl PlantEditorState {
         self.auto_orbit = false;
     }
 
+    /// Start mouse drag orbit.
+    pub fn on_mouse_press(&mut self) {
+        self.mouse_dragging = true;
+        self.auto_orbit = false;
+    }
+
+    /// End mouse drag orbit.
+    pub fn on_mouse_release(&mut self) {
+        self.mouse_dragging = false;
+    }
+
+    /// Track cursor position and apply drag-orbit when dragging.
+    pub fn on_cursor_move(&mut self, x: f64, y: f64) {
+        if let Some((last_x, last_y)) = self.last_cursor_pos {
+            if self.mouse_dragging {
+                let dx = (x - last_x) as f32;
+                let dy = (y - last_y) as f32;
+                self.orbit_angle -= dx * MOUSE_ORBIT_SENSITIVITY;
+                self.orbit_height = (self.orbit_height + dy * MOUSE_HEIGHT_SENSITIVITY)
+                    .clamp(MIN_ORBIT_HEIGHT, MAX_ORBIT_HEIGHT);
+            }
+        }
+        self.last_cursor_pos = Some((x, y));
+    }
+
     /// Compute camera position and look direction for the current orbit angle.
     pub fn orbit_camera(&self) -> (glam::Vec3, f32, f32) {
         let cos_a = self.orbit_angle.cos();
@@ -158,7 +198,7 @@ impl PlantEditorState {
 
         let cam_x = sin_a * ORBIT_DISTANCE + cos_a * ORBIT_PANEL_OFFSET;
         let cam_z = cos_a * ORBIT_DISTANCE - sin_a * ORBIT_PANEL_OFFSET;
-        let cam_pos = glam::Vec3::new(cam_x, ORBIT_HEIGHT, cam_z);
+        let cam_pos = glam::Vec3::new(cam_x, self.orbit_height, cam_z);
 
         let target = glam::Vec3::new(0.0, ORBIT_TARGET_Y, 0.0);
         let to_target = target - cam_pos;

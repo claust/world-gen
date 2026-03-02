@@ -92,15 +92,36 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             }
                         }
                     }
+                    WindowEvent::CursorMoved { position, .. } if app.is_on_editor() => {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_cursor_move(position.x, position.y);
+                        }
+                    }
                     WindowEvent::MouseInput {
                         state: ElementState::Pressed,
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
-                        if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                        if app.is_on_editor() && !egui_wants_event {
+                            if let Some(editor) = &mut app.plant_editor {
+                                editor.on_mouse_press();
+                            }
+                        } else if app.is_on_menu()
+                            || app.config_panel.is_visible()
+                            || app.is_on_editor()
+                        {
                             // Don't capture cursor on menu, config panel, or plant editor
                         } else {
                             app.capture_cursor();
+                        }
+                    }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                        ..
+                    } if app.is_on_editor() => {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_mouse_release();
                         }
                     }
                     WindowEvent::Resized(size) => app.resize(size),
@@ -244,15 +265,36 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             }
                         }
                     }
+                    WindowEvent::CursorMoved { position, .. } if app.is_on_editor() => {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_cursor_move(position.x, position.y);
+                        }
+                    }
                     WindowEvent::MouseInput {
                         state: ElementState::Pressed,
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
-                        if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                        if app.is_on_editor() && !egui_wants_event {
+                            if let Some(editor) = &mut app.plant_editor {
+                                editor.on_mouse_press();
+                            }
+                        } else if app.is_on_menu()
+                            || app.config_panel.is_visible()
+                            || app.is_on_editor()
+                        {
                             // Don't capture cursor on menu, config panel, or plant editor
                         } else {
                             app.capture_cursor();
+                        }
+                    }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                        ..
+                    } if app.is_on_editor() => {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_mouse_release();
                         }
                     }
                     WindowEvent::Resized(size) => app.resize(size),
