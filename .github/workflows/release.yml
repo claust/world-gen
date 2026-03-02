@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  build-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
 
@@ -75,9 +75,67 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
 
+  build-native:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: world-gen-macos-aarch64
+          - name: macOS (Intel)
+            os: macos-13
+            target: x86_64-apple-darwin
+            artifact: world-gen-macos-x86_64
+          - name: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: world-gen-windows-x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.1
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build executable (release)
+        run: cargo build --release --target ${{ matrix.target }} --bin world-gen
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir staging
+          cp target/${{ matrix.target }}/release/world-gen staging/
+          cd staging && zip -r ../${{ matrix.artifact }}.zip .
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path staging
+          Copy-Item "target/${{ matrix.target }}/release/world-gen.exe" staging/
+          Compress-Archive -Path staging/* -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+
   deploy-pages:
     name: Deploy to GitHub Pages
-    needs: build
+    needs: build-wasm
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -90,23 +148,26 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [build-wasm, build-native]
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download zip artifact
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: world-gen-web-zip
+          path: artifacts
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ needs.build.outputs.tag }}" \
+          gh release create "${{ needs.build-wasm.outputs.tag }}" \
             --generate-notes \
-            --title "${{ needs.build.outputs.tag }}" \
-            world-gen-web.zip
+            --title "${{ needs.build-wasm.outputs.tag }}" \
+            artifacts/world-gen-web-zip/world-gen-web.zip \
+            artifacts/world-gen-macos-aarch64/world-gen-macos-aarch64.zip \
+            artifacts/world-gen-macos-x86_64/world-gen-macos-x86_64.zip \
+            artifacts/world-gen-windows-x86_64/world-gen-windows-x86_64.zip
