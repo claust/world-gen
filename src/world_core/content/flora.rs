@@ -104,12 +104,20 @@ impl<'a> Layer<FloraInput<'a>, Vec<TreeInstance>> for FloraLayer {
                         cell_id,
                     )) * self.config.canopy_radius_range;
 
+                let rotation = hash_to_unit_float(hash4(
+                    self.seed.wrapping_add(1117),
+                    coord.x as u32,
+                    coord.y as u32,
+                    cell_id,
+                )) * std::f32::consts::TAU;
+
                 let world_x = coord.x as f32 * CHUNK_SIZE_METERS + local_x;
                 let world_z = coord.y as f32 * CHUNK_SIZE_METERS + local_z;
                 trees.push(TreeInstance {
                     position: Vec3::new(world_x, height, world_z),
                     trunk_height,
                     canopy_radius,
+                    rotation,
                 });
             }
         }

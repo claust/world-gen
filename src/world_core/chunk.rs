@@ -11,6 +11,7 @@ pub struct TreeInstance {
     pub position: Vec3,
     pub trunk_height: f32,
     pub canopy_radius: f32,
+    pub rotation: f32,
 }
 
 #[derive(Clone)]
