@@ -37,7 +37,6 @@ pub struct PlantEditorPanel {
     params: PlantParams,
     last_applied: PlantParams,
     dirty: bool,
-    generating: bool,
 }
 
 impl Default for PlantEditorPanel {
@@ -52,12 +51,7 @@ impl PlantEditorPanel {
             params: PlantParams::default(),
             last_applied: PlantParams::default(),
             dirty: false,
-            generating: false,
         }
-    }
-
-    pub fn set_generating(&mut self, generating: bool) {
-        self.generating = generating;
     }
 
     /// Returns changed params when the pointer is released after changes.
@@ -151,11 +145,6 @@ impl PlantEditorPanel {
                     );
 
                     ui.add_space(8.0);
-
-                    if self.generating {
-                        ui.label("Generating...");
-                    }
-
                     ui.separator();
 
                     if ui.button("Reset Defaults").clicked() {

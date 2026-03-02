@@ -1,13 +1,10 @@
-use std::sync::mpsc;
-
-use serde_json::Value;
-
 use crate::renderer_wgpu::geometry::Vertex;
 use crate::renderer_wgpu::instancing::{
     upload_instances, upload_prototype, GpuInstanceChunk, InstanceData, PrototypeMesh,
 };
-use crate::renderer_wgpu::model_loader;
 use crate::ui::plant_editor_panel::PlantParams;
+use crate::world_core::plant_gen::config::SpeciesConfig;
+use crate::world_core::plant_gen::{generate_plant_mesh, PlantMesh};
 
 /// Orbit camera constants for the plant editor.
 const ORBIT_TARGET_Y: f32 = 7.0;
@@ -20,7 +17,8 @@ const ORBIT_SPEED: f32 = 1.5;
 const AUTO_ORBIT_SPEED: f32 = 0.15;
 
 pub struct PlantEditorState {
-    base_species: Value,
+    base_species: SpeciesConfig,
+    seed: u32,
     pub tree_mesh: Option<PrototypeMesh>,
     pub tree_instance: Option<GpuInstanceChunk>,
     pub ground_mesh: PrototypeMesh,
@@ -35,15 +33,16 @@ pub struct PlantEditorState {
 }
 
 impl PlantEditorState {
-    pub fn new(device: &wgpu::Device) -> Self {
-        let base_species: Value =
-            serde_json::from_str(include_str!("../../tools/plant-gen/examples/oak.json"))
+    pub fn new(device: &wgpu::Device, seed: u32) -> Self {
+        let base_species: SpeciesConfig =
+            serde_json::from_str(include_str!("../world_core/plant_gen/species/oak.json"))
                 .expect("invalid oak.json");
 
         let (ground_mesh, ground_instance) = create_ground_plane(device);
 
         Self {
             base_species,
+            seed,
             tree_mesh: None,
             tree_instance: None,
             ground_mesh,
@@ -58,7 +57,7 @@ impl PlantEditorState {
 
     pub fn request_generation(&mut self, params: &PlantParams) {
         let species = merge_params(&self.base_species, params);
-        self.generator.request(species);
+        self.generator.request(species, self.seed);
     }
 
     pub fn set_tree_mesh(&mut self, device: &wgpu::Device, mesh: PrototypeMesh) {
@@ -93,6 +92,7 @@ impl PlantEditorState {
     }
 
     /// Stop auto-orbit (called when user sends a debug API camera command).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn stop_auto_orbit(&mut self) {
         self.auto_orbit = false;
     }
@@ -114,126 +114,50 @@ impl PlantEditorState {
         (cam_pos, yaw, pitch)
     }
 
-    pub fn load_glb_result(&mut self, device: &wgpu::Device, glb_bytes: &[u8]) {
-        match model_loader::load_glb(device, glb_bytes, "plant-editor-tree") {
-            Ok(mesh) => self.set_tree_mesh(device, mesh),
-            Err(e) => log::warn!("failed to load generated plant GLB: {e:#}"),
-        }
+    /// Upload a generated PlantMesh as a GPU prototype.
+    pub fn load_plant_mesh(&mut self, device: &wgpu::Device, plant_mesh: &PlantMesh) {
+        let vertices: Vec<Vertex> = plant_mesh
+            .vertices
+            .iter()
+            .map(|v| Vertex {
+                position: v.position,
+                normal: v.normal,
+                color: v.color,
+            })
+            .collect();
+        let mesh = upload_prototype(device, &vertices, &plant_mesh.indices, "plant-editor-tree");
+        self.set_tree_mesh(device, mesh);
     }
 }
 
 pub struct MeshGenerator {
-    tx: mpsc::Sender<Vec<u8>>,
-    rx: mpsc::Receiver<Vec<u8>>,
-    busy: bool,
+    result: Option<PlantMesh>,
 }
 
 impl MeshGenerator {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
-        Self {
-            tx,
-            rx,
-            busy: false,
-        }
+        Self { result: None }
     }
 
-    pub fn request(&mut self, species_json: Value) {
-        self.busy = true;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || match generate_glb(species_json) {
-            Ok(bytes) => {
-                let _ = tx.send(bytes);
-            }
-            Err(e) => {
-                log::warn!("plant generation failed: {e}");
-            }
-        });
+    pub fn request(&mut self, species: SpeciesConfig, seed: u32) {
+        self.result = Some(generate_plant_mesh(&species, seed));
     }
 
-    pub fn poll(&mut self) -> Option<Vec<u8>> {
-        match self.rx.try_recv() {
-            Ok(bytes) => {
-                self.busy = false;
-                Some(bytes)
-            }
-            Err(_) => None,
-        }
-    }
-
-    pub fn is_busy(&self) -> bool {
-        self.busy
+    pub fn poll(&mut self) -> Option<PlantMesh> {
+        self.result.take()
     }
 }
 
-fn generate_glb(species: Value) -> anyhow::Result<Vec<u8>> {
-    let tmp_dir = std::env::temp_dir();
-    let json_path = tmp_dir.join("plant_editor_species.json");
-    let glb_path = tmp_dir.join("plant_editor_output.glb");
-
-    std::fs::write(&json_path, serde_json::to_string_pretty(&species)?)?;
-
-    let output = std::process::Command::new("bun")
-        .arg("tools/plant-gen/render.ts")
-        .arg(json_path.to_str().unwrap())
-        .arg(glb_path.to_str().unwrap())
-        .arg("--format")
-        .arg("glb")
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("bun render.ts failed: {stderr}");
-    }
-
-    let bytes = std::fs::read(&glb_path)?;
-    Ok(bytes)
-}
-
-fn merge_params(base: &Value, params: &PlantParams) -> Value {
+fn merge_params(base: &SpeciesConfig, params: &PlantParams) -> SpeciesConfig {
     let mut spec = base.clone();
-
-    if let Some(crown) = spec.get_mut("crown").and_then(|v| v.as_object_mut()) {
-        crown.insert(
-            "shape".to_string(),
-            Value::String(params.crown_shape.clone()),
-        );
-        crown.insert(
-            "crown_base".to_string(),
-            serde_json::json!(params.crown_base),
-        );
-        crown.insert(
-            "aspect_ratio".to_string(),
-            serde_json::json!(params.aspect_ratio),
-        );
-        crown.insert(
-            "density".to_string(),
-            serde_json::json!(params.crown_density),
-        );
-    }
-
-    if let Some(branching) = spec.get_mut("branching").and_then(|v| v.as_object_mut()) {
-        branching.insert(
-            "apical_dominance".to_string(),
-            serde_json::json!(params.apical_dominance),
-        );
-        branching.insert(
-            "gravity_response".to_string(),
-            serde_json::json!(params.gravity_response),
-        );
-        branching.insert(
-            "length_profile".to_string(),
-            Value::String(params.length_profile.clone()),
-        );
-    }
-
-    if let Some(foliage) = spec.get_mut("foliage").and_then(|v| v.as_object_mut()) {
-        foliage.insert(
-            "style".to_string(),
-            Value::String(params.foliage_style.clone()),
-        );
-    }
-
+    spec.crown.shape = params.crown_shape.clone();
+    spec.crown.crown_base = params.crown_base;
+    spec.crown.aspect_ratio = params.aspect_ratio;
+    spec.crown.density = params.crown_density;
+    spec.branching.apical_dominance = params.apical_dominance;
+    spec.branching.gravity_response = params.gravity_response;
+    spec.branching.length_profile = params.length_profile.clone();
+    spec.foliage.style = params.foliage_style.clone();
     spec
 }
 

@@ -58,7 +58,6 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     {
                         if !app.is_on_menu() {
                             if app.is_on_editor() {
-                                #[cfg(not(target_arch = "wasm32"))]
                                 app.leave_plant_editor();
                             } else {
                                 if app.config_panel.is_visible() {
@@ -70,7 +69,6 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         }
                     }
                     // Left/Right arrow keys for plant editor orbit
-                    #[cfg(not(target_arch = "wasm32"))]
                     WindowEvent::KeyboardInput { ref event, .. }
                         if app.is_on_editor()
                             && matches!(
@@ -122,16 +120,12 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
-                                #[cfg(not(target_arch = "wasm32"))]
                                 MenuAction::PlantEditor => app.enter_plant_editor(),
-                                #[cfg(not(target_arch = "wasm32"))]
                                 MenuAction::LeaveEditor => app.leave_plant_editor(),
                                 MenuAction::Exit => {
                                     #[cfg(not(target_arch = "wasm32"))]
                                     target.exit();
                                 }
-                                #[cfg(target_arch = "wasm32")]
-                                _ => {}
                             }
                         }
                     }
@@ -237,11 +231,15 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
                         if !app.is_on_menu() {
-                            if app.config_panel.is_visible() {
-                                app.config_panel.toggle();
+                            if app.is_on_editor() {
+                                app.leave_plant_editor();
+                            } else {
+                                if app.config_panel.is_visible() {
+                                    app.config_panel.toggle();
+                                }
+                                app.release_cursor();
+                                app.return_to_menu();
                             }
-                            app.release_cursor();
-                            app.return_to_menu();
                         }
                     }
                     WindowEvent::MouseInput {
@@ -276,7 +274,9 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
-                                _ => {} // PlantEditor/LeaveEditor/Exit are no-ops on WASM
+                                MenuAction::PlantEditor => app.enter_plant_editor(),
+                                MenuAction::LeaveEditor => app.leave_plant_editor(),
+                                MenuAction::Exit => {} // no-op on WASM
                             }
                         }
                     }
