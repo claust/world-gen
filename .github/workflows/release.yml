@@ -131,7 +131,7 @@ jobs:
 
   deploy-pages:
     name: Deploy to GitHub Pages
-    needs: build-wasm
+    needs: [build-wasm, build-native]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
