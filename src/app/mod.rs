@@ -139,7 +139,7 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
-            plant_editor_panel: PlantEditorPanel::new(),
+            plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
             start_menu: StartMenu::new(save_exists),
@@ -188,7 +188,7 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
-            plant_editor_panel: PlantEditorPanel::new(),
+            plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
             start_menu: StartMenu::new(false), // no save files on WASM
@@ -246,13 +246,17 @@ impl AppState {
     }
 
     fn enter_plant_editor(&mut self) {
-        use crate::ui::plant_editor_panel::PlantParams;
-
         self.screen = Screen::PlantEditor;
 
         let mut editor =
             plant_editor::PlantEditorState::new(&self.gpu.device, self.config.world.seed);
-        editor.request_generation(&PlantParams::default());
+
+        // Initialize panel with species names and the first species' params
+        self.plant_editor_panel
+            .set_species_names(editor.species_names());
+        let initial_params = editor.set_base_species("Oak");
+        self.plant_editor_panel.set_params(initial_params.clone());
+        editor.request_generation(&initial_params);
 
         // Set camera from orbit
         let (cam_pos, yaw, pitch) = editor.orbit_camera();
@@ -489,6 +493,15 @@ impl AppState {
         // Process debug commands in editor mode
         #[cfg(not(target_arch = "wasm32"))]
         self.apply_editor_debug_commands();
+
+        // Check for species preset change
+        if let Some(species_name) = self.plant_editor_panel.take_species_change() {
+            if let Some(editor) = &mut self.plant_editor {
+                let new_params = editor.set_base_species(&species_name);
+                self.plant_editor_panel.set_params(new_params.clone());
+                editor.request_generation(&new_params);
+            }
+        }
 
         // Check for dirty params (debounced on pointer release)
         if let Some(params) = self

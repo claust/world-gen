@@ -16,7 +16,39 @@ const ORBIT_SPEED: f32 = 1.5;
 /// Slow auto-orbit speed (radians/sec) when idle.
 const AUTO_ORBIT_SPEED: f32 = 0.15;
 
+const SPECIES_PRESETS: &[(&str, &str)] = &[
+    (
+        "Oak",
+        include_str!("../world_core/plant_gen/species/oak.json"),
+    ),
+    (
+        "Birch",
+        include_str!("../world_core/plant_gen/species/birch.json"),
+    ),
+    (
+        "Acacia",
+        include_str!("../world_core/plant_gen/species/acacia.json"),
+    ),
+    (
+        "Palm",
+        include_str!("../world_core/plant_gen/species/palm.json"),
+    ),
+    (
+        "Shrub",
+        include_str!("../world_core/plant_gen/species/shrub.json"),
+    ),
+    (
+        "Spruce",
+        include_str!("../world_core/plant_gen/species/spruce.json"),
+    ),
+    (
+        "Willow",
+        include_str!("../world_core/plant_gen/species/willow.json"),
+    ),
+];
+
 pub struct PlantEditorState {
+    all_species: Vec<(String, SpeciesConfig)>,
     base_species: SpeciesConfig,
     seed: u32,
     pub tree_mesh: Option<PrototypeMesh>,
@@ -34,13 +66,20 @@ pub struct PlantEditorState {
 
 impl PlantEditorState {
     pub fn new(device: &wgpu::Device, seed: u32) -> Self {
-        let base_species: SpeciesConfig =
-            serde_json::from_str(include_str!("../world_core/plant_gen/species/oak.json"))
-                .expect("invalid oak.json");
+        let all_species: Vec<(String, SpeciesConfig)> = SPECIES_PRESETS
+            .iter()
+            .map(|(name, json)| {
+                let spec: SpeciesConfig = serde_json::from_str(json)
+                    .unwrap_or_else(|e| panic!("invalid {name}.json: {e}"));
+                (name.to_string(), spec)
+            })
+            .collect();
+        let base_species = all_species[0].1.clone();
 
         let (ground_mesh, ground_instance) = create_ground_plane(device);
 
         Self {
+            all_species,
             base_species,
             seed,
             tree_mesh: None,
@@ -53,6 +92,21 @@ impl PlantEditorState {
             orbit_right: false,
             auto_orbit: true,
         }
+    }
+
+    pub fn species_names(&self) -> Vec<String> {
+        self.all_species
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Switch to a different base species. Returns the new PlantParams extracted from it.
+    pub fn set_base_species(&mut self, name: &str) -> PlantParams {
+        if let Some((_, spec)) = self.all_species.iter().find(|(n, _)| n == name) {
+            self.base_species = spec.clone();
+        }
+        PlantParams::from_species(&self.base_species)
     }
 
     pub fn request_generation(&mut self, params: &PlantParams) {

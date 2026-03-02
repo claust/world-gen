@@ -1,6 +1,8 @@
 use rand::Rng;
 use serde::Serialize;
 
+use crate::world_core::plant_gen::config::SpeciesConfig;
+
 const CROWN_SHAPES: &[&str] = &[
     "conical", "columnar", "dome", "oval", "vase", "umbrella", "weeping", "fan_top",
 ];
@@ -35,6 +37,20 @@ impl Default for PlantParams {
 }
 
 impl PlantParams {
+    /// Extract UI-editable parameters from a species config.
+    pub fn from_species(spec: &SpeciesConfig) -> Self {
+        Self {
+            crown_shape: spec.crown.shape.clone(),
+            length_profile: spec.branching.length_profile.clone(),
+            foliage_style: spec.foliage.style.clone(),
+            apical_dominance: spec.branching.apical_dominance,
+            gravity_response: spec.branching.gravity_response,
+            crown_base: spec.crown.crown_base,
+            crown_density: spec.crown.density,
+            aspect_ratio: spec.crown.aspect_ratio,
+        }
+    }
+
     pub fn randomize() -> Self {
         let mut rng = rand::rng();
         Self {
@@ -54,21 +70,47 @@ pub struct PlantEditorPanel {
     params: PlantParams,
     last_applied: PlantParams,
     dirty: bool,
+    selected_species: String,
+    species_names: Vec<String>,
+    species_changed: Option<String>,
 }
 
 impl Default for PlantEditorPanel {
     fn default() -> Self {
-        Self::new()
+        Self::new(Vec::new())
     }
 }
 
 impl PlantEditorPanel {
-    pub fn new() -> Self {
+    pub fn new(species_names: Vec<String>) -> Self {
+        let selected = species_names.first().cloned().unwrap_or_default();
         Self {
             params: PlantParams::default(),
             last_applied: PlantParams::default(),
             dirty: false,
+            selected_species: selected,
+            species_names,
+            species_changed: None,
         }
+    }
+
+    /// Push new params from outside (e.g. after a species preset change).
+    pub fn set_params(&mut self, params: PlantParams) {
+        self.params = params.clone();
+        self.last_applied = params;
+        self.dirty = false;
+    }
+
+    /// Take a pending species change, if any.
+    pub fn take_species_change(&mut self) -> Option<String> {
+        self.species_changed.take()
+    }
+
+    pub fn set_species_names(&mut self, names: Vec<String>) {
+        if self.selected_species.is_empty() {
+            self.selected_species = names.first().cloned().unwrap_or_default();
+        }
+        self.species_names = names;
     }
 
     /// Returns changed params when the pointer is released after changes.
@@ -102,6 +144,24 @@ impl PlantEditorPanel {
                 ui.separator();
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    let prev_species = self.selected_species.clone();
+                    egui::ComboBox::from_label("Species")
+                        .selected_text(&self.selected_species)
+                        .show_ui(ui, |ui| {
+                            for name in &self.species_names {
+                                ui.selectable_value(
+                                    &mut self.selected_species,
+                                    name.clone(),
+                                    name.as_str(),
+                                );
+                            }
+                        });
+                    if self.selected_species != prev_species {
+                        self.species_changed = Some(self.selected_species.clone());
+                    }
+
+                    ui.add_space(4.0);
+
                     egui::ComboBox::from_label("Crown Shape")
                         .selected_text(&self.params.crown_shape)
                         .show_ui(ui, |ui| {
