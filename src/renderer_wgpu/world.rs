@@ -4,6 +4,7 @@ use glam::{IVec2, Mat4, Vec3};
 
 use super::hud_pass::HudPass;
 use super::instanced_pass::InstancedPass;
+use super::instancing::{GpuInstanceChunk, PrototypeMesh};
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
 use super::minimap_pass::MinimapPass;
 use super::sky::SkyPalette;
@@ -171,6 +172,18 @@ impl WorldRenderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn apply_model_reloads(&mut self, device: &wgpu::Device, reloads: &[(String, Vec<u8>)]) {
         self.instanced.apply_model_reloads(device, reloads);
+    }
+
+    /// Render sky + custom meshes for the plant editor.
+    pub fn render_editor_scene<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        meshes: &[(&'a PrototypeMesh, &'a GpuInstanceChunk)],
+    ) {
+        pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
+        pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
+        self.sky.render(pass);
+        self.instanced.render_custom(pass, meshes);
     }
 
     /// Render only the sky pass (used for menu background).

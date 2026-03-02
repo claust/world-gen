@@ -10,6 +10,8 @@ use crate::renderer_wgpu::egui_bridge::EguiBridge;
 use crate::renderer_wgpu::egui_pass::EguiPass;
 use crate::renderer_wgpu::gpu_context::GpuContext;
 use crate::renderer_wgpu::world::WorldRenderer;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ui::PlantEditorPanel;
 use crate::ui::{ConfigPanel, MenuAction, StartMenu};
 use crate::world_core::config::GameConfig;
 use crate::world_runtime::WorldRuntime;
@@ -33,15 +35,19 @@ use web_time::Instant;
 mod debug_commands;
 mod event_loop;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod plant_editor;
+#[cfg(not(target_arch = "wasm32"))]
 mod screenshot;
 
 pub use event_loop::run_event_loop;
 #[cfg(target_arch = "wasm32")]
 pub use event_loop::run_event_loop_web;
 
+#[allow(dead_code)] // PlantEditor is native-only but enum must be exhaustive everywhere
 enum Screen {
     StartMenu,
     Playing,
+    PlantEditor,
 }
 
 pub struct AppState {
@@ -68,6 +74,10 @@ pub struct AppState {
     egui_bridge: EguiBridge,
     egui_pass: EguiPass,
     config_panel: ConfigPanel,
+    #[cfg(not(target_arch = "wasm32"))]
+    plant_editor_panel: PlantEditorPanel,
+    #[cfg(not(target_arch = "wasm32"))]
+    plant_editor: Option<plant_editor::PlantEditorState>,
     screen: Screen,
     start_menu: StartMenu,
     #[cfg(not(target_arch = "wasm32"))]
@@ -135,6 +145,8 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
+            plant_editor_panel: PlantEditorPanel::new(),
+            plant_editor: None,
             screen: Screen::StartMenu,
             start_menu: StartMenu::new(save_exists),
             save,
@@ -228,9 +240,39 @@ impl AppState {
         matches!(self.screen, Screen::StartMenu)
     }
 
+    fn is_on_editor(&self) -> bool {
+        matches!(self.screen, Screen::PlantEditor)
+    }
+
     fn return_to_menu(&mut self) {
         self.screen = Screen::StartMenu;
         self.start_menu.set_save_exists(true);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn enter_plant_editor(&mut self) {
+        use crate::ui::plant_editor_panel::PlantParams;
+
+        self.screen = Screen::PlantEditor;
+
+        let mut editor = plant_editor::PlantEditorState::new(&self.gpu.device);
+        editor.request_generation(&PlantParams::default());
+        self.plant_editor_panel.set_generating(true);
+
+        // Set camera from orbit
+        let (cam_pos, yaw, pitch) = editor.orbit_camera();
+        self.camera = FlyCamera::new(cam_pos);
+        self.camera.yaw = yaw;
+        self.camera.pitch = pitch;
+
+        self.plant_editor = Some(editor);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn leave_plant_editor(&mut self) {
+        self.plant_editor = None;
+        self.plant_editor_panel.set_generating(false);
+        self.screen = Screen::StartMenu;
     }
 
     fn start_game(&mut self, resume: bool) {
@@ -303,6 +345,12 @@ impl AppState {
 
         if self.is_on_menu() {
             self.update_menu(dt);
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.is_on_editor() {
+            self.update_editor(dt);
             return;
         }
 
@@ -401,6 +449,128 @@ impl AppState {
         ));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn update_editor(&mut self, dt: f32) {
+        // Update orbit camera
+        if let Some(editor) = &mut self.plant_editor {
+            editor.update_orbit(dt);
+            let (cam_pos, yaw, pitch) = editor.orbit_camera();
+            self.camera.position = cam_pos;
+            self.camera.yaw = yaw;
+            self.camera.pitch = pitch;
+        }
+
+        // Fixed noon lighting
+        let hour = 12.0;
+        let angle = (hour / 24.0) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+        let altitude = angle.sin();
+        let azimuth = angle.cos();
+        let light_dir = Vec3::new(azimuth * 0.45, altitude, 0.75).normalize();
+        let day = (light_dir.y * 0.5 + 0.5).clamp(0.0, 1.0);
+        let ambient = 0.1 + day * 0.35;
+
+        let aspect = self.gpu.aspect();
+        let view_proj = self.camera.view_projection(aspect);
+        let palette = crate::renderer_wgpu::sky::sky_palette(hour);
+
+        self.world_renderer.update_frame(
+            &self.gpu.queue,
+            view_proj,
+            self.camera.position,
+            self.elapsed_seconds,
+            hour,
+        );
+        self.world_renderer
+            .update_material(&self.gpu.queue, light_dir, ambient, &palette);
+
+        // Process debug commands in editor mode
+        self.apply_editor_debug_commands();
+
+        // Check for dirty params (debounced on pointer release)
+        if let Some(params) = self
+            .plant_editor_panel
+            .take_dirty_params(self.egui_bridge.ctx())
+        {
+            if let Some(editor) = &mut self.plant_editor {
+                editor.request_generation(&params);
+            }
+        }
+
+        // Poll for completed generation
+        if let Some(editor) = &mut self.plant_editor {
+            if let Some(glb_bytes) = editor.generator.poll() {
+                editor.load_glb_result(&self.gpu.device, &glb_bytes);
+            }
+            self.plant_editor_panel
+                .set_generating(editor.generator.is_busy());
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_editor_debug_commands(&mut self) {
+        use crate::debug_api::{CommandAppliedEvent, CommandKind, MoveKey};
+
+        let commands: Vec<_> = self
+            .debug_api
+            .as_mut()
+            .map(|api| api.drain_commands())
+            .unwrap_or_default();
+
+        for command in commands {
+            let applied = match command.command {
+                CommandKind::TakeScreenshot => {
+                    self.screenshot_pending = Some(command.id);
+                    continue;
+                }
+                CommandKind::SetMoveKey { key, pressed } => {
+                    if let Some(editor) = &mut self.plant_editor {
+                        match key {
+                            MoveKey::A => {
+                                editor.orbit_left = pressed;
+                                if pressed {
+                                    editor.stop_auto_orbit();
+                                }
+                            }
+                            MoveKey::D => {
+                                editor.orbit_right = pressed;
+                                if pressed {
+                                    editor.stop_auto_orbit();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    CommandAppliedEvent {
+                        id: command.id,
+                        frame: self.frame_index,
+                        ok: true,
+                        message: format!(
+                            "orbit key {} {}",
+                            key.as_str(),
+                            if pressed { "pressed" } else { "released" }
+                        ),
+                        day_speed: None,
+                        object_id: None,
+                        object_position: None,
+                    }
+                }
+                _ => CommandAppliedEvent {
+                    id: command.id,
+                    frame: self.frame_index,
+                    ok: false,
+                    message: "command not available in plant editor".to_string(),
+                    day_speed: None,
+                    object_id: None,
+                    object_position: None,
+                },
+            };
+
+            if let Some(api) = &self.debug_api {
+                api.publish_command_applied(applied);
+            }
+        }
+    }
+
     fn update_menu(&mut self, _dt: f32) {
         // Advance a virtual hour for the animated sky background
         let menu_day_speed = 0.5;
@@ -443,6 +613,7 @@ impl AppState {
             });
 
         let is_menu = self.is_on_menu();
+        let is_editor = self.is_on_editor();
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -468,7 +639,16 @@ impl AppState {
                 occlusion_query_set: None,
             });
 
-            if is_menu {
+            if is_editor {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(editor) = &self.plant_editor {
+                    let mut meshes = vec![(&editor.ground_mesh, &editor.ground_instance)];
+                    if let (Some(m), Some(i)) = (&editor.tree_mesh, &editor.tree_instance) {
+                        meshes.push((m, i));
+                    }
+                    self.world_renderer.render_editor_scene(&mut pass, &meshes);
+                }
+            } else if is_menu {
                 self.world_renderer.render_sky_only(&mut pass);
             } else {
                 self.world_renderer.render(&mut pass);
@@ -477,7 +657,7 @@ impl AppState {
 
         // egui overlay pass (renders on top of 3D scene)
         {
-            let show_egui = is_menu || self.config_panel.is_visible();
+            let show_egui = is_menu || self.config_panel.is_visible() || is_editor;
             if show_egui {
                 let raw_input = self.egui_bridge.take_raw_input();
                 let mut menu_action = None;
@@ -490,6 +670,13 @@ impl AppState {
                         }
                         Screen::Playing => {
                             self.config_panel.ui(ctx);
+                        }
+                        Screen::PlantEditor =>
+                        {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if self.plant_editor_panel.ui(ctx) {
+                                menu_action = Some(MenuAction::LeaveEditor);
+                            }
                         }
                     });
 

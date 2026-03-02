@@ -3,6 +3,8 @@ use egui::{self, Color32, RichText};
 pub enum MenuAction {
     NewGame,
     ResumeGame,
+    PlantEditor,
+    LeaveEditor,
     Exit,
 }
 
@@ -70,6 +72,18 @@ impl StartMenu {
 
                     #[cfg(not(target_arch = "wasm32"))]
                     {
+                        ui.add_space(12.0);
+
+                        if ui
+                            .add_sized(
+                                button_size,
+                                egui::Button::new(RichText::new("Plant Editor").size(20.0)),
+                            )
+                            .clicked()
+                        {
+                            action = Some(MenuAction::PlantEditor);
+                        }
+
                         ui.add_space(12.0);
 
                         if ui

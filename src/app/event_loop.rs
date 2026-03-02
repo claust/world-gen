@@ -21,7 +21,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     if key_event.state == ElementState::Pressed
                         && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F1))
                     {
-                        if !app.is_on_menu() {
+                        if !app.is_on_menu() && !app.is_on_editor() {
                             app.config_panel.toggle();
                             if app.config_panel.is_visible() {
                                 app.release_cursor();
@@ -33,12 +33,13 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     }
                 }
 
-                // Feed events to egui when on start menu or config panel visible
-                let egui_wants_event = if app.is_on_menu() || app.config_panel.is_visible() {
-                    app.egui_bridge.on_window_event(&event)
-                } else {
-                    false
-                };
+                // Feed events to egui when on start menu, config panel, or plant editor
+                let egui_wants_event =
+                    if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                        app.egui_bridge.on_window_event(&event)
+                    } else {
+                        false
+                    };
 
                 // Only forward to camera if egui didn't consume the event
                 if !egui_wants_event {
@@ -56,11 +57,39 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
                         if !app.is_on_menu() {
-                            if app.config_panel.is_visible() {
-                                app.config_panel.toggle();
+                            if app.is_on_editor() {
+                                #[cfg(not(target_arch = "wasm32"))]
+                                app.leave_plant_editor();
+                            } else {
+                                if app.config_panel.is_visible() {
+                                    app.config_panel.toggle();
+                                }
+                                app.release_cursor();
+                                app.return_to_menu();
                             }
-                            app.release_cursor();
-                            app.return_to_menu();
+                        }
+                    }
+                    // Left/Right arrow keys for plant editor orbit
+                    #[cfg(not(target_arch = "wasm32"))]
+                    WindowEvent::KeyboardInput { ref event, .. }
+                        if app.is_on_editor()
+                            && matches!(
+                                event.physical_key,
+                                PhysicalKey::Code(KeyCode::ArrowLeft)
+                                    | PhysicalKey::Code(KeyCode::ArrowRight)
+                            ) =>
+                    {
+                        let pressed = event.state == ElementState::Pressed;
+                        if let Some(editor) = &mut app.plant_editor {
+                            match event.physical_key {
+                                PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                                    editor.orbit_left = pressed;
+                                }
+                                PhysicalKey::Code(KeyCode::ArrowRight) => {
+                                    editor.orbit_right = pressed;
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     WindowEvent::MouseInput {
@@ -68,8 +97,8 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
-                        if app.is_on_menu() || app.config_panel.is_visible() {
-                            // Don't capture cursor on start menu or when config panel is open
+                        if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                            // Don't capture cursor on menu, config panel, or plant editor
                         } else {
                             app.capture_cursor();
                         }
@@ -93,10 +122,16 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
+                                #[cfg(not(target_arch = "wasm32"))]
+                                MenuAction::PlantEditor => app.enter_plant_editor(),
+                                #[cfg(not(target_arch = "wasm32"))]
+                                MenuAction::LeaveEditor => app.leave_plant_editor(),
                                 MenuAction::Exit => {
                                     #[cfg(not(target_arch = "wasm32"))]
                                     target.exit();
                                 }
+                                #[cfg(target_arch = "wasm32")]
+                                _ => {}
                             }
                         }
                     }
@@ -104,8 +139,8 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                 }
             }
             Event::DeviceEvent { event, .. } => {
-                // Block mouse delta when on start menu or config panel is visible
-                if app.is_on_menu() || app.config_panel.is_visible() {
+                // Block mouse delta when on start menu, config panel, or plant editor
+                if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
                     // skip device events
                 } else {
                     app.process_device_event(&event);
@@ -184,12 +219,13 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                     }
                 }
 
-                // Feed events to egui when on start menu or config panel visible
-                let egui_wants_event = if app.is_on_menu() || app.config_panel.is_visible() {
-                    app.egui_bridge.on_window_event(&event)
-                } else {
-                    false
-                };
+                // Feed events to egui when on start menu, config panel, or plant editor
+                let egui_wants_event =
+                    if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                        app.egui_bridge.on_window_event(&event)
+                    } else {
+                        false
+                    };
 
                 if !egui_wants_event {
                     app.process_window_event(&event);
@@ -213,8 +249,8 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                         button: MouseButton::Left,
                         ..
                     } if app.focused && !app.cursor_captured => {
-                        if app.is_on_menu() || app.config_panel.is_visible() {
-                            // Don't capture cursor on start menu or when config panel is open
+                        if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                            // Don't capture cursor on menu, config panel, or plant editor
                         } else {
                             app.capture_cursor();
                         }
@@ -240,7 +276,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
-                                MenuAction::Exit => {} // No-op on WASM
+                                _ => {} // PlantEditor/LeaveEditor/Exit are no-ops on WASM
                             }
                         }
                     }
@@ -248,7 +284,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                 }
             }
             Event::DeviceEvent { event, .. } => {
-                if app.is_on_menu() || app.config_panel.is_visible() {
+                if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
                     // skip device events
                 } else {
                     app.process_device_event(&event);
