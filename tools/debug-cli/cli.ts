@@ -159,6 +159,38 @@ async function cmdLookAt(apiBase: string, flags: Record<string, string>) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdUiSnapshot(apiBase: string) {
+  const result = await sendAndWait(apiBase, { type: "ui_snapshot" }) as Record<string, unknown>;
+  if (result.data && typeof result.data === "object") {
+    const snap = result.data as { screen: string; elements: Array<Record<string, unknown>> };
+    console.log(`Screen: ${snap.screen}`);
+    console.log(`Elements (${snap.elements?.length ?? 0}):`);
+    for (const el of snap.elements ?? []) {
+      const parts = [`  ${el.id}  [${el.type}]  "${el.label}"`];
+      if (el.type === "slider") parts.push(`  value=${el.value}  range=[${el.min}, ${el.max}]`);
+      else if (el.type === "int_slider") parts.push(`  value=${el.value}  range=[${el.min}, ${el.max}]`);
+      else if (el.type === "checkbox") parts.push(`  value=${el.value}`);
+      else if (el.type === "combo") parts.push(`  value="${el.value}"  options=[${(el.options as string[]).join(", ")}]`);
+      console.log(parts.join(""));
+    }
+  } else {
+    console.log(JSON.stringify(result, null, 2));
+  }
+}
+
+async function cmdUiClick(apiBase: string, flags: Record<string, string>) {
+  const element = requireFlag(flags, "element");
+  const result = await sendAndWait(apiBase, { type: "ui_click", element_id: element });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdUiSetValue(apiBase: string, flags: Record<string, string>) {
+  const element = requireFlag(flags, "element");
+  const value = requireFlag(flags, "value");
+  const result = await sendAndWait(apiBase, { type: "ui_set_value", element_id: element, value });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdPressKey(apiBase: string, flags: Record<string, string>) {
   const key = requireFlag(flags, "key");
   const valid = ["f1", "escape"];
@@ -197,6 +229,9 @@ Commands:
   look_at         --id <object_id> [--distance <n>]  Look at object
   move            --key <w|a|s|d|up|down> [--duration <ms>]  Move camera
   press_key       --key <f1|escape>      Press a key (toggle config panel, etc.)
+  ui_snapshot                              Get all interactive UI elements
+  ui_click        --element <id>           Click a button or toggle checkbox
+  ui_set_value    --element <id> --value <v>  Set slider/combo/checkbox value
 
 Options:
   --api <url>    API base URL (default: ${DEFAULT_API})`;
@@ -233,6 +268,15 @@ async function main() {
         break;
       case "press_key":
         await cmdPressKey(apiBase, flags);
+        break;
+      case "ui_snapshot":
+        await cmdUiSnapshot(apiBase);
+        break;
+      case "ui_click":
+        await cmdUiClick(apiBase, flags);
+        break;
+      case "ui_set_value":
+        await cmdUiSetValue(apiBase, flags);
         break;
       default:
         if (command) process.stderr.write(`unknown command: ${command}\n\n`);

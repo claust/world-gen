@@ -3,6 +3,8 @@ use serde::Serialize;
 
 use crate::world_core::plant_gen::config::SpeciesConfig;
 
+use super::ui_registry::UiRegistry;
+
 const CROWN_SHAPES: &[&str] = &[
     "conical", "columnar", "dome", "oval", "vase", "umbrella", "weeping", "fan_top",
 ];
@@ -305,7 +307,7 @@ impl PlantEditorPanel {
     }
 
     /// Draw the plant editor side panel. Returns `true` if "Back to Menu" was clicked.
-    pub fn ui(&mut self, ctx: &egui::Context) -> bool {
+    pub fn ui(&mut self, ctx: &egui::Context, registry: &mut UiRegistry) -> bool {
         let mut back = false;
 
         egui::SidePanel::left("plant_editor_panel")
@@ -320,6 +322,20 @@ impl PlantEditorPanel {
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // Species selector
+                    let species_options: Vec<&str> =
+                        self.species_names.iter().map(|s| s.as_str()).collect();
+                    registry.register_combo(
+                        "combo-species",
+                        "Species",
+                        &self.selected_species,
+                        &species_options,
+                    );
+                    if let Some(v) = registry.consume_set_value("combo-species") {
+                        if self.species_names.contains(&v) {
+                            self.selected_species = v.clone();
+                            self.species_changed = Some(v);
+                        }
+                    }
                     let prev_species = self.selected_species.clone();
                     egui::ComboBox::from_label("Species")
                         .selected_text(&self.selected_species)
@@ -342,10 +358,39 @@ impl PlantEditorPanel {
                     egui::CollapsingHeader::new("Body Plan")
                         .default_open(false)
                         .show(ui, |ui| {
+                            registry.register_combo(
+                                "combo-body-kind",
+                                "Kind",
+                                &self.params.body_kind,
+                                BODY_KINDS,
+                            );
+                            if let Some(v) = registry.consume_set_value("combo-body-kind") {
+                                if BODY_KINDS.contains(&v.as_str()) {
+                                    self.params.body_kind = v;
+                                }
+                            }
                             dropdown(ui, "Kind", &mut self.params.body_kind, BODY_KINDS);
+
+                            reg_int(
+                                registry,
+                                "slider-stem-count",
+                                "Stem Count",
+                                &mut self.params.stem_count,
+                                1,
+                                10,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.stem_count, 1..=10)
                                     .text("Stem Count"),
+                            );
+
+                            reg_f32(
+                                registry,
+                                "slider-height-min",
+                                "Height Min",
+                                &mut self.params.max_height_min,
+                                0.5,
+                                30.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.max_height_min, 0.5..=30.0)
@@ -354,6 +399,14 @@ impl PlantEditorPanel {
                             if self.params.max_height_max < self.params.max_height_min {
                                 self.params.max_height_max = self.params.max_height_min;
                             }
+                            reg_f32(
+                                registry,
+                                "slider-height-max",
+                                "Height Max",
+                                &mut self.params.max_height_max,
+                                0.5,
+                                30.0,
+                            );
                             ui.add(
                                 egui::Slider::new(
                                     &mut self.params.max_height_max,
@@ -367,16 +420,48 @@ impl PlantEditorPanel {
                     egui::CollapsingHeader::new("Trunk")
                         .default_open(false)
                         .show(ui, |ui| {
+                            reg_f32(
+                                registry,
+                                "slider-taper",
+                                "Taper",
+                                &mut self.params.taper,
+                                0.0,
+                                1.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.taper, 0.0..=1.0).text("Taper"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-base-flare",
+                                "Base Flare",
+                                &mut self.params.base_flare,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.base_flare, 0.0..=1.0)
                                     .text("Base Flare"),
                             );
+                            reg_f32(
+                                registry,
+                                "slider-straightness",
+                                "Straightness",
+                                &mut self.params.straightness,
+                                0.0,
+                                1.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.straightness, 0.0..=1.0)
                                     .text("Straightness"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-thickness-ratio",
+                                "Thickness Ratio",
+                                &mut self.params.thickness_ratio,
+                                0.01,
+                                0.15,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.thickness_ratio, 0.01..=0.15)
@@ -388,23 +473,66 @@ impl PlantEditorPanel {
                     egui::CollapsingHeader::new("Crown")
                         .default_open(true)
                         .show(ui, |ui| {
+                            registry.register_combo(
+                                "combo-crown-shape",
+                                "Crown Shape",
+                                &self.params.crown_shape,
+                                CROWN_SHAPES,
+                            );
+                            if let Some(v) = registry.consume_set_value("combo-crown-shape") {
+                                if CROWN_SHAPES.contains(&v.as_str()) {
+                                    self.params.crown_shape = v;
+                                }
+                            }
                             dropdown(
                                 ui,
                                 "Crown Shape",
                                 &mut self.params.crown_shape,
                                 CROWN_SHAPES,
                             );
+                            reg_f32(
+                                registry,
+                                "slider-crown-base",
+                                "Crown Base",
+                                &mut self.params.crown_base,
+                                0.0,
+                                0.8,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.crown_base, 0.0..=0.8)
                                     .text("Crown Base"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-aspect-ratio",
+                                "Aspect Ratio",
+                                &mut self.params.aspect_ratio,
+                                0.5,
+                                2.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.aspect_ratio, 0.5..=2.0)
                                     .text("Aspect Ratio"),
                             );
+                            reg_f32(
+                                registry,
+                                "slider-crown-density",
+                                "Crown Density",
+                                &mut self.params.crown_density,
+                                0.2,
+                                1.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.crown_density, 0.2..=1.0)
                                     .text("Density"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-asymmetry",
+                                "Asymmetry",
+                                &mut self.params.asymmetry,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.asymmetry, 0.0..=1.0)
@@ -416,24 +544,70 @@ impl PlantEditorPanel {
                     egui::CollapsingHeader::new("Branching")
                         .default_open(false)
                         .show(ui, |ui| {
+                            registry.register_combo(
+                                "combo-length-profile",
+                                "Length Profile",
+                                &self.params.length_profile,
+                                LENGTH_PROFILES,
+                            );
+                            if let Some(v) = registry.consume_set_value("combo-length-profile") {
+                                if LENGTH_PROFILES.contains(&v.as_str()) {
+                                    self.params.length_profile = v;
+                                }
+                            }
                             dropdown(
                                 ui,
                                 "Length Profile",
                                 &mut self.params.length_profile,
                                 LENGTH_PROFILES,
                             );
+                            reg_f32(
+                                registry,
+                                "slider-apical-dominance",
+                                "Apical Dominance",
+                                &mut self.params.apical_dominance,
+                                0.0,
+                                1.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.apical_dominance, 0.0..=1.0)
                                     .text("Apical Dominance"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-gravity-response",
+                                "Gravity Response",
+                                &mut self.params.gravity_response,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.gravity_response, 0.0..=1.0)
                                     .text("Gravity Response"),
                             );
+                            reg_int(
+                                registry,
+                                "slider-max-depth",
+                                "Max Depth",
+                                &mut self.params.max_depth,
+                                0,
+                                5,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.max_depth, 0..=5)
                                     .text("Max Depth"),
                             );
+                            registry.register_combo(
+                                "combo-arrangement",
+                                "Arrangement",
+                                &self.params.arrangement_type,
+                                ARRANGEMENT_TYPES,
+                            );
+                            if let Some(v) = registry.consume_set_value("combo-arrangement") {
+                                if ARRANGEMENT_TYPES.contains(&v.as_str()) {
+                                    self.params.arrangement_type = v;
+                                }
+                            }
                             dropdown(
                                 ui,
                                 "Arrangement",
@@ -441,6 +615,14 @@ impl PlantEditorPanel {
                                 ARRANGEMENT_TYPES,
                             );
                             if self.params.arrangement_type == "spiral" {
+                                reg_f32(
+                                    registry,
+                                    "slider-spiral-angle",
+                                    "Spiral Angle",
+                                    &mut self.params.arrangement_angle,
+                                    0.0,
+                                    360.0,
+                                );
                                 ui.add(
                                     egui::Slider::new(
                                         &mut self.params.arrangement_angle,
@@ -449,6 +631,14 @@ impl PlantEditorPanel {
                                     .text("Spiral Angle"),
                                 );
                             }
+                            reg_int(
+                                registry,
+                                "slider-branches-per-node-min",
+                                "Branches/Node Min",
+                                &mut self.params.branches_per_node_min,
+                                0,
+                                6,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.branches_per_node_min, 0..=6)
                                     .text("Branches/Node Min"),
@@ -458,12 +648,28 @@ impl PlantEditorPanel {
                                 self.params.branches_per_node_max =
                                     self.params.branches_per_node_min;
                             }
+                            reg_int(
+                                registry,
+                                "slider-branches-per-node-max",
+                                "Branches/Node Max",
+                                &mut self.params.branches_per_node_max,
+                                0,
+                                6,
+                            );
                             ui.add(
                                 egui::Slider::new(
                                     &mut self.params.branches_per_node_max,
                                     self.params.branches_per_node_min..=6,
                                 )
                                 .text("Branches/Node Max"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-ins-angle-base-min",
+                                "Ins. Angle Base Min",
+                                &mut self.params.insertion_angle_base_min,
+                                0.0,
+                                90.0,
                             );
                             ui.add(
                                 egui::Slider::new(
@@ -478,12 +684,28 @@ impl PlantEditorPanel {
                                 self.params.insertion_angle_base_max =
                                     self.params.insertion_angle_base_min;
                             }
+                            reg_f32(
+                                registry,
+                                "slider-ins-angle-base-max",
+                                "Ins. Angle Base Max",
+                                &mut self.params.insertion_angle_base_max,
+                                0.0,
+                                90.0,
+                            );
                             ui.add(
                                 egui::Slider::new(
                                     &mut self.params.insertion_angle_base_max,
                                     self.params.insertion_angle_base_min..=90.0,
                                 )
                                 .text("Ins. Angle Base Max"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-ins-angle-tip-min",
+                                "Ins. Angle Tip Min",
+                                &mut self.params.insertion_angle_tip_min,
+                                0.0,
+                                90.0,
                             );
                             ui.add(
                                 egui::Slider::new(
@@ -498,6 +720,14 @@ impl PlantEditorPanel {
                                 self.params.insertion_angle_tip_max =
                                     self.params.insertion_angle_tip_min;
                             }
+                            reg_f32(
+                                registry,
+                                "slider-ins-angle-tip-max",
+                                "Ins. Angle Tip Max",
+                                &mut self.params.insertion_angle_tip_max,
+                                0.0,
+                                90.0,
+                            );
                             ui.add(
                                 egui::Slider::new(
                                     &mut self.params.insertion_angle_tip_max,
@@ -505,9 +735,25 @@ impl PlantEditorPanel {
                                 )
                                 .text("Ins. Angle Tip Max"),
                             );
+                            reg_f32(
+                                registry,
+                                "slider-child-length-ratio",
+                                "Child Length Ratio",
+                                &mut self.params.child_length_ratio,
+                                0.1,
+                                1.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.child_length_ratio, 0.1..=1.0)
                                     .text("Child Length Ratio"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-child-thickness-ratio",
+                                "Child Thickness Ratio",
+                                &mut self.params.child_thickness_ratio,
+                                0.1,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(
@@ -515,6 +761,14 @@ impl PlantEditorPanel {
                                     0.1..=1.0,
                                 )
                                 .text("Child Thickness Ratio"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-randomness",
+                                "Randomness",
+                                &mut self.params.randomness,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.randomness, 0.0..=1.0)
@@ -526,11 +780,30 @@ impl PlantEditorPanel {
                     egui::CollapsingHeader::new("Foliage")
                         .default_open(false)
                         .show(ui, |ui| {
+                            registry.register_combo(
+                                "combo-foliage-style",
+                                "Foliage Style",
+                                &self.params.foliage_style,
+                                FOLIAGE_STYLES,
+                            );
+                            if let Some(v) = registry.consume_set_value("combo-foliage-style") {
+                                if FOLIAGE_STYLES.contains(&v.as_str()) {
+                                    self.params.foliage_style = v;
+                                }
+                            }
                             dropdown(
                                 ui,
                                 "Foliage Style",
                                 &mut self.params.foliage_style,
                                 FOLIAGE_STYLES,
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-leaf-size-min",
+                                "Leaf Size Min",
+                                &mut self.params.leaf_size_min,
+                                0.005,
+                                5.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.leaf_size_min, 0.005..=5.0)
@@ -539,6 +812,14 @@ impl PlantEditorPanel {
                             if self.params.leaf_size_max < self.params.leaf_size_min {
                                 self.params.leaf_size_max = self.params.leaf_size_min;
                             }
+                            reg_f32(
+                                registry,
+                                "slider-leaf-size-max",
+                                "Leaf Size Max",
+                                &mut self.params.leaf_size_max,
+                                0.005,
+                                5.0,
+                            );
                             ui.add(
                                 egui::Slider::new(
                                     &mut self.params.leaf_size_max,
@@ -546,6 +827,17 @@ impl PlantEditorPanel {
                                 )
                                 .text("Leaf Size Max"),
                             );
+                            registry.register_combo(
+                                "combo-cluster-type",
+                                "Cluster Type",
+                                &self.params.cluster_type,
+                                CLUSTER_TYPES,
+                            );
+                            if let Some(v) = registry.consume_set_value("combo-cluster-type") {
+                                if CLUSTER_TYPES.contains(&v.as_str()) {
+                                    self.params.cluster_type = v;
+                                }
+                            }
                             dropdown(
                                 ui,
                                 "Cluster Type",
@@ -555,13 +847,37 @@ impl PlantEditorPanel {
                             if self.params.cluster_type == "clusters"
                                 || self.params.cluster_type == "ring"
                             {
+                                reg_int(
+                                    registry,
+                                    "slider-cluster-count",
+                                    "Cluster Count",
+                                    &mut self.params.cluster_count,
+                                    1,
+                                    20,
+                                );
                                 ui.add(
                                     egui::Slider::new(&mut self.params.cluster_count, 1..=20)
                                         .text("Cluster Count"),
                                 );
                             }
+                            reg_f32(
+                                registry,
+                                "slider-droop",
+                                "Droop",
+                                &mut self.params.droop,
+                                0.0,
+                                1.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.droop, 0.0..=1.0).text("Droop"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-coverage",
+                                "Coverage",
+                                &mut self.params.coverage,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.coverage, 0.0..=1.0)
@@ -574,12 +890,36 @@ impl PlantEditorPanel {
                         .default_open(false)
                         .show(ui, |ui| {
                             ui.label("Bark");
+                            reg_f32(
+                                registry,
+                                "slider-bark-hue",
+                                "Bark Hue",
+                                &mut self.params.bark_h,
+                                0.0,
+                                360.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.bark_h, 0.0..=360.0).text("Hue"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-bark-saturation",
+                                "Bark Saturation",
+                                &mut self.params.bark_s,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.bark_s, 0.0..=1.0)
                                     .text("Saturation"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-bark-lightness",
+                                "Bark Lightness",
+                                &mut self.params.bark_l,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.bark_l, 0.0..=1.0)
@@ -587,16 +927,48 @@ impl PlantEditorPanel {
                             );
                             ui.add_space(4.0);
                             ui.label("Leaf");
+                            reg_f32(
+                                registry,
+                                "slider-leaf-hue",
+                                "Leaf Hue",
+                                &mut self.params.leaf_h,
+                                0.0,
+                                360.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.leaf_h, 0.0..=360.0).text("Hue"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-leaf-saturation",
+                                "Leaf Saturation",
+                                &mut self.params.leaf_s,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.leaf_s, 0.0..=1.0)
                                     .text("Saturation"),
                             );
+                            reg_f32(
+                                registry,
+                                "slider-leaf-lightness",
+                                "Leaf Lightness",
+                                &mut self.params.leaf_l,
+                                0.0,
+                                1.0,
+                            );
                             ui.add(
                                 egui::Slider::new(&mut self.params.leaf_l, 0.0..=1.0)
                                     .text("Lightness"),
+                            );
+                            reg_f32(
+                                registry,
+                                "slider-leaf-variance",
+                                "Leaf Variance",
+                                &mut self.params.leaf_variance,
+                                0.0,
+                                1.0,
                             );
                             ui.add(
                                 egui::Slider::new(&mut self.params.leaf_variance, 0.0..=1.0)
@@ -607,8 +979,12 @@ impl PlantEditorPanel {
                     ui.add_space(8.0);
                     ui.separator();
 
+                    registry.register_button("btn-randomize", "Randomize");
+                    registry.register_button("btn-reset-defaults-editor", "Reset Defaults");
                     ui.horizontal(|ui| {
-                        if ui.button("Randomize").clicked() {
+                        if ui.button("Randomize").clicked()
+                            || registry.consume_click("btn-randomize")
+                        {
                             if !self.species_names.is_empty() {
                                 let mut rng = rand::rng();
                                 let idx = rng.random_range(0..self.species_names.len());
@@ -618,7 +994,9 @@ impl PlantEditorPanel {
                             self.params = PlantParams::randomize();
                             self.dirty = true;
                         }
-                        if ui.button("Reset Defaults").clicked() {
+                        if ui.button("Reset Defaults").clicked()
+                            || registry.consume_click("btn-reset-defaults-editor")
+                        {
                             if let Some(first) = self.species_names.first() {
                                 self.selected_species = first.clone();
                                 self.species_changed = Some(first.clone());
@@ -630,7 +1008,10 @@ impl PlantEditorPanel {
 
                     ui.add_space(12.0);
 
-                    if ui.button("Back to Menu").clicked() {
+                    registry.register_button("btn-back-to-menu", "Back to Menu");
+                    if ui.button("Back to Menu").clicked()
+                        || registry.consume_click("btn-back-to-menu")
+                    {
                         back = true;
                     }
                 });
@@ -641,6 +1022,26 @@ impl PlantEditorPanel {
         }
 
         back
+    }
+}
+
+/// Register an f32 slider and consume any pending set-value action.
+fn reg_f32(registry: &mut UiRegistry, id: &str, label: &str, val: &mut f32, min: f32, max: f32) {
+    registry.register_slider(id, label, *val as f64, min as f64, max as f64);
+    if let Some(v) = registry.consume_set_value(id) {
+        if let Ok(f) = v.parse::<f32>() {
+            *val = f.clamp(min, max);
+        }
+    }
+}
+
+/// Register a u32 slider and consume any pending set-value action.
+fn reg_int(registry: &mut UiRegistry, id: &str, label: &str, val: &mut u32, min: u32, max: u32) {
+    registry.register_int_slider(id, label, *val as i64, min as i64, max as i64);
+    if let Some(v) = registry.consume_set_value(id) {
+        if let Ok(f) = v.parse::<u32>() {
+            *val = f.clamp(min, max);
+        }
     }
 }
 
