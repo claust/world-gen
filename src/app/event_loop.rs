@@ -157,6 +157,10 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                                 MenuAction::LeaveHerbarium => app.leave_herbarium(),
                                 MenuAction::LeaveEditor => app.leave_plant_editor(),
                                 MenuAction::DeletePlant => app.delete_current_plant(),
+                                #[cfg(not(target_arch = "wasm32"))]
+                                MenuAction::EditorScreenshot => {
+                                    app.screenshot_pending = Some("editor-screenshot".to_string());
+                                }
                                 MenuAction::Exit => {
                                     #[cfg(not(target_arch = "wasm32"))]
                                     target.exit();

@@ -246,6 +246,8 @@ impl PlantParams {
 pub enum EditorAction {
     Back,
     Delete,
+    #[cfg(not(target_arch = "wasm32"))]
+    Screenshot,
 }
 
 #[derive(Default)]
@@ -946,6 +948,17 @@ impl PlantEditorPanel {
                     });
 
                     ui.add_space(12.0);
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        registry.register_button("btn-screenshot-plant", "Save Screenshot");
+                        if ui.button("Save Screenshot").clicked()
+                            || registry.consume_click("btn-screenshot-plant")
+                        {
+                            action = Some(EditorAction::Screenshot);
+                        }
+                        ui.add_space(8.0);
+                    }
 
                     registry.register_button("btn-back-to-herbarium", "Back to Herbarium");
                     if ui.button("Back to Herbarium").clicked()

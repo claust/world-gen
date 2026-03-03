@@ -11,6 +11,8 @@ pub enum MenuAction {
     LeaveHerbarium,
     LeaveEditor,
     DeletePlant,
+    #[cfg(not(target_arch = "wasm32"))]
+    EditorScreenshot,
     Exit,
 }
 
