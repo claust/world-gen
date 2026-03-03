@@ -339,30 +339,10 @@ fn build_compass(verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {
     let south_color = [0.35, 0.1, 0.08, 0.9]; // dark
 
     // 4 triangles forming diamond
-    let tri = |a: [f32; 2], b: [f32; 2], c: [f32; 2], color: [f32; 4]| -> [HudVertex; 3] {
-        [
-            HudVertex {
-                position: a,
-                uv: NO_UV,
-                color,
-            },
-            HudVertex {
-                position: b,
-                uv: NO_UV,
-                color,
-            },
-            HudVertex {
-                position: c,
-                uv: NO_UV,
-                color,
-            },
-        ]
-    };
-
-    verts.extend_from_slice(&tri(center, w, n, north_color));
-    verts.extend_from_slice(&tri(center, n, e, north_color));
-    verts.extend_from_slice(&tri(center, e, s, south_color));
-    verts.extend_from_slice(&tri(center, s, w, south_color));
+    push_tri(verts, center, w, n, north_color);
+    push_tri(verts, center, n, e, north_color);
+    push_tri(verts, center, e, s, south_color);
+    push_tri(verts, center, s, w, south_color);
 
     // Cardinal labels
     let label_color = [1.0, 1.0, 1.0, 0.95];
