@@ -34,6 +34,7 @@ impl WorldRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
+        render_format: wgpu::TextureFormat,
         sea_level: f32,
         load_radius: i32,
     ) -> Self {
@@ -46,12 +47,12 @@ impl WorldRenderer {
             push_constant_ranges: &[],
         });
 
-        let sky = SkyPass::new(device, config, &pipeline_layout);
-        let terrain = TerrainPass::new(device, config, &pipeline_layout);
-        let water = WaterPass::new(device, config, &pipeline_layout, sea_level);
-        let instanced = InstancedPass::new(device, config, &pipeline_layout);
-        let hud = HudPass::new(device, queue, config);
-        let minimap = MinimapPass::new(device, queue, config);
+        let sky = SkyPass::new(device, render_format, &pipeline_layout);
+        let terrain = TerrainPass::new(device, render_format, &pipeline_layout);
+        let water = WaterPass::new(device, render_format, &pipeline_layout, sea_level);
+        let instanced = InstancedPass::new(device, render_format, &pipeline_layout);
+        let hud = HudPass::new(device, queue, render_format);
+        let minimap = MinimapPass::new(device, queue, render_format);
 
         let r = load_radius as f32;
         let fog_start = r * 256.0 * 0.6;

@@ -7,6 +7,7 @@ pub struct GpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
+    pub render_format: wgpu::TextureFormat,
     pub size: PhysicalSize<u32>,
 }
 
@@ -63,6 +64,39 @@ impl GpuContext {
             .find(|f| f.is_srgb())
             .unwrap_or(capabilities.formats[0]);
 
+        // Prefer sRGB rendering for consistent colors across backends.
+        // Metal exposes sRGB surface formats directly; WebGPU/Chrome only
+        // exposes linear formats, so we map known Unorm variants to their
+        // sRGB counterparts. If a format has no known sRGB variant we fall
+        // back to linear and log a warning.
+        let render_format = if format.is_srgb() {
+            format
+        } else {
+            match format {
+                wgpu::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8UnormSrgb,
+                wgpu::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8UnormSrgb,
+                other => {
+                    log::warn!(
+                        "No known sRGB variant for surface format {:?}; \
+                         colors may appear more saturated",
+                        other
+                    );
+                    other
+                }
+            }
+        };
+        let view_formats = if render_format != format {
+            vec![render_format]
+        } else {
+            vec![]
+        };
+
+        log::info!(
+            "surface format: {:?}, render format: {:?}",
+            format,
+            render_format
+        );
+
         let present_mode = if capabilities
             .present_modes
             .contains(&wgpu::PresentMode::Fifo)
@@ -83,7 +117,7 @@ impl GpuContext {
             height: size.height.max(1),
             present_mode,
             alpha_mode: capabilities.alpha_modes[0],
-            view_formats: vec![],
+            view_formats,
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
@@ -93,6 +127,7 @@ impl GpuContext {
             device,
             queue,
             config,
+            render_format,
             size,
         })
     }

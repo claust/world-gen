@@ -28,7 +28,7 @@ impl HudPass {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        config: &wgpu::SurfaceConfiguration,
+        render_format: wgpu::TextureFormat,
     ) -> Self {
         // --- Uniform bind group (group 0) ---
         let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -48,7 +48,7 @@ impl HudPass {
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("hud-uniform-buffer"),
             contents: bytemuck::cast_slice(&[HudUniform {
-                screen_size: [config.width as f32, config.height as f32],
+                screen_size: [1.0, 1.0],
                 _pad: [0.0; 2],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -167,7 +167,7 @@ impl HudPass {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: render_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

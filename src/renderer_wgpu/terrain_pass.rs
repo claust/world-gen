@@ -16,7 +16,7 @@ pub struct TerrainPass {
 impl TerrainPass {
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        render_format: wgpu::TextureFormat,
         pipeline_layout: &wgpu::PipelineLayout,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -48,7 +48,7 @@ impl TerrainPass {
 
         let pipeline = create_render_pipeline(
             device,
-            config,
+            render_format,
             pipeline_layout,
             &shader,
             std::slice::from_ref(&vertex_layout),

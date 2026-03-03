@@ -7,7 +7,7 @@ pub struct SkyPass {
 impl SkyPass {
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        render_format: wgpu::TextureFormat,
         layout: &wgpu::PipelineLayout,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -15,7 +15,7 @@ impl SkyPass {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/sky.wgsl").into()),
         });
 
-        let pipeline = create_sky_pipeline(device, config, layout, &shader, "sky-pipeline");
+        let pipeline = create_sky_pipeline(device, render_format, layout, &shader, "sky-pipeline");
 
         Self { pipeline }
     }
