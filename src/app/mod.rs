@@ -300,7 +300,9 @@ impl AppState {
         self.plant_editor_panel.set_params(initial_params.clone());
         editor.request_generation(&initial_params);
 
-        let (cam_pos, yaw, pitch) = editor.orbit_camera();
+        let screen_w = self.gpu.config.width as f32 / self.egui_bridge.pixels_per_point();
+        let (cam_pos, yaw, pitch) =
+            editor.orbit_camera(screen_w, self.camera.fov_y_radians, self.gpu.aspect());
         self.camera = FlyCamera::new(cam_pos);
         self.camera.yaw = yaw;
         self.camera.pitch = pitch;
@@ -539,7 +541,9 @@ impl AppState {
         // Update orbit camera
         if let Some(editor) = &mut self.plant_editor {
             editor.update_orbit(dt);
-            let (cam_pos, yaw, pitch) = editor.orbit_camera();
+            let screen_w = self.gpu.config.width as f32 / self.egui_bridge.pixels_per_point();
+            let (cam_pos, yaw, pitch) =
+                editor.orbit_camera(screen_w, self.camera.fov_y_radians, self.gpu.aspect());
             self.camera.position = cam_pos;
             self.camera.yaw = yaw;
             self.camera.pitch = pitch;
@@ -912,6 +916,8 @@ impl AppState {
                                 menu_action = Some(match ea {
                                     EditorAction::Back => MenuAction::LeaveEditor,
                                     EditorAction::Delete => MenuAction::DeletePlant,
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    EditorAction::Screenshot => MenuAction::EditorScreenshot,
                                 });
                             }
                         }
