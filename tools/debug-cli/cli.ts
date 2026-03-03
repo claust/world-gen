@@ -159,18 +159,78 @@ async function cmdLookAt(apiBase: string, flags: Record<string, string>) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+interface UiElement {
+  id?: string | number;
+  type?: string;
+  label?: string;
+  value?: string | number | boolean;
+  min?: number;
+  max?: number;
+  options?: string[];
+}
+
+interface UiSnapshot {
+  screen?: string;
+  elements?: UiElement[];
+}
+
+function isUiElement(value: unknown): value is UiElement {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+
+  if ("id" in v && typeof v.id !== "string" && typeof v.id !== "number") return false;
+  if ("type" in v && typeof v.type !== "string") return false;
+  if ("label" in v && typeof v.label !== "string") return false;
+  if ("min" in v && typeof v.min !== "number") return false;
+  if ("max" in v && typeof v.max !== "number") return false;
+  if ("options" in v) {
+    if (!Array.isArray(v.options)) return false;
+    if (!v.options.every((o) => typeof o === "string")) return false;
+  }
+
+  return true;
+}
+
+function isUiSnapshot(value: unknown): value is UiSnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+
+  if ("screen" in v && typeof v.screen !== "string") return false;
+  if ("elements" in v) {
+    if (!Array.isArray(v.elements)) return false;
+    if (!v.elements.every(isUiElement)) return false;
+  }
+
+  return true;
+}
+
 async function cmdUiSnapshot(apiBase: string) {
-  const result = await sendAndWait(apiBase, { type: "ui_snapshot" }) as Record<string, unknown>;
-  if (result.data && typeof result.data === "object") {
-    const snap = result.data as { screen: string; elements: Array<Record<string, unknown>> };
-    console.log(`Screen: ${snap.screen}`);
-    console.log(`Elements (${snap.elements?.length ?? 0}):`);
-    for (const el of snap.elements ?? []) {
-      const parts = [`  ${el.id}  [${el.type}]  "${el.label}"`];
-      if (el.type === "slider") parts.push(`  value=${el.value}  range=[${el.min}, ${el.max}]`);
-      else if (el.type === "int_slider") parts.push(`  value=${el.value}  range=[${el.min}, ${el.max}]`);
-      else if (el.type === "checkbox") parts.push(`  value=${el.value}`);
-      else if (el.type === "combo") parts.push(`  value="${el.value}"  options=[${(el.options as string[]).join(", ")}]`);
+  const result = (await sendAndWait(apiBase, { type: "ui_snapshot" })) as { data?: unknown };
+  if (isUiSnapshot(result.data)) {
+    const snap = result.data;
+    const screen = snap.screen ?? "<unknown>";
+    const elements = Array.isArray(snap.elements) ? snap.elements : [];
+
+    console.log(`Screen: ${screen}`);
+    console.log(`Elements (${elements.length}):`);
+
+    for (const el of elements) {
+      const id = el.id ?? "<no-id>";
+      const type = el.type ?? "<unknown>";
+      const label = el.label ?? "";
+
+      const parts = [`  ${id}  [${type}]  "${label}"`];
+
+      if (el.type === "slider" || el.type === "int_slider") {
+        parts.push(`  value=${String(el.value)}  range=[${String(el.min)}, ${String(el.max)}]`);
+      } else if (el.type === "checkbox") {
+        parts.push(`  value=${String(el.value)}`);
+      } else if (el.type === "combo") {
+        const options = Array.isArray(el.options) ? el.options : [];
+        parts.push(
+          `  value="${String(el.value ?? "")}"  options=[${options.join(", ")}]`,
+        );
+      }
       console.log(parts.join(""));
     }
   } else {
