@@ -89,6 +89,7 @@ impl AppState {
                 day_speed: None,
                 object_id: None,
                 object_position: None,
+                data: None,
             });
         }
     }

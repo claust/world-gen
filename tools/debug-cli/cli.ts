@@ -159,6 +159,98 @@ async function cmdLookAt(apiBase: string, flags: Record<string, string>) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+interface UiElement {
+  id?: string | number;
+  type?: string;
+  label?: string;
+  value?: string | number | boolean;
+  min?: number;
+  max?: number;
+  options?: string[];
+}
+
+interface UiSnapshot {
+  screen?: string;
+  elements?: UiElement[];
+}
+
+function isUiElement(value: unknown): value is UiElement {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+
+  if ("id" in v && typeof v.id !== "string" && typeof v.id !== "number") return false;
+  if ("type" in v && typeof v.type !== "string") return false;
+  if ("label" in v && typeof v.label !== "string") return false;
+  if ("min" in v && typeof v.min !== "number") return false;
+  if ("max" in v && typeof v.max !== "number") return false;
+  if ("options" in v) {
+    if (!Array.isArray(v.options)) return false;
+    if (!v.options.every((o) => typeof o === "string")) return false;
+  }
+
+  return true;
+}
+
+function isUiSnapshot(value: unknown): value is UiSnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+
+  if ("screen" in v && typeof v.screen !== "string") return false;
+  if ("elements" in v) {
+    if (!Array.isArray(v.elements)) return false;
+    if (!v.elements.every(isUiElement)) return false;
+  }
+
+  return true;
+}
+
+async function cmdUiSnapshot(apiBase: string) {
+  const result = (await sendAndWait(apiBase, { type: "ui_snapshot" })) as { data?: unknown };
+  if (isUiSnapshot(result.data)) {
+    const snap = result.data;
+    const screen = snap.screen ?? "<unknown>";
+    const elements = Array.isArray(snap.elements) ? snap.elements : [];
+
+    console.log(`Screen: ${screen}`);
+    console.log(`Elements (${elements.length}):`);
+
+    for (const el of elements) {
+      const id = el.id ?? "<no-id>";
+      const type = el.type ?? "<unknown>";
+      const label = el.label ?? "";
+
+      const parts = [`  ${id}  [${type}]  "${label}"`];
+
+      if (el.type === "slider" || el.type === "int_slider") {
+        parts.push(`  value=${String(el.value)}  range=[${String(el.min)}, ${String(el.max)}]`);
+      } else if (el.type === "checkbox") {
+        parts.push(`  value=${String(el.value)}`);
+      } else if (el.type === "combo") {
+        const options = Array.isArray(el.options) ? el.options : [];
+        parts.push(
+          `  value="${String(el.value ?? "")}"  options=[${options.join(", ")}]`,
+        );
+      }
+      console.log(parts.join(""));
+    }
+  } else {
+    console.log(JSON.stringify(result, null, 2));
+  }
+}
+
+async function cmdUiClick(apiBase: string, flags: Record<string, string>) {
+  const element = requireFlag(flags, "element");
+  const result = await sendAndWait(apiBase, { type: "ui_click", element_id: element });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdUiSetValue(apiBase: string, flags: Record<string, string>) {
+  const element = requireFlag(flags, "element");
+  const value = requireFlag(flags, "value");
+  const result = await sendAndWait(apiBase, { type: "ui_set_value", element_id: element, value });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdPressKey(apiBase: string, flags: Record<string, string>) {
   const key = requireFlag(flags, "key");
   const valid = ["f1", "escape"];
@@ -197,6 +289,9 @@ Commands:
   look_at         --id <object_id> [--distance <n>]  Look at object
   move            --key <w|a|s|d|up|down> [--duration <ms>]  Move camera
   press_key       --key <f1|escape>      Press a key (toggle config panel, etc.)
+  ui_snapshot                              Get all interactive UI elements
+  ui_click        --element <id>           Click a button or toggle checkbox
+  ui_set_value    --element <id> --value <v>  Set slider/combo/checkbox value
 
 Options:
   --api <url>    API base URL (default: ${DEFAULT_API})`;
@@ -233,6 +328,15 @@ async function main() {
         break;
       case "press_key":
         await cmdPressKey(apiBase, flags);
+        break;
+      case "ui_snapshot":
+        await cmdUiSnapshot(apiBase);
+        break;
+      case "ui_click":
+        await cmdUiClick(apiBase, flags);
+        break;
+      case "ui_set_value":
+        await cmdUiSetValue(apiBase, flags);
         break;
       default:
         if (command) process.stderr.write(`unknown command: ${command}\n\n`);

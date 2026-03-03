@@ -1,5 +1,7 @@
 use egui::{self, Color32, RichText};
 
+use super::ui_registry::UiRegistry;
+
 pub enum MenuAction {
     NewGame,
     ResumeGame,
@@ -22,7 +24,7 @@ impl StartMenu {
     }
 
     /// Draw the start menu. Returns `Some(action)` when a button is clicked.
-    pub fn ui(&mut self, ctx: &egui::Context) -> Option<MenuAction> {
+    pub fn ui(&mut self, ctx: &egui::Context, registry: &mut UiRegistry) -> Option<MenuAction> {
         let mut action = None;
 
         egui::CentralPanel::default()
@@ -39,12 +41,14 @@ impl StartMenu {
 
                     let button_size = egui::vec2(200.0, 50.0);
 
+                    registry.register_button("btn-start-game", "Start Game");
                     if ui
                         .add_sized(
                             button_size,
                             egui::Button::new(RichText::new("Start Game").size(20.0)),
                         )
                         .clicked()
+                        || registry.consume_click("btn-start-game")
                     {
                         action = Some(MenuAction::NewGame);
                     }
@@ -52,12 +56,14 @@ impl StartMenu {
                     ui.add_space(12.0);
 
                     if self.save_exists {
+                        registry.register_button("btn-resume-game", "Resume Game");
                         if ui
                             .add_sized(
                                 button_size,
                                 egui::Button::new(RichText::new("Resume Game").size(20.0)),
                             )
                             .clicked()
+                            || registry.consume_click("btn-resume-game")
                         {
                             action = Some(MenuAction::ResumeGame);
                         }
@@ -72,12 +78,14 @@ impl StartMenu {
 
                     ui.add_space(12.0);
 
+                    registry.register_button("btn-plant-editor", "Plant Editor");
                     if ui
                         .add_sized(
                             button_size,
                             egui::Button::new(RichText::new("Plant Editor").size(20.0)),
                         )
                         .clicked()
+                        || registry.consume_click("btn-plant-editor")
                     {
                         action = Some(MenuAction::PlantEditor);
                     }
@@ -86,12 +94,14 @@ impl StartMenu {
                     {
                         ui.add_space(12.0);
 
+                        registry.register_button("btn-exit", "Exit");
                         if ui
                             .add_sized(
                                 button_size,
                                 egui::Button::new(RichText::new("Exit").size(20.0)),
                             )
                             .clicked()
+                            || registry.consume_click("btn-exit")
                         {
                             action = Some(MenuAction::Exit);
                         }

@@ -10,7 +10,7 @@ use crate::renderer_wgpu::egui_bridge::EguiBridge;
 use crate::renderer_wgpu::egui_pass::EguiPass;
 use crate::renderer_wgpu::gpu_context::GpuContext;
 use crate::renderer_wgpu::world::WorldRenderer;
-use crate::ui::{ConfigPanel, MenuAction, PlantEditorPanel, StartMenu};
+use crate::ui::{ConfigPanel, MenuAction, PlantEditorPanel, StartMenu, UiRegistry};
 use crate::world_core::config::GameConfig;
 use crate::world_runtime::WorldRuntime;
 
@@ -78,6 +78,7 @@ pub struct AppState {
     save: Option<SaveData>,
     config: GameConfig,
     pending_menu_action: Option<MenuAction>,
+    ui_registry: UiRegistry,
 }
 
 impl AppState {
@@ -146,6 +147,7 @@ impl AppState {
             save,
             config,
             pending_menu_action: None,
+            ui_registry: UiRegistry::new(),
         })
     }
 
@@ -194,6 +196,7 @@ impl AppState {
             start_menu: StartMenu::new(false), // no save files on WASM
             config,
             pending_menu_action: None,
+            ui_registry: UiRegistry::new(),
         })
     }
 
@@ -234,6 +237,15 @@ impl AppState {
 
     fn is_on_menu(&self) -> bool {
         matches!(self.screen, Screen::StartMenu)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn screen_name(&self) -> &'static str {
+        match self.screen {
+            Screen::StartMenu => "start_menu",
+            Screen::Playing => "playing",
+            Screen::PlantEditor => "plant_editor",
+        }
     }
 
     fn is_on_editor(&self) -> bool {
@@ -563,29 +575,160 @@ impl AppState {
                             _ => {}
                         }
                     }
-                    CommandAppliedEvent {
-                        id: command.id,
-                        frame: self.frame_index,
-                        ok: true,
-                        message: format!(
+                    CommandAppliedEvent::ok(
+                        command.id,
+                        self.frame_index,
+                        format!(
                             "orbit key {} {}",
                             key.as_str(),
                             if pressed { "pressed" } else { "released" }
                         ),
-                        day_speed: None,
-                        object_id: None,
-                        object_position: None,
+                    )
+                }
+                CommandKind::UiSnapshot => {
+                    let snapshot = self.ui_registry.take_snapshot(self.screen_name());
+                    let data = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
+                    let mut evt = CommandAppliedEvent::ok(
+                        command.id,
+                        self.frame_index,
+                        format!(
+                            "ui snapshot: {} elements on {}",
+                            snapshot.elements.len(),
+                            snapshot.screen
+                        ),
+                    );
+                    evt.data = Some(data);
+                    evt
+                }
+                CommandKind::UiClick { ref element_id } => {
+                    if !self.ui_registry.has_element(element_id) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("ui click failed: element '{}' not found", element_id),
+                        )
+                    } else {
+                        self.ui_registry.push_action(crate::ui::UiAction::Click {
+                            element_id: element_id.clone(),
+                        });
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("ui click queued: {}", element_id),
+                        )
                     }
                 }
-                _ => CommandAppliedEvent {
-                    id: command.id,
-                    frame: self.frame_index,
-                    ok: false,
-                    message: "command not available in plant editor".to_string(),
-                    day_speed: None,
-                    object_id: None,
-                    object_position: None,
-                },
+                CommandKind::UiSetValue {
+                    ref element_id,
+                    ref value,
+                } => {
+                    if !self.ui_registry.has_element(element_id) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("ui set_value failed: element '{}' not found", element_id),
+                        )
+                    } else {
+                        self.ui_registry.push_action(crate::ui::UiAction::SetValue {
+                            element_id: element_id.clone(),
+                            value: value.clone(),
+                        });
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("ui set_value queued: {} = {}", element_id, value),
+                        )
+                    }
+                }
+                _ => CommandAppliedEvent::err(
+                    command.id,
+                    self.frame_index,
+                    "command not available in plant editor".to_string(),
+                ),
+            };
+
+            if let Some(api) = &self.debug_api {
+                api.publish_command_applied(applied);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_menu_debug_commands(&mut self) {
+        use crate::debug_api::{CommandAppliedEvent, CommandKind};
+
+        let commands: Vec<_> = self
+            .debug_api
+            .as_mut()
+            .map(|api| api.drain_commands())
+            .unwrap_or_default();
+
+        for command in commands {
+            let applied = match command.command {
+                CommandKind::TakeScreenshot => {
+                    self.screenshot_pending = Some(command.id);
+                    continue;
+                }
+                CommandKind::UiSnapshot => {
+                    let snapshot = self.ui_registry.take_snapshot(self.screen_name());
+                    let data = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
+                    let mut evt = CommandAppliedEvent::ok(
+                        command.id,
+                        self.frame_index,
+                        format!(
+                            "ui snapshot: {} elements on {}",
+                            snapshot.elements.len(),
+                            snapshot.screen
+                        ),
+                    );
+                    evt.data = Some(data);
+                    evt
+                }
+                CommandKind::UiClick { ref element_id } => {
+                    if !self.ui_registry.has_element(element_id) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("ui click failed: element '{}' not found", element_id),
+                        )
+                    } else {
+                        self.ui_registry.push_action(crate::ui::UiAction::Click {
+                            element_id: element_id.clone(),
+                        });
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("ui click queued: {}", element_id),
+                        )
+                    }
+                }
+                CommandKind::UiSetValue {
+                    ref element_id,
+                    ref value,
+                } => {
+                    if !self.ui_registry.has_element(element_id) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("ui set_value failed: element '{}' not found", element_id),
+                        )
+                    } else {
+                        self.ui_registry.push_action(crate::ui::UiAction::SetValue {
+                            element_id: element_id.clone(),
+                            value: value.clone(),
+                        });
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("ui set_value queued: {} = {}", element_id, value),
+                        )
+                    }
+                }
+                _ => CommandAppliedEvent::err(
+                    command.id,
+                    self.frame_index,
+                    "command not available on menu".to_string(),
+                ),
             };
 
             if let Some(api) = &self.debug_api {
@@ -595,6 +738,10 @@ impl AppState {
     }
 
     fn update_menu(&mut self, _dt: f32) {
+        // Process debug commands on menu screen
+        #[cfg(not(target_arch = "wasm32"))]
+        self.apply_menu_debug_commands();
+
         // Advance a virtual hour for the animated sky background
         let menu_day_speed = 0.5;
         let menu_hour = (self.elapsed_seconds * menu_day_speed) % 24.0;
@@ -679,6 +826,7 @@ impl AppState {
 
         // egui overlay pass (renders on top of 3D scene)
         {
+            self.ui_registry.clear();
             let show_egui = is_menu || self.config_panel.is_visible() || is_editor;
             if show_egui {
                 let raw_input = self.egui_bridge.take_raw_input();
@@ -688,13 +836,13 @@ impl AppState {
                     .ctx()
                     .run(raw_input, |ctx| match self.screen {
                         Screen::StartMenu => {
-                            menu_action = self.start_menu.ui(ctx);
+                            menu_action = self.start_menu.ui(ctx, &mut self.ui_registry);
                         }
                         Screen::Playing => {
-                            self.config_panel.ui(ctx);
+                            self.config_panel.ui(ctx, &mut self.ui_registry);
                         }
                         Screen::PlantEditor => {
-                            if self.plant_editor_panel.ui(ctx) {
+                            if self.plant_editor_panel.ui(ctx, &mut self.ui_registry) {
                                 menu_action = Some(MenuAction::LeaveEditor);
                             }
                         }
