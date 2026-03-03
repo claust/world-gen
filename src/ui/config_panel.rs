@@ -68,15 +68,11 @@ impl ConfigPanel {
                     // Handle section toggle clicks
                     toggle_section(ui, registry, "section-heightmap", "Heightmap");
                     toggle_section(ui, registry, "section-biomes", "Biomes");
-                    toggle_section(ui, registry, "section-trees", "Trees");
-                    toggle_section(ui, registry, "section-ferns", "Ferns");
                     toggle_section(ui, registry, "section-houses", "Houses");
                     toggle_section(ui, registry, "section-world", "World");
 
                     self.heightmap_section(ui);
                     self.biome_section(ui);
-                    self.flora_section(ui);
-                    self.ferns_section(ui);
                     self.houses_section(ui);
                     self.world_section(ui);
 
@@ -101,8 +97,6 @@ impl ConfigPanel {
         // -- Section toggle buttons --
         registry.register_button("section-heightmap", "Heightmap");
         registry.register_button("section-biomes", "Biomes");
-        registry.register_button("section-trees", "Trees");
-        registry.register_button("section-ferns", "Ferns");
         registry.register_button("section-houses", "Houses");
         registry.register_button("section-world", "World");
         registry.register_button("btn-reset-defaults", "Reset to Defaults");
@@ -255,230 +249,6 @@ impl ConfigPanel {
                 1.0,
             );
         }
-        // -- Trees --
-        {
-            let f = &mut self.config.flora;
-            reg_f32(
-                registry,
-                "slider-tree-grid-spacing",
-                "Tree Grid Spacing",
-                &mut f.grid_spacing,
-                3.0,
-                30.0,
-            );
-            reg_f32(
-                registry,
-                "slider-forest-density-base",
-                "Forest Density Base",
-                &mut f.forest_density_base,
-                0.0,
-                1.0,
-            );
-            reg_f32(
-                registry,
-                "slider-forest-density-scale",
-                "Forest Density Scale",
-                &mut f.forest_density_scale,
-                0.0,
-                2.0,
-            );
-            reg_f32(
-                registry,
-                "slider-forest-density-min",
-                "Forest Density Min",
-                &mut f.forest_density_min,
-                0.0,
-                1.0,
-            );
-            reg_f32(
-                registry,
-                "slider-forest-density-max",
-                "Forest Density Max",
-                &mut f.forest_density_max,
-                0.0,
-                1.0,
-            );
-            reg_f32(
-                registry,
-                "slider-forest-moisture-center",
-                "Forest Moisture Center",
-                &mut f.forest_moisture_center,
-                0.0,
-                1.0,
-            );
-            reg_f32(
-                registry,
-                "slider-grassland-density-base",
-                "Grassland Density Base",
-                &mut f.grassland_density_base,
-                0.0,
-                0.5,
-            );
-            reg_f32(
-                registry,
-                "slider-grassland-density-scale",
-                "Grassland Density Scale",
-                &mut f.grassland_density_scale,
-                0.0,
-                0.5,
-            );
-            reg_f32(
-                registry,
-                "slider-grassland-density-min",
-                "Grassland Density Min",
-                &mut f.grassland_density_min,
-                0.0,
-                0.5,
-            );
-            reg_f32(
-                registry,
-                "slider-grassland-density-max",
-                "Grassland Density Max",
-                &mut f.grassland_density_max,
-                0.0,
-                0.5,
-            );
-            reg_f32(
-                registry,
-                "slider-trunk-height-min",
-                "Trunk Height Min",
-                &mut f.trunk_height_min,
-                1.0,
-                15.0,
-            );
-            reg_f32(
-                registry,
-                "slider-trunk-height-range",
-                "Trunk Height Range",
-                &mut f.trunk_height_range,
-                0.0,
-                20.0,
-            );
-            reg_f32(
-                registry,
-                "slider-canopy-radius-min",
-                "Canopy Radius Min",
-                &mut f.canopy_radius_min,
-                0.5,
-                5.0,
-            );
-            reg_f32(
-                registry,
-                "slider-canopy-radius-range",
-                "Canopy Radius Range",
-                &mut f.canopy_radius_range,
-                0.0,
-                5.0,
-            );
-            reg_f32(
-                registry,
-                "slider-tree-max-slope",
-                "Tree Max Slope",
-                &mut f.max_slope,
-                0.0,
-                3.0,
-            );
-            reg_f32(
-                registry,
-                "slider-tree-min-height",
-                "Tree Min Height",
-                &mut f.min_height,
-                -50.0,
-                50.0,
-            );
-        }
-        // -- Ferns --
-        {
-            let f = &mut self.config.ferns;
-            reg_f32(
-                registry,
-                "slider-fern-grid-spacing",
-                "Fern Grid Spacing",
-                &mut f.grid_spacing,
-                1.0,
-                15.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-forest-offset",
-                "Fern Forest Offset",
-                &mut f.forest_density_offset,
-                0.0,
-                2.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-forest-scale",
-                "Fern Forest Scale",
-                &mut f.forest_density_scale,
-                0.0,
-                5.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-forest-max",
-                "Fern Forest Max",
-                &mut f.forest_density_max,
-                0.0,
-                1.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-grassland-offset",
-                "Fern Grassland Offset",
-                &mut f.grassland_density_offset,
-                0.0,
-                2.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-grassland-scale",
-                "Fern Grassland Scale",
-                &mut f.grassland_density_scale,
-                0.0,
-                1.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-grassland-max",
-                "Fern Grassland Max",
-                &mut f.grassland_density_max,
-                0.0,
-                0.5,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-scale-min",
-                "Fern Scale Min",
-                &mut f.scale_min,
-                0.1,
-                2.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-scale-range",
-                "Fern Scale Range",
-                &mut f.scale_range,
-                0.0,
-                2.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-max-slope",
-                "Fern Max Slope",
-                &mut f.max_slope,
-                0.0,
-                3.0,
-            );
-            reg_f32(
-                registry,
-                "slider-fern-min-height",
-                "Fern Min Height",
-                &mut f.min_height,
-                -50.0,
-                50.0,
-            );
-        }
         // -- Houses --
         {
             let h = &mut self.config.houses;
@@ -616,70 +386,6 @@ impl ConfigPanel {
             ui.add(egui::Slider::new(&mut b.rock_height, 30.0..=250.0).text("rock height"));
             ui.add(egui::Slider::new(&mut b.desert_moisture, 0.0..=1.0).text("desert moisture"));
             ui.add(egui::Slider::new(&mut b.forest_moisture, 0.0..=1.0).text("forest moisture"));
-        });
-    }
-
-    fn flora_section(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("Trees", |ui| {
-            let f = &mut self.config.flora;
-            ui.add(egui::Slider::new(&mut f.grid_spacing, 3.0..=30.0).text("grid spacing"));
-
-            ui.label("Forest density");
-            ui.add(egui::Slider::new(&mut f.forest_density_base, 0.0..=1.0).text("base"));
-            ui.add(egui::Slider::new(&mut f.forest_density_scale, 0.0..=2.0).text("scale"));
-            ui.add(egui::Slider::new(&mut f.forest_density_min, 0.0..=1.0).text("min"));
-            ui.add(egui::Slider::new(&mut f.forest_density_max, 0.0..=1.0).text("max"));
-            ui.add(
-                egui::Slider::new(&mut f.forest_moisture_center, 0.0..=1.0).text("moisture center"),
-            );
-
-            ui.label("Grassland density");
-            ui.add(egui::Slider::new(&mut f.grassland_density_base, 0.0..=0.5).text("base"));
-            ui.add(egui::Slider::new(&mut f.grassland_density_scale, 0.0..=0.5).text("scale"));
-            ui.add(egui::Slider::new(&mut f.grassland_density_min, 0.0..=0.5).text("min"));
-            ui.add(egui::Slider::new(&mut f.grassland_density_max, 0.0..=0.5).text("max"));
-
-            ui.label("Tree size");
-            ui.add(egui::Slider::new(&mut f.trunk_height_min, 1.0..=15.0).text("trunk height min"));
-            ui.add(
-                egui::Slider::new(&mut f.trunk_height_range, 0.0..=20.0).text("trunk height range"),
-            );
-            ui.add(
-                egui::Slider::new(&mut f.canopy_radius_min, 0.5..=5.0).text("canopy radius min"),
-            );
-            ui.add(
-                egui::Slider::new(&mut f.canopy_radius_range, 0.0..=5.0)
-                    .text("canopy radius range"),
-            );
-
-            ui.label("Placement");
-            ui.add(egui::Slider::new(&mut f.max_slope, 0.0..=3.0).text("max slope"));
-            ui.add(egui::Slider::new(&mut f.min_height, -50.0..=50.0).text("min height"));
-        });
-    }
-
-    fn ferns_section(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("Ferns", |ui| {
-            let f = &mut self.config.ferns;
-            ui.add(egui::Slider::new(&mut f.grid_spacing, 1.0..=15.0).text("grid spacing"));
-
-            ui.label("Forest density");
-            ui.add(egui::Slider::new(&mut f.forest_density_offset, 0.0..=2.0).text("offset"));
-            ui.add(egui::Slider::new(&mut f.forest_density_scale, 0.0..=5.0).text("scale"));
-            ui.add(egui::Slider::new(&mut f.forest_density_max, 0.0..=1.0).text("max"));
-
-            ui.label("Grassland density");
-            ui.add(egui::Slider::new(&mut f.grassland_density_offset, 0.0..=2.0).text("offset"));
-            ui.add(egui::Slider::new(&mut f.grassland_density_scale, 0.0..=1.0).text("scale"));
-            ui.add(egui::Slider::new(&mut f.grassland_density_max, 0.0..=0.5).text("max"));
-
-            ui.label("Size");
-            ui.add(egui::Slider::new(&mut f.scale_min, 0.1..=2.0).text("scale min"));
-            ui.add(egui::Slider::new(&mut f.scale_range, 0.0..=2.0).text("scale range"));
-
-            ui.label("Placement");
-            ui.add(egui::Slider::new(&mut f.max_slope, 0.0..=3.0).text("max slope"));
-            ui.add(egui::Slider::new(&mut f.min_height, -50.0..=50.0).text("min height"));
         });
     }
 

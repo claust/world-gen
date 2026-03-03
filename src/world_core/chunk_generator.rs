@@ -4,6 +4,7 @@ use crate::world_core::biome_map::BiomeLayer;
 use crate::world_core::chunk::ChunkData;
 use crate::world_core::config::GameConfig;
 use crate::world_core::content::{ContentInput, ContentLayer};
+use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::layer::Layer;
 use crate::world_core::terrain::TerrainLayer;
 
@@ -14,13 +15,13 @@ pub struct ChunkGenerator {
 }
 
 impl ChunkGenerator {
-    pub fn new(seed: u32, config: &GameConfig) -> Self {
+    pub fn new(seed: u32, config: &GameConfig, registry: PlantRegistry) -> Self {
         Self {
             terrain_layer: TerrainLayer::new(seed, config.heightmap.clone(), config.sea_level),
             biome_layer: BiomeLayer {
                 biome_config: config.biome.clone(),
             },
-            content_layer: ContentLayer::new(seed, config),
+            content_layer: ContentLayer::new(seed, config, registry),
         }
     }
 
@@ -45,19 +46,23 @@ impl ChunkGenerator {
 mod tests {
     use super::ChunkGenerator;
     use crate::world_core::config::GameConfig;
+    use crate::world_core::herbarium::{Herbarium, PlantRegistry};
     use glam::IVec2;
 
     #[test]
-    fn tree_generation_is_deterministic_for_same_seed_and_chunk() {
+    fn plant_generation_is_deterministic_for_same_seed_and_chunk() {
         let config = GameConfig::default();
-        let a = ChunkGenerator::new(42, &config).generate_chunk(IVec2::new(3, -2));
-        let b = ChunkGenerator::new(42, &config).generate_chunk(IVec2::new(3, -2));
+        let herb = Herbarium::default_seeded();
+        let reg_a = PlantRegistry::from_herbarium(&herb);
+        let reg_b = PlantRegistry::from_herbarium(&herb);
+        let a = ChunkGenerator::new(42, &config, reg_a).generate_chunk(IVec2::new(3, -2));
+        let b = ChunkGenerator::new(42, &config, reg_b).generate_chunk(IVec2::new(3, -2));
 
-        assert_eq!(a.content.trees.len(), b.content.trees.len());
-        for (ta, tb) in a.content.trees.iter().zip(b.content.trees.iter()) {
-            assert!((ta.position - tb.position).length() < 1e-5);
-            assert!((ta.trunk_height - tb.trunk_height).abs() < 1e-5);
-            assert!((ta.canopy_radius - tb.canopy_radius).abs() < 1e-5);
+        assert_eq!(a.content.plants.len(), b.content.plants.len());
+        for (pa, pb) in a.content.plants.iter().zip(b.content.plants.iter()) {
+            assert!((pa.position - pb.position).length() < 1e-5);
+            assert!((pa.height - pb.height).abs() < 1e-5);
+            assert_eq!(pa.species_index, pb.species_index);
         }
     }
 }

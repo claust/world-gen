@@ -107,28 +107,19 @@ impl AppState {
                                     .enumerate()
                                     .map(|(i, h)| (i, h.position)),
                             ),
-                            ObjectKind::Tree => Box::new(
+                            ObjectKind::Tree | ObjectKind::Fern => Box::new(
                                 chunk
                                     .content
-                                    .trees
+                                    .plants
                                     .iter()
                                     .enumerate()
-                                    .map(|(i, t)| (i, t.position)),
-                            ),
-                            ObjectKind::Fern => Box::new(
-                                chunk
-                                    .content
-                                    .ferns
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, f)| (i, f.position)),
+                                    .map(|(i, p)| (i, p.position)),
                             ),
                         };
 
                         let prefix = match kind {
                             ObjectKind::House => "house",
-                            ObjectKind::Tree => "tree",
-                            ObjectKind::Fern => "fern",
+                            ObjectKind::Tree | ObjectKind::Fern => "plant",
                         };
 
                         for (idx, pos) in items {
@@ -150,8 +141,7 @@ impl AppState {
                                 "nearest {} at ({:.1}, {:.1}, {:.1})",
                                 match kind {
                                     ObjectKind::House => "house",
-                                    ObjectKind::Tree => "tree",
-                                    ObjectKind::Fern => "fern",
+                                    ObjectKind::Tree | ObjectKind::Fern => "plant",
                                 },
                                 pos[0],
                                 pos[1],
@@ -169,8 +159,7 @@ impl AppState {
                                 "no {} found in loaded chunks",
                                 match kind {
                                     ObjectKind::House => "houses",
-                                    ObjectKind::Tree => "trees",
-                                    ObjectKind::Fern => "ferns",
+                                    ObjectKind::Tree | ObjectKind::Fern => "plants",
                                 }
                             ),
                         ),
@@ -366,7 +355,7 @@ fn parse_and_find_object(
     chunks: &std::collections::HashMap<glam::IVec2, crate::world_core::chunk::ChunkData>,
 ) -> Option<Vec3> {
     // Format: "{type}-{chunk_x}_{chunk_z}-{index}"
-    // Use first '-' and last '-' to handle negative chunk coordinates (e.g. "fern--2_3-0")
+    // Use first '-' and last '-' to handle negative chunk coordinates (e.g. "plant--2_3-0")
     let first_dash = object_id.find('-')?;
     let kind = &object_id[..first_dash];
     let rest = &object_id[first_dash + 1..];
@@ -383,8 +372,7 @@ fn parse_and_find_object(
 
     match kind {
         "house" => chunk.content.houses.get(index).map(|h| h.position),
-        "tree" => chunk.content.trees.get(index).map(|t| t.position),
-        "fern" => chunk.content.ferns.get(index).map(|f| f.position),
+        "plant" | "tree" | "fern" => chunk.content.plants.get(index).map(|p| p.position),
         _ => None,
     }
 }

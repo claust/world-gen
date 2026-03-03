@@ -99,6 +99,9 @@ impl AppState {
 
         let gpu = GpuContext::new(window).await?;
 
+        let herbarium = Herbarium::load();
+        let registry = crate::world_core::herbarium::PlantRegistry::from_herbarium(&herbarium);
+
         let world_renderer = WorldRenderer::new(
             &gpu.device,
             &gpu.queue,
@@ -106,6 +109,7 @@ impl AppState {
             gpu.render_format,
             config.sea_level,
             config.world.load_radius,
+            registry,
         );
 
         // Menu camera — fixed position looking at the sky
@@ -121,8 +125,6 @@ impl AppState {
         }
 
         let asset_watcher = AssetWatcher::start();
-
-        let herbarium = Herbarium::load();
 
         let scale_factor = window.scale_factor() as f32;
         let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
@@ -169,6 +171,9 @@ impl AppState {
 
         let gpu = GpuContext::new(window).await?;
 
+        let herbarium = Herbarium::default_seeded();
+        let registry = crate::world_core::herbarium::PlantRegistry::from_herbarium(&herbarium);
+
         let world_renderer = WorldRenderer::new(
             &gpu.device,
             &gpu.queue,
@@ -176,13 +181,12 @@ impl AppState {
             gpu.render_format,
             config.sea_level,
             config.world.load_radius,
+            registry,
         );
 
         // Menu camera — fixed position looking at the sky
         let camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         let camera_controller = CameraController::new(180.0, 0.0022);
-
-        let herbarium = Herbarium::default_seeded();
 
         let scale_factor = window.scale_factor() as f32;
         let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
@@ -394,7 +398,8 @@ impl AppState {
         #[cfg(target_arch = "wasm32")]
         let threads = 1;
 
-        let mut world = match WorldRuntime::new(&self.config, save_ref, threads) {
+        let arc_herbarium = std::sync::Arc::new(self.herbarium.clone());
+        let mut world = match WorldRuntime::new(&self.config, save_ref, threads, arc_herbarium) {
             Ok(world) => world,
             Err(err) => {
                 log::error!("failed to create world runtime: {err}");

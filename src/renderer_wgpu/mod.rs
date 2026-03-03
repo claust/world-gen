@@ -14,6 +14,7 @@ mod sky_pass;
 pub mod terrain_compute;
 pub mod world;
 
+mod frustum;
 mod hud_font;
 mod hud_pass;
 mod instanced_pass;
