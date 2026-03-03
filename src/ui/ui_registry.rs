@@ -130,6 +130,10 @@ impl UiRegistry {
         }
     }
 
+    pub fn has_element(&self, id: &str) -> bool {
+        self.elements.iter().any(|e| e.id == id)
+    }
+
     pub fn push_action(&mut self, action: UiAction) {
         self.pending_actions.push(action);
     }

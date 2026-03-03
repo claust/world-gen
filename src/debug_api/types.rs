@@ -340,4 +340,38 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn deserializes_ui_snapshot() {
+        let raw = r#"{"id":"ui-1","type":"ui_snapshot"}"#;
+        let command: CommandRequest = serde_json::from_str(raw).expect("valid ui_snapshot payload");
+        assert_eq!(command.id, "ui-1");
+        assert!(matches!(command.command, super::CommandKind::UiSnapshot));
+    }
+
+    #[test]
+    fn deserializes_ui_click() {
+        let raw = r#"{"id":"ui-2","type":"ui_click","element_id":"btn-start-game"}"#;
+        let command: CommandRequest = serde_json::from_str(raw).expect("valid ui_click payload");
+        assert_eq!(command.id, "ui-2");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::UiClick { ref element_id }
+            if element_id == "btn-start-game"
+        ));
+    }
+
+    #[test]
+    fn deserializes_ui_set_value() {
+        let raw =
+            r#"{"id":"ui-3","type":"ui_set_value","element_id":"slider-sea-level","value":"25"}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid ui_set_value payload");
+        assert_eq!(command.id, "ui-3");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::UiSetValue { ref element_id, ref value }
+            if element_id == "slider-sea-level" && value == "25"
+        ));
+    }
 }

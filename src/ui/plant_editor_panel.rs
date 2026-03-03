@@ -291,13 +291,15 @@ impl PlantEditorPanel {
     }
 
     /// Returns changed params when the pointer is released after changes.
-    /// Debounces so the tree doesn't regenerate mid-drag.
+    /// Debounces so the tree doesn't regenerate mid-drag. Also applies
+    /// immediately when no pointer is active (handles debug API set_value).
     pub fn take_dirty_params(&mut self, ctx: &egui::Context) -> Option<PlantParams> {
         if !self.dirty {
             return None;
         }
         let released = ctx.input(|i| i.pointer.any_released());
-        if released {
+        let no_pointer_down = ctx.input(|i| !i.pointer.any_down());
+        if released || no_pointer_down {
             self.dirty = false;
             self.last_applied = self.params.clone();
             Some(self.params.clone())

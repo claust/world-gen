@@ -245,28 +245,44 @@ impl AppState {
                     evt
                 }
                 CommandKind::UiClick { ref element_id } => {
-                    self.ui_registry.push_action(crate::ui::UiAction::Click {
-                        element_id: element_id.clone(),
-                    });
-                    CommandAppliedEvent::ok(
-                        command.id,
-                        self.frame_index,
-                        format!("ui click queued: {}", element_id),
-                    )
+                    if !self.ui_registry.has_element(element_id) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("ui click failed: element '{}' not found", element_id),
+                        )
+                    } else {
+                        self.ui_registry.push_action(crate::ui::UiAction::Click {
+                            element_id: element_id.clone(),
+                        });
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("ui click queued: {}", element_id),
+                        )
+                    }
                 }
                 CommandKind::UiSetValue {
                     ref element_id,
                     ref value,
                 } => {
-                    self.ui_registry.push_action(crate::ui::UiAction::SetValue {
-                        element_id: element_id.clone(),
-                        value: value.clone(),
-                    });
-                    CommandAppliedEvent::ok(
-                        command.id,
-                        self.frame_index,
-                        format!("ui set_value queued: {} = {}", element_id, value),
-                    )
+                    if !self.ui_registry.has_element(element_id) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("ui set_value failed: element '{}' not found", element_id),
+                        )
+                    } else {
+                        self.ui_registry.push_action(crate::ui::UiAction::SetValue {
+                            element_id: element_id.clone(),
+                            value: value.clone(),
+                        });
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("ui set_value queued: {} = {}", element_id, value),
+                        )
+                    }
                 }
                 CommandKind::PressKey { key } => {
                     let message = match key {

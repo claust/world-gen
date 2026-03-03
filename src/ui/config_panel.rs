@@ -716,7 +716,7 @@ fn toggle_section(ui: &mut egui::Ui, registry: &mut UiRegistry, btn_id: &str, la
     if registry.consume_click(btn_id) {
         let egui_id = ui.make_persistent_id(label);
         // Ensure a collapsing state exists; if none is stored yet, create one with a default.
-        let mut state = egui::collapsing_header::CollapsingState::load_with_default(
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
             ui.ctx(),
             egui_id,
             true,
