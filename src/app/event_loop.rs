@@ -196,7 +196,14 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                 // Don't grab cursor here — pointer lock requires a user gesture on web.
                 // Cursor will be captured on first mouse click via the event loop.
                 match AppState::new_web(window, false).await {
-                    Ok(state) => {
+                    Ok(mut state) => {
+                        // Force a resize with the actual window dimensions.
+                        // On Chrome, the initial inner_size() during GPU init may return
+                        // stale dimensions before CSS layout has settled (canvas is sized
+                        // via 100vw/100vh). Without this, egui lays out UI elements with
+                        // wrong screen bounds, making buttons invisible until a manual resize.
+                        let actual_size = window.inner_size();
+                        state.resize(actual_size);
                         *app_ref.borrow_mut() = Some(state);
                         log::info!("GPU initialized");
                     }
