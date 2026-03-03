@@ -5,6 +5,8 @@ pub(crate) mod sampling;
 use self::flora::{FloraInput, FloraLayer};
 use self::houses::{HousesInput, HousesLayer};
 
+use std::sync::Arc;
+
 use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{ChunkContent, ChunkTerrain};
 use crate::world_core::config::GameConfig;
@@ -23,7 +25,7 @@ pub struct ContentLayer {
 }
 
 impl ContentLayer {
-    pub fn new(seed: u32, config: &GameConfig, registry: PlantRegistry) -> Self {
+    pub fn new(seed: u32, config: &GameConfig, registry: Arc<PlantRegistry>) -> Self {
         Self {
             flora: FloraLayer::new(seed, config.sea_level, registry),
             houses: HousesLayer::new(seed, config.houses.clone(), config.sea_level),

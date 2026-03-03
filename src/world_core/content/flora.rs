@@ -11,10 +11,12 @@ use crate::world_core::chunk::{
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::layer::Layer;
 
+use std::sync::Arc;
+
 pub struct FloraLayer {
     seed: u32,
     sea_level: f32,
-    registry: PlantRegistry,
+    registry: Arc<PlantRegistry>,
 }
 
 pub struct FloraInput<'a> {
@@ -24,7 +26,7 @@ pub struct FloraInput<'a> {
 }
 
 impl FloraLayer {
-    pub fn new(seed: u32, sea_level: f32, registry: PlantRegistry) -> Self {
+    pub fn new(seed: u32, sea_level: f32, registry: Arc<PlantRegistry>) -> Self {
         Self {
             seed,
             sea_level,
@@ -71,6 +73,7 @@ impl FloraLayer {
         let seed_offset: u32 = if kind_filter == "shrub" { 2000 } else { 0 };
 
         let cells_per_side = (CHUNK_SIZE_METERS / spacing) as i32;
+        let mut eligible: Vec<(usize, f32)> = Vec::with_capacity(self.registry.species.len());
 
         for gz in 0..cells_per_side {
             for gx in 0..cells_per_side {
@@ -119,30 +122,31 @@ impl FloraLayer {
 
                 // Filter eligible species and compute weighted selection
                 let biome_str = biome_to_str(biome);
-                let eligible: Vec<(usize, f32)> = self
-                    .registry
-                    .species
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.kind == kind_filter)
-                    .filter(|(_, s)| s.placement.biomes.iter().any(|b| b == biome_str))
-                    .filter(|(_, s)| {
-                        moisture >= s.placement.min_moisture
-                            && moisture <= s.placement.max_moisture
-                            && height >= s.placement.min_altitude
-                            && height <= s.placement.max_altitude
-                            && slope <= s.placement.max_slope
-                    })
-                    .map(|(i, s)| {
-                        let w = s.placement.weight
-                            + if near_water {
-                                s.placement.near_water_boost
-                            } else {
-                                0.0
-                            };
-                        (i, w)
-                    })
-                    .collect();
+                eligible.clear();
+                for (i, s) in self.registry.species.iter().enumerate() {
+                    if s.kind != kind_filter {
+                        continue;
+                    }
+                    if !s.placement.biomes.iter().any(|b| b == biome_str) {
+                        continue;
+                    }
+                    if moisture < s.placement.min_moisture
+                        || moisture > s.placement.max_moisture
+                        || height < s.placement.min_altitude
+                        || height > s.placement.max_altitude
+                        || slope > s.placement.max_slope
+                    {
+                        continue;
+                    }
+                    let w = (s.placement.weight
+                        + if near_water {
+                            s.placement.near_water_boost
+                        } else {
+                            0.0
+                        })
+                    .max(0.0);
+                    eligible.push((i, w));
+                }
 
                 if eligible.is_empty() {
                     continue;
@@ -150,6 +154,9 @@ impl FloraLayer {
 
                 // Weighted random selection
                 let total_weight: f32 = eligible.iter().map(|(_, w)| w).sum();
+                if total_weight <= 0.0 {
+                    continue;
+                }
                 let select_rnd = hash_to_unit_float(hash4(
                     self.seed.wrapping_add(500 + seed_offset),
                     coord.x as u32,
@@ -192,7 +199,7 @@ impl FloraLayer {
                     position: Vec3::new(world_x, height, world_z),
                     rotation,
                     height: plant_height,
-                    species_index: selected_idx as u8,
+                    species_index: selected_idx,
                 });
             }
         }

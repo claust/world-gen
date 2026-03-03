@@ -82,6 +82,12 @@ impl WorldRenderer {
         }
     }
 
+    /// Rebuild species prototype meshes and clear instance caches for an updated registry.
+    pub fn update_registry(&mut self, device: &wgpu::Device, registry: PlantRegistry) {
+        self.instanced.rebuild_species(device, &registry);
+        self.registry = registry;
+    }
+
     pub fn set_sea_level(&mut self, _queue: &wgpu::Queue, sea_level: f32) {
         self.water.set_sea_level(sea_level);
     }

@@ -398,8 +398,14 @@ impl AppState {
         #[cfg(target_arch = "wasm32")]
         let threads = 1;
 
-        let arc_herbarium = std::sync::Arc::new(self.herbarium.clone());
-        let mut world = match WorldRuntime::new(&self.config, save_ref, threads, arc_herbarium) {
+        // Build registry from current herbarium — shared by renderer and runtime
+        let registry = crate::world_core::herbarium::PlantRegistry::from_herbarium(&self.herbarium);
+        self.world_renderer
+            .update_registry(&self.gpu.device, registry);
+        let arc_registry = std::sync::Arc::new(
+            crate::world_core::herbarium::PlantRegistry::from_herbarium(&self.herbarium),
+        );
+        let mut world = match WorldRuntime::new(&self.config, save_ref, threads, arc_registry) {
             Ok(world) => world,
             Err(err) => {
                 log::error!("failed to create world runtime: {err}");

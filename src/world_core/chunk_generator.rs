@@ -1,5 +1,7 @@
 use glam::IVec2;
 
+use std::sync::Arc;
+
 use crate::world_core::biome_map::BiomeLayer;
 use crate::world_core::chunk::ChunkData;
 use crate::world_core::config::GameConfig;
@@ -15,7 +17,7 @@ pub struct ChunkGenerator {
 }
 
 impl ChunkGenerator {
-    pub fn new(seed: u32, config: &GameConfig, registry: PlantRegistry) -> Self {
+    pub fn new(seed: u32, config: &GameConfig, registry: Arc<PlantRegistry>) -> Self {
         Self {
             terrain_layer: TerrainLayer::new(seed, config.heightmap.clone(), config.sea_level),
             biome_layer: BiomeLayer {
@@ -48,13 +50,14 @@ mod tests {
     use crate::world_core::config::GameConfig;
     use crate::world_core::herbarium::{Herbarium, PlantRegistry};
     use glam::IVec2;
+    use std::sync::Arc;
 
     #[test]
     fn plant_generation_is_deterministic_for_same_seed_and_chunk() {
         let config = GameConfig::default();
         let herb = Herbarium::default_seeded();
-        let reg_a = PlantRegistry::from_herbarium(&herb);
-        let reg_b = PlantRegistry::from_herbarium(&herb);
+        let reg_a = Arc::new(PlantRegistry::from_herbarium(&herb));
+        let reg_b = Arc::new(PlantRegistry::from_herbarium(&herb));
         let a = ChunkGenerator::new(42, &config, reg_a).generate_chunk(IVec2::new(3, -2));
         let b = ChunkGenerator::new(42, &config, reg_b).generate_chunk(IVec2::new(3, -2));
 

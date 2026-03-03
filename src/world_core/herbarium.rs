@@ -73,9 +73,9 @@ impl PlantRegistry {
         let mut seen_names = std::collections::HashSet::new();
 
         for entry in &herb.plants {
-            let species_name = &entry.species.name;
-            if !seen_names.insert(species_name.clone()) {
-                continue; // skip duplicates by species name
+            if !seen_names.insert(entry.name.clone()) {
+                log::warn!("skipping duplicate herbarium entry: {}", entry.name);
+                continue;
             }
 
             let bark = crate::world_core::color::hsl_to_linear(
@@ -90,7 +90,7 @@ impl PlantRegistry {
             );
 
             species.push(PlantSpeciesInfo {
-                name: species_name.clone(),
+                name: entry.name.clone(),
                 kind: entry.species.body_plan.kind.clone(),
                 crown_shape: entry.species.crown.shape.clone(),
                 crown_base: entry.species.crown.crown_base,
@@ -198,8 +198,9 @@ fn default_placement(name: &str) -> PlacementConfig {
 impl Herbarium {
     /// Create a new herbarium entry with Oak defaults and the given name.
     pub fn new_entry(name: String) -> HerbariumEntry {
-        let species: SpeciesConfig =
+        let mut species: SpeciesConfig =
             serde_json::from_str(SPECIES_PRESETS[0].1).expect("invalid oak.json");
+        species.name = name.clone();
         HerbariumEntry {
             name,
             species,

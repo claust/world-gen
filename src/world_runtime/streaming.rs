@@ -6,7 +6,7 @@ use glam::{IVec2, Vec3};
 use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::chunk_generator::ChunkGenerator;
 use crate::world_core::config::GameConfig;
-use crate::world_core::herbarium::{Herbarium, PlantRegistry};
+use crate::world_core::herbarium::PlantRegistry;
 
 pub struct StreamingStats {
     pub loaded_chunks: usize,
@@ -23,7 +23,7 @@ trait ChunkLoader {
         seed: u32,
         threads: usize,
         config: Arc<GameConfig>,
-        herbarium: Arc<Herbarium>,
+        registry: Arc<PlantRegistry>,
     ) -> anyhow::Result<Self>
     where
         Self: Sized;
@@ -50,7 +50,7 @@ mod threaded {
         receiver: Receiver<ChunkData>,
         pending: HashSet<IVec2>,
         config: Arc<GameConfig>,
-        herbarium: Arc<Herbarium>,
+        registry: Arc<PlantRegistry>,
     }
 
     impl ChunkLoader for ThreadedLoader {
@@ -58,7 +58,7 @@ mod threaded {
             seed: u32,
             threads: usize,
             config: Arc<GameConfig>,
-            herbarium: Arc<Herbarium>,
+            registry: Arc<PlantRegistry>,
         ) -> anyhow::Result<Self> {
             let _ = seed; // seed is passed per-dispatch, not stored
             let pool = ThreadPoolBuilder::new()
@@ -72,7 +72,7 @@ mod threaded {
                 receiver,
                 pending: HashSet::new(),
                 config,
-                herbarium,
+                registry,
             })
         }
 
@@ -83,9 +83,8 @@ mod threaded {
             self.pending.insert(coord);
             let tx = self.sender.clone();
             let config = Arc::clone(&self.config);
-            let herbarium = Arc::clone(&self.herbarium);
+            let registry = Arc::clone(&self.registry);
             self.pool.spawn(move || {
-                let registry = PlantRegistry::from_herbarium(&herbarium);
                 let generator = ChunkGenerator::new(seed, &config, registry);
                 let chunk = generator.generate_chunk(coord);
                 let _ = tx.send(chunk);
@@ -123,7 +122,7 @@ mod sync {
         seed: u32,
         queue: Vec<IVec2>,
         config: Arc<GameConfig>,
-        herbarium: Arc<Herbarium>,
+        registry: Arc<PlantRegistry>,
     }
 
     impl ChunkLoader for SyncLoader {
@@ -131,13 +130,13 @@ mod sync {
             seed: u32,
             _threads: usize,
             config: Arc<GameConfig>,
-            herbarium: Arc<Herbarium>,
+            registry: Arc<PlantRegistry>,
         ) -> anyhow::Result<Self> {
             Ok(Self {
                 seed,
                 queue: Vec::new(),
                 config,
-                herbarium,
+                registry,
             })
         }
 
@@ -148,8 +147,8 @@ mod sync {
         }
 
         fn poll(&mut self) -> Vec<ChunkData> {
-            let registry = PlantRegistry::from_herbarium(&self.herbarium);
-            let generator = ChunkGenerator::new(self.seed, &self.config, registry);
+            let generator =
+                ChunkGenerator::new(self.seed, &self.config, Arc::clone(&self.registry));
             let count = self.queue.len().min(2);
             let coords: Vec<IVec2> = self.queue.drain(..count).collect();
             coords
@@ -184,7 +183,7 @@ pub struct StreamingWorld {
     center_chunk: IVec2,
     loader: PlatformLoader,
     thread_count: usize,
-    herbarium: Arc<Herbarium>,
+    registry: Arc<PlantRegistry>,
 }
 
 impl StreamingWorld {
@@ -193,13 +192,12 @@ impl StreamingWorld {
         load_radius: i32,
         threads: usize,
         config: Arc<GameConfig>,
-        herbarium: Arc<Herbarium>,
+        registry: Arc<PlantRegistry>,
     ) -> anyhow::Result<Self> {
         let loader =
-            PlatformLoader::new_loader(seed, threads, Arc::clone(&config), Arc::clone(&herbarium))?;
+            PlatformLoader::new_loader(seed, threads, Arc::clone(&config), Arc::clone(&registry))?;
 
-        let registry = PlantRegistry::from_herbarium(&herbarium);
-        let generator = ChunkGenerator::new(seed, &config, registry);
+        let generator = ChunkGenerator::new(seed, &config, Arc::clone(&registry));
         let center_chunk = IVec2::ZERO;
         let initial_chunk = generator.generate_chunk(center_chunk);
         let mut loaded = HashMap::with_capacity(1);
@@ -212,7 +210,7 @@ impl StreamingWorld {
             center_chunk,
             loader,
             thread_count: threads,
-            herbarium,
+            registry,
         })
     }
 
@@ -248,7 +246,7 @@ impl StreamingWorld {
             self.seed,
             self.thread_count,
             new_config,
-            Arc::clone(&self.herbarium),
+            Arc::clone(&self.registry),
         ) {
             self.loaded.clear();
             self.loader = loader;

@@ -5,7 +5,7 @@ use glam::{IVec2, Vec3};
 
 use crate::world_core::chunk::ChunkData;
 use crate::world_core::config::GameConfig;
-use crate::world_core::herbarium::Herbarium;
+use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::save::SaveData;
 use crate::world_core::time::WorldClock;
 use crate::world_runtime::streaming::StreamingWorld;
@@ -32,7 +32,7 @@ impl WorldRuntime {
         config: &GameConfig,
         save: Option<&SaveData>,
         threads: usize,
-        herbarium: Arc<Herbarium>,
+        registry: Arc<PlantRegistry>,
     ) -> anyhow::Result<Self> {
         let seed = save.map(|s| s.world.seed).unwrap_or(config.world.seed);
         let start_hour = save
@@ -46,7 +46,7 @@ impl WorldRuntime {
         let arc_config = Arc::new(config.clone());
 
         Ok(Self {
-            streaming: StreamingWorld::new(seed, load_radius, threads, arc_config, herbarium)?,
+            streaming: StreamingWorld::new(seed, load_radius, threads, arc_config, registry)?,
             clock: WorldClock::new(start_hour, day_speed),
         })
     }

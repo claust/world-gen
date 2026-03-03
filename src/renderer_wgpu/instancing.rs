@@ -106,7 +106,7 @@ pub fn build_plant_instances(
     let mut per_species: Vec<Vec<InstanceData>> = vec![Vec::new(); species.len()];
 
     for p in plants {
-        let idx = p.species_index as usize;
+        let idx = p.species_index;
         if idx >= species.len() {
             continue;
         }

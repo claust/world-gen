@@ -129,6 +129,34 @@ impl InstancedPass {
         }
     }
 
+    /// Rebuild species prototype meshes from an updated registry.
+    /// Clears all plant instance buffers so `sync_chunks` rebuilds them.
+    pub fn rebuild_species(&mut self, device: &wgpu::Device, registry: &PlantRegistry) {
+        self.species_names.clear();
+        self.plant_instances.clear();
+
+        for (i, species) in registry.species.iter().enumerate() {
+            let key = format!("plant-{}", species.name);
+            let plant_mesh = plant_gen::generate_plant_mesh(&species.species_config, i as u32);
+            let verts: Vec<Vertex> = plant_mesh
+                .vertices
+                .iter()
+                .map(|v| Vertex {
+                    position: v.position,
+                    normal: v.normal,
+                    color: v.color,
+                })
+                .collect();
+            let mesh = upload_prototype(device, &verts, &plant_mesh.indices, &key);
+            self.models.models.insert(key.clone(), mesh);
+            self.species_names.push(key);
+        }
+
+        self.plant_instances = (0..registry.species.len())
+            .map(|_| HashMap::new())
+            .collect();
+    }
+
     /// Retains only chunks present in `world_chunks`, builds missing instance buffers.
     pub fn sync_chunks(
         &mut self,
