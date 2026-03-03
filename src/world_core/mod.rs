@@ -9,6 +9,7 @@ pub mod color;
 pub mod config;
 pub mod content;
 pub mod heightmap;
+pub mod herbarium;
 pub mod layer;
 pub mod plant_gen;
 pub mod save;

@@ -29,6 +29,40 @@ pub struct TreeData {
     pub height: f32,
 }
 
+/// Remove foliage blobs completely enclosed inside another blob.
+/// Blob A is inside blob B when `distance(A.center, B.center) + A.radius <= B.radius`.
+pub fn compact_foliage(blobs: &mut Vec<FoliageBlob>) {
+    let n = blobs.len();
+    if n <= 1 {
+        return;
+    }
+    let mut keep = vec![true; n];
+    for i in 0..n {
+        if !keep[i] {
+            continue;
+        }
+        for j in 0..n {
+            if i == j || !keep[j] {
+                continue;
+            }
+            let dist = blobs[i].center.distance(blobs[j].center);
+            if dist + blobs[j].radius <= blobs[i].radius {
+                keep[j] = false;
+            }
+        }
+    }
+    let mut w = 0;
+    for r in 0..n {
+        if keep[r] {
+            if w != r {
+                blobs[w] = blobs[r].clone();
+            }
+            w += 1;
+        }
+    }
+    blobs.truncate(w);
+}
+
 /// Compute a branch direction by tilting `parent_dir` by `insert_angle`, rotated around it by `rot_angle`.
 fn branch_dir_3d(parent_dir: Vec3, insert_angle_rad: f32, rot_rad: f32) -> Vec3 {
     let ref_vec = if parent_dir.y.abs() < 0.95 {

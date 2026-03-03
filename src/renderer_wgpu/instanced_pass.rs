@@ -2,29 +2,35 @@ use std::collections::HashMap;
 
 use glam::IVec2;
 
+use super::frustum::Frustum;
 use super::geometry::Vertex;
 use super::instancing::{
-    build_fern_instances, build_house_instances, build_tree_instances, upload_instances,
+    build_house_instances, build_plant_instances, upload_instances, upload_prototype,
     GpuInstanceChunk, InstanceData, ModelRegistry, PrototypeMesh,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
 use super::pipeline::create_render_pipeline;
 use crate::world_core::chunk::ChunkData;
+use crate::world_core::herbarium::PlantRegistry;
+use crate::world_core::plant_gen;
 
 pub struct InstancedPass {
     pipeline: wgpu::RenderPipeline,
     models: ModelRegistry,
-    tree_instances: HashMap<IVec2, GpuInstanceChunk>,
+    /// species_names[i] = model key in ModelRegistry for species i
+    species_names: Vec<String>,
+    /// plant_instances[species_index] = per-chunk instance buffers
+    plant_instances: Vec<HashMap<IVec2, GpuInstanceChunk>>,
     house_instances: HashMap<IVec2, GpuInstanceChunk>,
-    fern_instances: HashMap<IVec2, GpuInstanceChunk>,
 }
 
 impl InstancedPass {
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        render_format: wgpu::TextureFormat,
         pipeline_layout: &wgpu::PipelineLayout,
+        registry: &PlantRegistry,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("instanced-shader"),
@@ -82,38 +88,102 @@ impl InstancedPass {
 
         let pipeline = create_render_pipeline(
             device,
-            config,
+            render_format,
             pipeline_layout,
             &shader,
             &[vertex_layout, instance_layout],
             "instanced-pipeline",
         );
 
+        let mut models = ModelRegistry::new(device);
+        let mut species_names = Vec::new();
+
+        // Generate procedural meshes for each species using the full plant_gen system
+        for (i, species) in registry.species.iter().enumerate() {
+            let key = format!("plant-{}", species.name);
+            let plant_mesh = plant_gen::generate_plant_mesh(&species.species_config, i as u32);
+            let verts: Vec<Vertex> = plant_mesh
+                .vertices
+                .iter()
+                .map(|v| Vertex {
+                    position: v.position,
+                    normal: v.normal,
+                    color: v.color,
+                })
+                .collect();
+            let mesh = upload_prototype(device, &verts, &plant_mesh.indices, &key);
+            models.models.insert(key.clone(), mesh);
+            species_names.push(key);
+        }
+
+        let plant_instances = (0..registry.species.len())
+            .map(|_| HashMap::new())
+            .collect();
+
         Self {
             pipeline,
-            models: ModelRegistry::new(device),
-            tree_instances: HashMap::new(),
+            models,
+            species_names,
+            plant_instances,
             house_instances: HashMap::new(),
-            fern_instances: HashMap::new(),
         }
     }
 
+    /// Rebuild species prototype meshes from an updated registry.
+    /// Clears all plant instance buffers so `sync_chunks` rebuilds them.
+    pub fn rebuild_species(&mut self, device: &wgpu::Device, registry: &PlantRegistry) {
+        self.species_names.clear();
+        self.plant_instances.clear();
+
+        for (i, species) in registry.species.iter().enumerate() {
+            let key = format!("plant-{}", species.name);
+            let plant_mesh = plant_gen::generate_plant_mesh(&species.species_config, i as u32);
+            let verts: Vec<Vertex> = plant_mesh
+                .vertices
+                .iter()
+                .map(|v| Vertex {
+                    position: v.position,
+                    normal: v.normal,
+                    color: v.color,
+                })
+                .collect();
+            let mesh = upload_prototype(device, &verts, &plant_mesh.indices, &key);
+            self.models.models.insert(key.clone(), mesh);
+            self.species_names.push(key);
+        }
+
+        self.plant_instances = (0..registry.species.len())
+            .map(|_| HashMap::new())
+            .collect();
+    }
+
     /// Retains only chunks present in `world_chunks`, builds missing instance buffers.
-    pub fn sync_chunks(&mut self, device: &wgpu::Device, world_chunks: &HashMap<IVec2, ChunkData>) {
-        self.tree_instances
-            .retain(|coord, _| world_chunks.contains_key(coord));
+    pub fn sync_chunks(
+        &mut self,
+        device: &wgpu::Device,
+        world_chunks: &HashMap<IVec2, ChunkData>,
+        registry: &PlantRegistry,
+    ) {
+        // Retain only loaded chunks
+        for per_species in &mut self.plant_instances {
+            per_species.retain(|coord, _| world_chunks.contains_key(coord));
+        }
         self.house_instances
-            .retain(|coord, _| world_chunks.contains_key(coord));
-        self.fern_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
 
         for (coord, chunk) in world_chunks {
-            // Trees
-            if !self.tree_instances.contains_key(coord) {
-                if let Some(gpu) =
-                    upload_instances(device, &build_tree_instances(&chunk.content.trees), "tree")
-                {
-                    self.tree_instances.insert(*coord, gpu);
+            // Plants: check if any species is missing for this chunk
+            let any_missing = self.plant_instances.iter().any(|m| !m.contains_key(coord));
+
+            if any_missing {
+                let per_species = build_plant_instances(&chunk.content.plants, &registry.species);
+                for (i, instances) in per_species.into_iter().enumerate() {
+                    if !self.plant_instances[i].contains_key(coord) {
+                        let label = &self.species_names[i];
+                        if let Some(gpu) = upload_instances(device, &instances, label) {
+                            self.plant_instances[i].insert(*coord, gpu);
+                        }
+                    }
                 }
             }
 
@@ -127,21 +197,10 @@ impl InstancedPass {
                     self.house_instances.insert(*coord, gpu);
                 }
             }
-
-            // Ferns
-            if !self.fern_instances.contains_key(coord) {
-                if let Some(gpu) =
-                    upload_instances(device, &build_fern_instances(&chunk.content.ferns), "fern")
-                {
-                    self.fern_instances.insert(*coord, gpu);
-                }
-            }
         }
     }
 
-    /// Process hot-reloaded model data. Parses GLB bytes, uploads to GPU, and
-    /// swaps the prototype mesh. On a procedural→GLB tree transition, clears
-    /// instance buffers so `sync_chunks()` rebuilds them.
+    /// Process hot-reloaded model data. Only house is GLB-based now.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn apply_model_reloads(&mut self, device: &wgpu::Device, reloads: &[(String, Vec<u8>)]) {
         for (name, bytes) in reloads {
@@ -150,11 +209,8 @@ impl InstancedPass {
                     self.models.hot_swap(name, mesh);
                     log::info!("hot-reloaded model: {name}");
 
-                    match name.as_str() {
-                        "tree" => self.tree_instances.clear(),
-                        "house" => self.house_instances.clear(),
-                        "fern" => self.fern_instances.clear(),
-                        _ => {}
+                    if name == "house" {
+                        self.house_instances.clear();
                     }
                 }
                 Err(e) => {
@@ -180,25 +236,35 @@ impl InstancedPass {
         }
     }
 
-    pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+    pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, frustum: &Frustum) {
         pass.set_pipeline(&self.pipeline);
 
-        let draw_model =
-            |pass: &mut wgpu::RenderPass<'a>,
-             name: &str,
-             instances: &'a HashMap<IVec2, GpuInstanceChunk>| {
-                if let Some(mesh) = self.models.get(name) {
-                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                    pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    for inst in instances.values() {
-                        pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
-                        pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+        // Draw each species
+        for (i, key) in self.species_names.iter().enumerate() {
+            if let Some(mesh) = self.models.get(key) {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for (coord, inst) in &self.plant_instances[i] {
+                    if !frustum.is_chunk_visible(*coord) {
+                        continue;
                     }
+                    pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                    pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
                 }
-            };
+            }
+        }
 
-        draw_model(pass, "tree", &self.tree_instances);
-        draw_model(pass, "house", &self.house_instances);
-        draw_model(pass, "fern", &self.fern_instances);
+        // Draw houses
+        if let Some(mesh) = self.models.get("house") {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for (coord, inst) in &self.house_instances {
+                if !frustum.is_chunk_visible(*coord) {
+                    continue;
+                }
+                pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+            }
+        }
     }
 }

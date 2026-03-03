@@ -5,7 +5,7 @@ pub mod tree;
 
 use config::SpeciesConfig;
 use mesh::build_mesh;
-use tree::generate_tree;
+use tree::{compact_foliage, generate_tree};
 
 #[derive(Clone, Debug)]
 pub struct PlantVertex {
@@ -20,7 +20,8 @@ pub struct PlantMesh {
 }
 
 pub fn generate_plant_mesh(spec: &SpeciesConfig, seed: u32) -> PlantMesh {
-    let tree_data = generate_tree(spec, seed);
+    let mut tree_data = generate_tree(spec, seed);
+    compact_foliage(&mut tree_data.foliage);
     let (vertices, indices) = build_mesh(spec, &tree_data);
     PlantMesh { vertices, indices }
 }

@@ -7,8 +7,6 @@ pub struct GameConfig {
     pub sea_level: f32,
     pub biome: BiomeConfig,
     pub heightmap: HeightmapConfig,
-    pub flora: FloraConfig,
-    pub ferns: FernsConfig,
     pub houses: HousesConfig,
 }
 
@@ -19,8 +17,6 @@ impl Default for GameConfig {
             sea_level: 40.0,
             biome: BiomeConfig::default(),
             heightmap: HeightmapConfig::default(),
-            flora: FloraConfig::default(),
-            ferns: FernsConfig::default(),
             houses: HousesConfig::default(),
         }
     }
@@ -135,91 +131,6 @@ impl Default for HeightmapConfig {
             moisture_variation_weight: 0.25,
             moisture_variation_offset_x: 31.0,
             moisture_variation_offset_z: -11.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FloraConfig {
-    pub grid_spacing: f32,
-    pub forest_density_base: f32,
-    pub forest_density_scale: f32,
-    pub forest_density_min: f32,
-    pub forest_density_max: f32,
-    pub forest_moisture_center: f32,
-    pub grassland_density_base: f32,
-    pub grassland_density_scale: f32,
-    pub grassland_density_min: f32,
-    pub grassland_density_max: f32,
-    pub trunk_height_min: f32,
-    pub trunk_height_range: f32,
-    pub canopy_radius_min: f32,
-    pub canopy_radius_range: f32,
-    pub max_slope: f32,
-    pub min_height: f32,
-}
-
-impl Default for FloraConfig {
-    fn default() -> Self {
-        Self {
-            grid_spacing: 11.0,
-            forest_density_base: 0.42,
-            forest_density_scale: 0.7,
-            forest_density_min: 0.30,
-            forest_density_max: 0.72,
-            forest_moisture_center: 0.62,
-            grassland_density_base: 0.02,
-            grassland_density_scale: 0.08,
-            grassland_density_min: 0.01,
-            grassland_density_max: 0.11,
-            trunk_height_min: 4.5,
-            trunk_height_range: 7.5,
-            canopy_radius_min: 1.7,
-            canopy_radius_range: 2.5,
-            max_slope: 1.0,
-            min_height: -20.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FernsConfig {
-    pub grid_spacing: f32,
-    pub forest_density_offset: f32,
-    pub forest_density_scale: f32,
-    pub forest_density_max: f32,
-    pub grassland_density_offset: f32,
-    pub grassland_density_scale: f32,
-    pub grassland_density_max: f32,
-    pub scale_min: f32,
-    pub scale_range: f32,
-    pub max_slope: f32,
-    pub min_height: f32,
-    /// Extra density added near the waterline (sea level). Strongest right at
-    /// the shore and fading to zero at `waterline_range` meters above sea level.
-    pub waterline_boost: f32,
-    /// Height range (meters above sea level) over which the waterline boost applies.
-    pub waterline_range: f32,
-}
-
-impl Default for FernsConfig {
-    fn default() -> Self {
-        Self {
-            grid_spacing: 4.0,
-            forest_density_offset: 0.55,
-            forest_density_scale: 1.5,
-            forest_density_max: 0.6,
-            grassland_density_offset: 0.5,
-            grassland_density_scale: 0.15,
-            grassland_density_max: 0.05,
-            scale_min: 0.7,
-            scale_range: 0.7,
-            max_slope: 0.8,
-            min_height: -20.0,
-            waterline_boost: 0.7,
-            waterline_range: 8.0,
         }
     }
 }

@@ -10,8 +10,8 @@ use crate::world_core::plant_gen::{generate_plant_mesh, PlantMesh};
 const ORBIT_TARGET_Y: f32 = 7.0;
 const ORBIT_DISTANCE: f32 = 28.0;
 const ORBIT_HEIGHT: f32 = 10.0;
-/// Horizontal offset to compensate for the left egui panel.
-const ORBIT_PANEL_OFFSET: f32 = 3.0;
+/// Default panel width in logical pixels (must match PlantEditorPanel::default_width).
+const PANEL_WIDTH_PX: f32 = 400.0;
 const ORBIT_SPEED: f32 = 1.5;
 /// Slow auto-orbit speed (radians/sec) when idle.
 const AUTO_ORBIT_SPEED: f32 = 0.15;
@@ -22,39 +22,7 @@ const MOUSE_HEIGHT_SENSITIVITY: f32 = 0.05;
 const MIN_ORBIT_HEIGHT: f32 = 1.0;
 const MAX_ORBIT_HEIGHT: f32 = 25.0;
 
-const SPECIES_PRESETS: &[(&str, &str)] = &[
-    (
-        "Oak",
-        include_str!("../world_core/plant_gen/species/oak.json"),
-    ),
-    (
-        "Birch",
-        include_str!("../world_core/plant_gen/species/birch.json"),
-    ),
-    (
-        "Acacia",
-        include_str!("../world_core/plant_gen/species/acacia.json"),
-    ),
-    (
-        "Palm",
-        include_str!("../world_core/plant_gen/species/palm.json"),
-    ),
-    (
-        "Shrub",
-        include_str!("../world_core/plant_gen/species/shrub.json"),
-    ),
-    (
-        "Spruce",
-        include_str!("../world_core/plant_gen/species/spruce.json"),
-    ),
-    (
-        "Willow",
-        include_str!("../world_core/plant_gen/species/willow.json"),
-    ),
-];
-
 pub struct PlantEditorState {
-    all_species: Vec<(String, SpeciesConfig)>,
     base_species: SpeciesConfig,
     seed: u32,
     pub tree_mesh: Option<PrototypeMesh>,
@@ -77,21 +45,12 @@ pub struct PlantEditorState {
 }
 
 impl PlantEditorState {
-    pub fn new(device: &wgpu::Device, seed: u32) -> Self {
-        let all_species: Vec<(String, SpeciesConfig)> = SPECIES_PRESETS
-            .iter()
-            .map(|(name, json)| {
-                let spec: SpeciesConfig = serde_json::from_str(json)
-                    .unwrap_or_else(|e| panic!("invalid {name}.json: {e}"));
-                (name.to_string(), spec)
-            })
-            .collect();
-        let base_species = all_species[0].1.clone();
+    pub fn new(device: &wgpu::Device, seed: u32, species: &SpeciesConfig) -> Self {
+        let base_species = species.clone();
 
         let (ground_mesh, ground_instance) = create_ground_plane(device);
 
         Self {
-            all_species,
             base_species,
             seed,
             tree_mesh: None,
@@ -109,19 +68,8 @@ impl PlantEditorState {
         }
     }
 
-    pub fn species_names(&self) -> Vec<String> {
-        self.all_species
-            .iter()
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
-
-    /// Switch to a different base species. Returns the new PlantParams extracted from it.
-    pub fn set_base_species(&mut self, name: &str) -> PlantParams {
-        if let Some((_, spec)) = self.all_species.iter().find(|(n, _)| n == name) {
-            self.base_species = spec.clone();
-        }
-        PlantParams::from_species(&self.base_species)
+    pub fn current_species(&self, params: &PlantParams) -> SpeciesConfig {
+        merge_params(&self.base_species, params)
     }
 
     pub fn request_generation(&mut self, params: &PlantParams) {
@@ -192,12 +140,28 @@ impl PlantEditorState {
     }
 
     /// Compute camera position and look direction for the current orbit angle.
-    pub fn orbit_camera(&self) -> (glam::Vec3, f32, f32) {
+    /// Shifts the camera so the plant appears centered in the visible viewport
+    /// (accounting for the left editor panel).
+    pub fn orbit_camera(
+        &self,
+        screen_width: f32,
+        fov_y: f32,
+        aspect: f32,
+    ) -> (glam::Vec3, f32, f32) {
         let cos_a = self.orbit_angle.cos();
         let sin_a = self.orbit_angle.sin();
 
-        let cam_x = sin_a * ORBIT_DISTANCE + cos_a * ORBIT_PANEL_OFFSET;
-        let cam_z = cos_a * ORBIT_DISTANCE - sin_a * ORBIT_PANEL_OFFSET;
+        // The panel covers PANEL_WIDTH_PX of the left side. The visible center
+        // is shifted right by panel_frac/2 in screen space, which is panel_frac
+        // in NDC (since NDC width is 2). Convert to world-space offset at the
+        // orbit distance.
+        let panel_frac = (PANEL_WIDTH_PX / screen_width).min(0.5);
+        let offset = panel_frac * ORBIT_DISTANCE * (fov_y / 2.0).tan() * aspect;
+
+        // Shift camera to the left (perpendicular to orbit direction) so the
+        // plant projects to the right of screen center, into the visible area.
+        let cam_x = sin_a * ORBIT_DISTANCE - cos_a * offset;
+        let cam_z = cos_a * ORBIT_DISTANCE + sin_a * offset;
         let cam_pos = glam::Vec3::new(cam_x, self.orbit_height, cam_z);
 
         let target = glam::Vec3::new(0.0, ORBIT_TARGET_Y, 0.0);

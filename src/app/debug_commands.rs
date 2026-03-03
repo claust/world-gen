@@ -23,24 +23,21 @@ impl AppState {
                 CommandKind::SetDaySpeed { value } => {
                     let world = self.world.as_mut().unwrap();
                     match world.set_day_speed(value) {
-                        Ok(day_speed) => CommandAppliedEvent {
-                            id: command.id,
-                            frame: self.frame_index,
-                            ok: true,
-                            message: "day speed set".to_string(),
-                            day_speed: Some(day_speed),
-                            object_id: None,
-                            object_position: None,
-                        },
-                        Err(message) => CommandAppliedEvent {
-                            id: command.id,
-                            frame: self.frame_index,
-                            ok: false,
-                            message,
-                            day_speed: Some(world.day_speed()),
-                            object_id: None,
-                            object_position: None,
-                        },
+                        Ok(day_speed) => {
+                            let mut evt = CommandAppliedEvent::ok(
+                                command.id,
+                                self.frame_index,
+                                "day speed set".to_string(),
+                            );
+                            evt.day_speed = Some(day_speed);
+                            evt
+                        }
+                        Err(message) => {
+                            let mut evt =
+                                CommandAppliedEvent::err(command.id, self.frame_index, message);
+                            evt.day_speed = Some(world.day_speed());
+                            evt
+                        }
                     }
                 }
                 CommandKind::SetMoveKey { key, pressed } => {
@@ -66,6 +63,7 @@ impl AppState {
                         day_speed: None,
                         object_id: None,
                         object_position: None,
+                        data: None,
                     }
                 }
                 CommandKind::SetCameraPosition { x, y, z } => {
@@ -78,6 +76,7 @@ impl AppState {
                         day_speed: None,
                         object_id: None,
                         object_position: None,
+                        data: None,
                     }
                 }
                 CommandKind::SetCameraLook { yaw, pitch } => {
@@ -91,6 +90,7 @@ impl AppState {
                         day_speed: None,
                         object_id: None,
                         object_position: None,
+                        data: None,
                     }
                 }
                 CommandKind::FindNearest { kind } => {
@@ -107,28 +107,19 @@ impl AppState {
                                     .enumerate()
                                     .map(|(i, h)| (i, h.position)),
                             ),
-                            ObjectKind::Tree => Box::new(
+                            ObjectKind::Tree | ObjectKind::Fern => Box::new(
                                 chunk
                                     .content
-                                    .trees
+                                    .plants
                                     .iter()
                                     .enumerate()
-                                    .map(|(i, t)| (i, t.position)),
-                            ),
-                            ObjectKind::Fern => Box::new(
-                                chunk
-                                    .content
-                                    .ferns
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, f)| (i, f.position)),
+                                    .map(|(i, p)| (i, p.position)),
                             ),
                         };
 
                         let prefix = match kind {
                             ObjectKind::House => "house",
-                            ObjectKind::Tree => "tree",
-                            ObjectKind::Fern => "fern",
+                            ObjectKind::Tree | ObjectKind::Fern => "plant",
                         };
 
                         for (idx, pos) in items {
@@ -150,8 +141,7 @@ impl AppState {
                                 "nearest {} at ({:.1}, {:.1}, {:.1})",
                                 match kind {
                                     ObjectKind::House => "house",
-                                    ObjectKind::Tree => "tree",
-                                    ObjectKind::Fern => "fern",
+                                    ObjectKind::Tree | ObjectKind::Fern => "plant",
                                 },
                                 pos[0],
                                 pos[1],
@@ -160,23 +150,19 @@ impl AppState {
                             day_speed: None,
                             object_id: Some(id),
                             object_position: Some(pos),
+                            data: None,
                         },
-                        None => CommandAppliedEvent {
-                            id: command.id,
-                            frame: self.frame_index,
-                            ok: false,
-                            message: format!(
+                        None => CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!(
                                 "no {} found in loaded chunks",
                                 match kind {
                                     ObjectKind::House => "houses",
-                                    ObjectKind::Tree => "trees",
-                                    ObjectKind::Fern => "ferns",
+                                    ObjectKind::Tree | ObjectKind::Fern => "plants",
                                 }
                             ),
-                            day_speed: None,
-                            object_id: None,
-                            object_position: None,
-                        },
+                        ),
                     }
                 }
                 CommandKind::LookAtObject {
@@ -210,33 +196,81 @@ impl AppState {
                                 day_speed: None,
                                 object_id: Some(object_id.clone()),
                                 object_position: Some([target.x, target.y, target.z]),
+                                data: None,
                             }
                         }
-                        None => CommandAppliedEvent {
-                            id: command.id,
-                            frame: self.frame_index,
-                            ok: false,
-                            message: format!("object '{}' not found", object_id),
-                            day_speed: None,
-                            object_id: None,
-                            object_position: None,
-                        },
+                        None => CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("object '{}' not found", object_id),
+                        ),
                     }
                 }
                 CommandKind::TakeScreenshot => {
                     if self.screenshot_pending.is_some() {
-                        CommandAppliedEvent {
-                            id: command.id,
-                            frame: self.frame_index,
-                            ok: false,
-                            message: "screenshot already pending".to_string(),
-                            day_speed: None,
-                            object_id: None,
-                            object_position: None,
-                        }
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            "screenshot already pending".to_string(),
+                        )
                     } else {
                         self.screenshot_pending = Some(command.id);
                         continue;
+                    }
+                }
+                CommandKind::UiSnapshot => {
+                    let snapshot = self.ui_registry.take_snapshot(self.screen_name());
+                    let data = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
+                    let mut evt = CommandAppliedEvent::ok(
+                        command.id,
+                        self.frame_index,
+                        format!(
+                            "ui snapshot: {} elements on {}",
+                            snapshot.elements.len(),
+                            snapshot.screen
+                        ),
+                    );
+                    evt.data = Some(data);
+                    evt
+                }
+                CommandKind::UiClick { ref element_id } => {
+                    if !self.ui_registry.has_element(element_id) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("ui click failed: element '{}' not found", element_id),
+                        )
+                    } else {
+                        self.ui_registry.push_action(crate::ui::UiAction::Click {
+                            element_id: element_id.clone(),
+                        });
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("ui click queued: {}", element_id),
+                        )
+                    }
+                }
+                CommandKind::UiSetValue {
+                    ref element_id,
+                    ref value,
+                } => {
+                    if !self.ui_registry.has_element(element_id) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("ui set_value failed: element '{}' not found", element_id),
+                        )
+                    } else {
+                        self.ui_registry.push_action(crate::ui::UiAction::SetValue {
+                            element_id: element_id.clone(),
+                            value: value.clone(),
+                        });
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("ui set_value queued: {} = {}", element_id, value),
+                        )
                     }
                 }
                 CommandKind::PressKey { key } => {
@@ -270,6 +304,7 @@ impl AppState {
                         day_speed: None,
                         object_id: None,
                         object_position: None,
+                        data: None,
                     }
                 }
             };
@@ -320,7 +355,7 @@ fn parse_and_find_object(
     chunks: &std::collections::HashMap<glam::IVec2, crate::world_core::chunk::ChunkData>,
 ) -> Option<Vec3> {
     // Format: "{type}-{chunk_x}_{chunk_z}-{index}"
-    // Use first '-' and last '-' to handle negative chunk coordinates (e.g. "fern--2_3-0")
+    // Use first '-' and last '-' to handle negative chunk coordinates (e.g. "plant--2_3-0")
     let first_dash = object_id.find('-')?;
     let kind = &object_id[..first_dash];
     let rest = &object_id[first_dash + 1..];
@@ -337,8 +372,7 @@ fn parse_and_find_object(
 
     match kind {
         "house" => chunk.content.houses.get(index).map(|h| h.position),
-        "tree" => chunk.content.trees.get(index).map(|t| t.position),
-        "fern" => chunk.content.ferns.get(index).map(|f| f.position),
+        "plant" | "tree" | "fern" => chunk.content.plants.get(index).map(|p| p.position),
         _ => None,
     }
 }

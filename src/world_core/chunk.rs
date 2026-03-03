@@ -7,11 +7,11 @@ pub const CHUNK_GRID_RESOLUTION: usize = 129;
 pub const SEA_LEVEL: f32 = 40.0;
 
 #[derive(Clone)]
-pub struct TreeInstance {
+pub struct PlantInstance {
     pub position: Vec3,
-    pub trunk_height: f32,
-    pub canopy_radius: f32,
     pub rotation: f32,
+    pub height: f32,
+    pub species_index: usize,
 }
 
 #[derive(Clone)]
@@ -20,18 +20,10 @@ pub struct HouseInstance {
     pub rotation: f32,
 }
 
-#[derive(Clone)]
-pub struct FernInstance {
-    pub position: Vec3,
-    pub rotation: f32,
-    pub scale: f32,
-}
-
 #[derive(Clone, Default)]
 pub struct ChunkContent {
-    pub trees: Vec<TreeInstance>,
+    pub plants: Vec<PlantInstance>,
     pub houses: Vec<HouseInstance>,
-    pub ferns: Vec<FernInstance>,
 }
 
 #[derive(Clone)]
