@@ -11,7 +11,7 @@ pub struct PlantInstance {
     pub position: Vec3,
     pub rotation: f32,
     pub height: f32,
-    pub species_index: u8,
+    pub species_index: usize,
 }
 
 #[derive(Clone)]
