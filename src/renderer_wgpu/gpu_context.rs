@@ -64,16 +64,25 @@ impl GpuContext {
             .find(|f| f.is_srgb())
             .unwrap_or(capabilities.formats[0]);
 
-        // Ensure we always render in sRGB for consistent colors across backends.
-        // If the surface format is already sRGB, render_format == format.
-        // Otherwise, add the sRGB variant as a view format.
+        // Prefer sRGB rendering for consistent colors across backends.
+        // Metal exposes sRGB surface formats directly; WebGPU/Chrome only
+        // exposes linear formats, so we map known Unorm variants to their
+        // sRGB counterparts. If a format has no known sRGB variant we fall
+        // back to linear and log a warning.
         let render_format = if format.is_srgb() {
             format
         } else {
             match format {
                 wgpu::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8UnormSrgb,
                 wgpu::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8UnormSrgb,
-                other => other,
+                other => {
+                    log::warn!(
+                        "No known sRGB variant for surface format {:?}; \
+                         colors may appear more saturated",
+                        other
+                    );
+                    other
+                }
             }
         };
         let view_formats = if render_format != format {
