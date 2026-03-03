@@ -947,9 +947,9 @@ impl PlantEditorPanel {
 
                     ui.add_space(12.0);
 
-                    registry.register_button("btn-back-to-menu", "Back to Menu");
-                    if ui.button("Back to Menu").clicked()
-                        || registry.consume_click("btn-back-to-menu")
+                    registry.register_button("btn-back-to-herbarium", "Back to Herbarium");
+                    if ui.button("Back to Herbarium").clicked()
+                        || registry.consume_click("btn-back-to-herbarium")
                     {
                         action = Some(EditorAction::Back);
                     }

@@ -1,5 +1,5 @@
 use egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, Vec2};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorIcon, Window};
 
@@ -133,6 +133,50 @@ impl EguiBridge {
                 }
 
                 self.ctx.wants_keyboard_input()
+            }
+
+            WindowEvent::Touch(touch) => {
+                let pos = Pos2::new(
+                    touch.location.x as f32 / self.pixels_per_point,
+                    touch.location.y as f32 / self.pixels_per_point,
+                );
+                match touch.phase {
+                    TouchPhase::Started => {
+                        self.pointer_pos = pos;
+                        self.events.push(Event::PointerMoved(pos));
+                        self.events.push(Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: self.modifiers,
+                        });
+                    }
+                    TouchPhase::Moved => {
+                        self.pointer_pos = pos;
+                        self.events.push(Event::PointerMoved(pos));
+                    }
+                    TouchPhase::Ended => {
+                        self.pointer_pos = pos;
+                        self.events.push(Event::PointerMoved(pos));
+                        self.events.push(Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: self.modifiers,
+                        });
+                        self.events.push(Event::PointerGone);
+                    }
+                    TouchPhase::Cancelled => {
+                        self.events.push(Event::PointerButton {
+                            pos: self.pointer_pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: self.modifiers,
+                        });
+                        self.events.push(Event::PointerGone);
+                    }
+                }
+                self.ctx.wants_pointer_input()
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
