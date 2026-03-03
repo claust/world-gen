@@ -167,6 +167,12 @@ impl EguiBridge {
                         self.events.push(Event::PointerGone);
                     }
                     TouchPhase::Cancelled => {
+                        self.events.push(Event::PointerButton {
+                            pos: self.pointer_pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: self.modifiers,
+                        });
                         self.events.push(Event::PointerGone);
                     }
                 }
