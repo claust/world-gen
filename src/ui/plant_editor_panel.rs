@@ -252,6 +252,8 @@ pub enum EditorAction {
 pub struct PlantEditorPanel {
     params: PlantParams,
     last_applied: PlantParams,
+    /// The initial params for the current species, used by "Reset Defaults".
+    initial_params: PlantParams,
     dirty: bool,
 }
 
@@ -259,7 +261,8 @@ impl PlantEditorPanel {
     /// Push new params from outside (e.g. after a species preset change).
     pub fn set_params(&mut self, params: PlantParams) {
         self.params = params.clone();
-        self.last_applied = params;
+        self.last_applied = params.clone();
+        self.initial_params = params;
         self.dirty = false;
     }
 
@@ -937,7 +940,7 @@ impl PlantEditorPanel {
                         if ui.button("Reset Defaults").clicked()
                             || registry.consume_click("btn-reset-defaults-editor")
                         {
-                            self.params = PlantParams::default();
+                            self.params = self.initial_params.clone();
                             self.dirty = true;
                         }
                     });

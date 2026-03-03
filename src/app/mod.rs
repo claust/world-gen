@@ -307,16 +307,8 @@ impl AppState {
     }
 
     fn enter_plant_editor_new_plant(&mut self) {
-        use crate::world_core::herbarium::HerbariumEntry;
-        use crate::world_core::plant_gen::config::SpeciesConfig;
-
-        let default_species: SpeciesConfig =
-            serde_json::from_str(include_str!("../world_core/plant_gen/species/oak.json"))
-                .expect("invalid oak.json");
-        let entry = HerbariumEntry {
-            name: format!("Plant {}", self.herbarium.plants.len() + 1),
-            species: default_species,
-        };
+        let name = format!("Plant {}", self.herbarium.plants.len() + 1);
+        let entry = crate::world_core::herbarium::Herbarium::new_entry(name);
         self.herbarium.plants.push(entry);
         let index = self.herbarium.plants.len() - 1;
         self.enter_plant_editor_for_entry(index);

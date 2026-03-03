@@ -65,7 +65,7 @@ impl HerbariumUi {
                         // Center the grid
                         let grid_width =
                             cols as f32 * tile_size.x + (cols - 1).max(0) as f32 * spacing;
-                        let left_margin = (available_width - grid_width) / 2.0;
+                        let left_margin = ((available_width - grid_width) / 2.0).max(0.0);
 
                         let total_items = herbarium.plants.len() + 1; // +1 for "+" tile
                         let rows = total_items.div_ceil(cols);
@@ -208,7 +208,7 @@ impl HerbariumUi {
 
 fn hsl_to_color32(h: f32, s: f32, l: f32, alpha: u8) -> Color32 {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let h_prime = h / 60.0;
+    let h_prime = h.rem_euclid(360.0) / 60.0;
     let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
     let (r1, g1, b1) = match h_prime as u32 {
         0 => (c, x, 0.0),

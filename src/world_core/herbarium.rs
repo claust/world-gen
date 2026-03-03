@@ -24,6 +24,13 @@ const SPECIES_PRESETS: &[(&str, &str)] = &[
 ];
 
 impl Herbarium {
+    /// Create a new herbarium entry with Oak defaults and the given name.
+    pub fn new_entry(name: String) -> HerbariumEntry {
+        let species: SpeciesConfig =
+            serde_json::from_str(SPECIES_PRESETS[0].1).expect("invalid oak.json");
+        HerbariumEntry { name, species }
+    }
+
     pub fn default_seeded() -> Self {
         let plants = SPECIES_PRESETS
             .iter()
