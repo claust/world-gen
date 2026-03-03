@@ -22,7 +22,7 @@ pub struct WaterPass {
 impl WaterPass {
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        render_format: wgpu::TextureFormat,
         pipeline_layout: &wgpu::PipelineLayout,
         sea_level: f32,
     ) -> Self {
@@ -55,7 +55,7 @@ impl WaterPass {
 
         let pipeline = create_water_pipeline(
             device,
-            config,
+            render_format,
             pipeline_layout,
             &shader,
             std::slice::from_ref(&vertex_layout),

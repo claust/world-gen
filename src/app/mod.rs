@@ -96,6 +96,7 @@ impl AppState {
             &gpu.device,
             &gpu.queue,
             &gpu.config,
+            gpu.render_format,
             config.sea_level,
             config.world.load_radius,
         );
@@ -116,7 +117,7 @@ impl AppState {
 
         let scale_factor = window.scale_factor() as f32;
         let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
-        let egui_pass = EguiPass::new(&gpu.device, gpu.config.format);
+        let egui_pass = EguiPass::new(&gpu.device, gpu.render_format);
         let config_panel = ConfigPanel::new(&config);
 
         Ok(Self {
@@ -159,6 +160,7 @@ impl AppState {
             &gpu.device,
             &gpu.queue,
             &gpu.config,
+            gpu.render_format,
             config.sea_level,
             config.world.load_radius,
         );
@@ -169,7 +171,7 @@ impl AppState {
 
         let scale_factor = window.scale_factor() as f32;
         let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
-        let egui_pass = EguiPass::new(&gpu.device, gpu.config.format);
+        let egui_pass = EguiPass::new(&gpu.device, gpu.render_format);
         let config_panel = ConfigPanel::new(&config);
 
         Ok(Self {
@@ -624,9 +626,10 @@ impl AppState {
 
     fn render(&mut self) -> Result<(), SurfaceError> {
         let output = self.gpu.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.gpu.render_format),
+            ..Default::default()
+        });
 
         let mut encoder = self
             .gpu

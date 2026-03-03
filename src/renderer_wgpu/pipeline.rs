@@ -2,7 +2,7 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 pub fn create_render_pipeline(
     device: &wgpu::Device,
-    config: &wgpu::SurfaceConfiguration,
+    render_format: wgpu::TextureFormat,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     vertex_buffers: &[wgpu::VertexBufferLayout<'_>],
@@ -22,7 +22,7 @@ pub fn create_render_pipeline(
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: config.format,
+                format: render_format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -53,7 +53,7 @@ pub fn create_render_pipeline(
 /// culling, and depth-write disabled — suitable for translucent water.
 pub fn create_water_pipeline(
     device: &wgpu::Device,
-    config: &wgpu::SurfaceConfiguration,
+    render_format: wgpu::TextureFormat,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     vertex_buffers: &[wgpu::VertexBufferLayout<'_>],
@@ -73,7 +73,7 @@ pub fn create_water_pipeline(
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: config.format,
+                format: render_format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -102,7 +102,7 @@ pub fn create_water_pipeline(
 
 pub fn create_sky_pipeline(
     device: &wgpu::Device,
-    config: &wgpu::SurfaceConfiguration,
+    render_format: wgpu::TextureFormat,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     label: &str,
@@ -121,7 +121,7 @@ pub fn create_sky_pipeline(
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: config.format,
+                format: render_format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],

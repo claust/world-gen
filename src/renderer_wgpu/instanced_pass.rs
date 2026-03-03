@@ -23,7 +23,7 @@ pub struct InstancedPass {
 impl InstancedPass {
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        render_format: wgpu::TextureFormat,
         pipeline_layout: &wgpu::PipelineLayout,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -82,7 +82,7 @@ impl InstancedPass {
 
         let pipeline = create_render_pipeline(
             device,
-            config,
+            render_format,
             pipeline_layout,
             &shader,
             &[vertex_layout, instance_layout],
