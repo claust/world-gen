@@ -715,11 +715,15 @@ impl ConfigPanel {
 fn toggle_section(ui: &mut egui::Ui, registry: &mut UiRegistry, btn_id: &str, label: &str) {
     if registry.consume_click(btn_id) {
         let egui_id = ui.make_persistent_id(label);
-        if let Some(mut state) = egui::collapsing_header::CollapsingState::load(ui.ctx(), egui_id) {
-            let was_open = state.is_open();
-            state.set_open(!was_open);
-            state.store(ui.ctx());
-        }
+        // Ensure a collapsing state exists; if none is stored yet, create one with a default.
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default(
+            ui.ctx(),
+            egui_id,
+            true,
+        );
+        let was_open = state.is_open();
+        state.set_open(!was_open);
+        state.store(ui.ctx());
     }
 }
 
