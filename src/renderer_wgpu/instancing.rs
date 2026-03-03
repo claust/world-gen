@@ -5,7 +5,8 @@ use wgpu::util::DeviceExt;
 
 use super::geometry::Vertex;
 use super::model_loader;
-use crate::world_core::chunk::{FernInstance, HouseInstance, TreeInstance};
+use crate::world_core::chunk::{HouseInstance, PlantInstance};
+use crate::world_core::herbarium::PlantSpeciesInfo;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Zeroable, Pod)]
@@ -28,7 +29,7 @@ pub struct GpuInstanceChunk {
     pub instance_count: u32,
 }
 
-/// Registry of named prototype meshes loaded from GLB models in `assets/models/`.
+/// Registry of named prototype meshes.
 pub struct ModelRegistry {
     pub models: HashMap<String, PrototypeMesh>,
 }
@@ -37,20 +38,18 @@ impl ModelRegistry {
     pub fn new(device: &wgpu::Device) -> Self {
         let mut models = HashMap::new();
 
+        // Only load the house model from GLB; plant meshes are generated procedurally
         #[cfg(not(target_arch = "wasm32"))]
-        for name in ["tree", "house", "fern"] {
-            if let Some(mesh) = model_loader::try_load_model(device, name) {
-                models.insert(name.to_string(), mesh);
+        {
+            if let Some(mesh) = model_loader::try_load_model(device, "house") {
+                models.insert("house".to_string(), mesh);
             }
         }
 
         #[cfg(target_arch = "wasm32")]
         {
-            let embedded: &[(&str, &[u8])] = &[
-                ("tree", include_bytes!("../../assets/models/tree.glb")),
-                ("house", include_bytes!("../../assets/models/house.glb")),
-                ("fern", include_bytes!("../../assets/models/fern.glb")),
-            ];
+            let embedded: &[(&str, &[u8])] =
+                &[("house", include_bytes!("../../assets/models/house.glb"))];
             for (name, bytes) in embedded {
                 match model_loader::load_glb(device, bytes, name) {
                     Ok(mesh) => {
@@ -98,36 +97,32 @@ pub fn upload_prototype(
     }
 }
 
-/// Build instances for a tree model (single mesh with baked trunk + canopy).
-/// Uses average height as uniform scale, positioned at the tree base.
-pub fn build_tree_instances(trees: &[TreeInstance]) -> Vec<InstanceData> {
-    trees
-        .iter()
-        .map(|t| {
-            let total_height = t.trunk_height + t.canopy_radius * 2.0;
-            let scale = total_height / 10.0; // normalize to ~10m reference height
-            InstanceData {
-                position: [t.position.x, t.position.y, t.position.z],
-                rotation_y: t.rotation,
-                scale: [scale, scale, scale],
-                _pad: 0.0,
-                color: [1.0, 1.0, 1.0, 1.0], // colors baked in the model
-            }
-        })
-        .collect()
-}
+/// Build per-species instance data from plant instances.
+/// Returns a Vec where index i = instances for species i.
+pub fn build_plant_instances(
+    plants: &[PlantInstance],
+    species: &[PlantSpeciesInfo],
+) -> Vec<Vec<InstanceData>> {
+    let mut per_species: Vec<Vec<InstanceData>> = vec![Vec::new(); species.len()];
 
-pub fn build_fern_instances(ferns: &[FernInstance]) -> Vec<InstanceData> {
-    ferns
-        .iter()
-        .map(|f| InstanceData {
-            position: [f.position.x, f.position.y, f.position.z],
-            rotation_y: f.rotation,
-            scale: [f.scale, f.scale, f.scale],
+    for p in plants {
+        let idx = p.species_index;
+        if idx >= species.len() {
+            continue;
+        }
+        let ref_height = (species[idx].height_range[0] + species[idx].height_range[1]) * 0.5;
+        let scale = p.height / ref_height.max(0.01);
+
+        per_species[idx].push(InstanceData {
+            position: [p.position.x, p.position.y, p.position.z],
+            rotation_y: p.rotation,
+            scale: [scale, scale, scale],
             _pad: 0.0,
-            color: [1.0, 1.0, 1.0, 1.0],
-        })
-        .collect()
+            color: [1.0, 1.0, 1.0, 1.0], // colors baked in procedural mesh
+        });
+    }
+
+    per_species
 }
 
 pub fn build_house_instances(houses: &[HouseInstance]) -> Vec<InstanceData> {

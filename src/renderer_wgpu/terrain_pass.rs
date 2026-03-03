@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use glam::IVec2;
 
+use super::frustum::Frustum;
 use super::geometry::Vertex;
 use super::pipeline::create_render_pipeline;
 use super::terrain_compute::{GpuTerrainChunk, TerrainComputePipeline};
@@ -97,13 +98,16 @@ impl TerrainPass {
         dispatched
     }
 
-    pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+    pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, frustum: &Frustum) {
         pass.set_pipeline(&self.pipeline);
         pass.set_index_buffer(
             self.compute.shared_index_buffer.slice(..),
             wgpu::IndexFormat::Uint32,
         );
-        for chunk in self.chunks.values() {
+        for (coord, chunk) in &self.chunks {
+            if !frustum.is_chunk_visible(*coord) {
+                continue;
+            }
             pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
             pass.draw_indexed(0..self.compute.shared_index_count, 0, 0..1);
         }

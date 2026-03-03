@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use glam::{IVec2, Mat4, Vec3};
 
+use super::frustum::Frustum;
 use super::hud_pass::HudPass;
 use super::instanced_pass::InstancedPass;
 use super::instancing::{GpuInstanceChunk, PrototypeMesh};
@@ -13,6 +14,7 @@ use super::terrain_pass::TerrainPass;
 use super::water_pass::WaterPass;
 use crate::renderer_wgpu::pipeline::DepthTexture;
 use crate::world_core::chunk::ChunkData;
+use crate::world_core::herbarium::PlantRegistry;
 
 pub struct WorldRenderer {
     frame_bg: FrameBindGroup,
@@ -27,6 +29,8 @@ pub struct WorldRenderer {
     fog_color: [f32; 3],
     fog_start: f32,
     fog_end: f32,
+    registry: PlantRegistry,
+    view_proj: Mat4,
 }
 
 impl WorldRenderer {
@@ -37,6 +41,7 @@ impl WorldRenderer {
         render_format: wgpu::TextureFormat,
         sea_level: f32,
         load_radius: i32,
+        registry: PlantRegistry,
     ) -> Self {
         let frame_bg = FrameBindGroup::new(device);
         let terrain_material = MaterialBindGroup::new_terrain(device);
@@ -50,7 +55,7 @@ impl WorldRenderer {
         let sky = SkyPass::new(device, render_format, &pipeline_layout);
         let terrain = TerrainPass::new(device, render_format, &pipeline_layout);
         let water = WaterPass::new(device, render_format, &pipeline_layout, sea_level);
-        let instanced = InstancedPass::new(device, render_format, &pipeline_layout);
+        let instanced = InstancedPass::new(device, render_format, &pipeline_layout, &registry);
         let hud = HudPass::new(device, queue, render_format);
         let minimap = MinimapPass::new(device, queue, render_format);
 
@@ -72,7 +77,15 @@ impl WorldRenderer {
             fog_color,
             fog_start,
             fog_end,
+            registry,
+            view_proj: Mat4::IDENTITY,
         }
+    }
+
+    /// Rebuild species prototype meshes and clear instance caches for an updated registry.
+    pub fn update_registry(&mut self, device: &wgpu::Device, registry: PlantRegistry) {
+        self.instanced.rebuild_species(device, &registry);
+        self.registry = registry;
     }
 
     pub fn set_sea_level(&mut self, _queue: &wgpu::Queue, sea_level: f32) {
@@ -90,13 +103,14 @@ impl WorldRenderer {
     }
 
     pub fn update_frame(
-        &self,
+        &mut self,
         queue: &wgpu::Queue,
         view_proj: Mat4,
         camera_position: Vec3,
         elapsed: f32,
         hour: f32,
     ) {
+        self.view_proj = view_proj;
         self.frame_bg.update(
             queue,
             &FrameUniform::new(view_proj, camera_position, elapsed, hour),
@@ -174,7 +188,7 @@ impl WorldRenderer {
         }
 
         self.water.sync_chunks(device, chunks);
-        self.instanced.sync_chunks(device, chunks);
+        self.instanced.sync_chunks(device, chunks, &self.registry);
         self.minimap.sync_chunks(queue, chunks);
     }
 
@@ -206,10 +220,11 @@ impl WorldRenderer {
         pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
 
+        let frustum = Frustum::from_view_proj(self.view_proj);
         self.sky.render(pass);
-        self.terrain.render(pass);
-        self.instanced.render(pass);
-        self.water.render(pass);
+        self.terrain.render(pass, &frustum);
+        self.instanced.render(pass, &frustum);
+        self.water.render(pass, &frustum);
         self.hud.render(pass);
         self.minimap.render(pass);
     }
