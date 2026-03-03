@@ -5,8 +5,12 @@ use super::ui_registry::UiRegistry;
 pub enum MenuAction {
     NewGame,
     ResumeGame,
-    PlantEditor,
+    Herbarium,
+    OpenPlantEditor(usize),
+    NewPlant,
+    LeaveHerbarium,
     LeaveEditor,
+    DeletePlant,
     Exit,
 }
 
@@ -78,16 +82,16 @@ impl StartMenu {
 
                     ui.add_space(12.0);
 
-                    registry.register_button("btn-plant-editor", "Plant Editor");
+                    registry.register_button("btn-herbarium", "Herbarium");
                     if ui
                         .add_sized(
                             button_size,
-                            egui::Button::new(RichText::new("Plant Editor").size(20.0)),
+                            egui::Button::new(RichText::new("Herbarium").size(20.0)),
                         )
                         .clicked()
-                        || registry.consume_click("btn-plant-editor")
+                        || registry.consume_click("btn-herbarium")
                     {
-                        action = Some(MenuAction::PlantEditor);
+                        action = Some(MenuAction::Herbarium);
                     }
 
                     #[cfg(not(target_arch = "wasm32"))]

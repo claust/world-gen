@@ -243,34 +243,19 @@ impl PlantParams {
     }
 }
 
+pub enum EditorAction {
+    Back,
+    Delete,
+}
+
+#[derive(Default)]
 pub struct PlantEditorPanel {
     params: PlantParams,
     last_applied: PlantParams,
     dirty: bool,
-    selected_species: String,
-    species_names: Vec<String>,
-    species_changed: Option<String>,
-}
-
-impl Default for PlantEditorPanel {
-    fn default() -> Self {
-        Self::new(Vec::new())
-    }
 }
 
 impl PlantEditorPanel {
-    pub fn new(species_names: Vec<String>) -> Self {
-        let selected = species_names.first().cloned().unwrap_or_default();
-        Self {
-            params: PlantParams::default(),
-            last_applied: PlantParams::default(),
-            dirty: false,
-            selected_species: selected,
-            species_names,
-            species_changed: None,
-        }
-    }
-
     /// Push new params from outside (e.g. after a species preset change).
     pub fn set_params(&mut self, params: PlantParams) {
         self.params = params.clone();
@@ -278,16 +263,8 @@ impl PlantEditorPanel {
         self.dirty = false;
     }
 
-    /// Take a pending species change, if any.
-    pub fn take_species_change(&mut self) -> Option<String> {
-        self.species_changed.take()
-    }
-
-    pub fn set_species_names(&mut self, names: Vec<String>) {
-        if self.selected_species.is_empty() {
-            self.selected_species = names.first().cloned().unwrap_or_default();
-        }
-        self.species_names = names;
+    pub fn current_params(&self) -> &PlantParams {
+        &self.params
     }
 
     /// Returns changed params when the pointer is released after changes.
@@ -308,9 +285,9 @@ impl PlantEditorPanel {
         }
     }
 
-    /// Draw the plant editor side panel. Returns `true` if "Back to Menu" was clicked.
-    pub fn ui(&mut self, ctx: &egui::Context, registry: &mut UiRegistry) -> bool {
-        let mut back = false;
+    /// Draw the plant editor side panel. Returns an action if Back or Delete was clicked.
+    pub fn ui(&mut self, ctx: &egui::Context, registry: &mut UiRegistry) -> Option<EditorAction> {
+        let mut action = None;
 
         egui::SidePanel::left("plant_editor_panel")
             .default_width(400.0)
@@ -323,39 +300,6 @@ impl PlantEditorPanel {
                 ui.separator();
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    // Species selector
-                    let species_options: Vec<&str> =
-                        self.species_names.iter().map(|s| s.as_str()).collect();
-                    registry.register_combo(
-                        "combo-species",
-                        "Species",
-                        &self.selected_species,
-                        &species_options,
-                    );
-                    if let Some(v) = registry.consume_set_value("combo-species") {
-                        if self.species_names.contains(&v) {
-                            self.selected_species = v.clone();
-                            self.species_changed = Some(v);
-                        }
-                    }
-                    let prev_species = self.selected_species.clone();
-                    egui::ComboBox::from_label("Species")
-                        .selected_text(&self.selected_species)
-                        .show_ui(ui, |ui| {
-                            for name in &self.species_names {
-                                ui.selectable_value(
-                                    &mut self.selected_species,
-                                    name.clone(),
-                                    name.as_str(),
-                                );
-                            }
-                        });
-                    if self.selected_species != prev_species {
-                        self.species_changed = Some(self.selected_species.clone());
-                    }
-
-                    ui.add_space(4.0);
-
                     // --- Body Plan ---
                     egui::CollapsingHeader::new("Body Plan")
                         .default_open(false)
@@ -987,22 +931,12 @@ impl PlantEditorPanel {
                         if ui.button("Randomize").clicked()
                             || registry.consume_click("btn-randomize")
                         {
-                            if !self.species_names.is_empty() {
-                                let mut rng = rand::rng();
-                                let idx = rng.random_range(0..self.species_names.len());
-                                self.selected_species = self.species_names[idx].clone();
-                                self.species_changed = Some(self.selected_species.clone());
-                            }
                             self.params = PlantParams::randomize();
                             self.dirty = true;
                         }
                         if ui.button("Reset Defaults").clicked()
                             || registry.consume_click("btn-reset-defaults-editor")
                         {
-                            if let Some(first) = self.species_names.first() {
-                                self.selected_species = first.clone();
-                                self.species_changed = Some(first.clone());
-                            }
                             self.params = PlantParams::default();
                             self.dirty = true;
                         }
@@ -1014,7 +948,24 @@ impl PlantEditorPanel {
                     if ui.button("Back to Menu").clicked()
                         || registry.consume_click("btn-back-to-menu")
                     {
-                        back = true;
+                        action = Some(EditorAction::Back);
+                    }
+
+                    ui.add_space(8.0);
+
+                    registry.register_button("btn-delete-plant", "Delete Plant");
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Delete Plant")
+                                    .color(egui::Color32::from_rgb(255, 120, 120)),
+                            )
+                            .fill(egui::Color32::from_rgb(80, 20, 20)),
+                        )
+                        .clicked()
+                        || registry.consume_click("btn-delete-plant")
+                    {
+                        action = Some(EditorAction::Delete);
                     }
                 });
             });
@@ -1023,7 +974,7 @@ impl PlantEditorPanel {
             self.dirty = true;
         }
 
-        back
+        action
     }
 }
 
