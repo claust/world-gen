@@ -2,8 +2,10 @@ use glam::{IVec2, Mat4, Vec3};
 
 use crate::world_core::chunk::CHUNK_SIZE_METERS;
 
-const MIN_Y: f32 = -50.0;
-const MAX_Y: f32 = 500.0;
+// Vertical bounds for chunk AABBs. These must fully enclose the terrain height range.
+// Use conservative values to avoid incorrectly culling low or high terrain.
+const MIN_Y: f32 = -256.0;
+const MAX_Y: f32 = 1024.0;
 
 pub struct Frustum {
     planes: [[f32; 4]; 6],
