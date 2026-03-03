@@ -21,7 +21,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     if key_event.state == ElementState::Pressed
                         && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F1))
                     {
-                        if !app.is_on_menu() && !app.is_on_editor() {
+                        if !app.is_on_menu() && !app.is_on_herbarium() && !app.is_on_editor() {
                             app.config_panel.toggle();
                             if app.config_panel.is_visible() {
                                 app.release_cursor();
@@ -34,12 +34,15 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                 }
 
                 // Feed events to egui when on start menu, config panel, or plant editor
-                let egui_wants_event =
-                    if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
-                        app.egui_bridge.on_window_event(&event)
-                    } else {
-                        false
-                    };
+                let egui_wants_event = if app.is_on_menu()
+                    || app.is_on_herbarium()
+                    || app.config_panel.is_visible()
+                    || app.is_on_editor()
+                {
+                    app.egui_bridge.on_window_event(&event)
+                } else {
+                    false
+                };
 
                 // Only forward to camera if egui didn't consume the event
                 if !egui_wants_event {
@@ -59,6 +62,8 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         if !app.is_on_menu() {
                             if app.is_on_editor() {
                                 app.leave_plant_editor();
+                            } else if app.is_on_herbarium() {
+                                app.leave_herbarium();
                             } else {
                                 if app.config_panel.is_visible() {
                                     app.config_panel.toggle();
@@ -107,10 +112,11 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                                 editor.on_mouse_press();
                             }
                         } else if app.is_on_menu()
+                            || app.is_on_herbarium()
                             || app.config_panel.is_visible()
                             || app.is_on_editor()
                         {
-                            // Don't capture cursor on menu, config panel, or plant editor
+                            // Don't capture cursor on menu, herbarium, config panel, or plant editor
                         } else {
                             app.capture_cursor();
                         }
@@ -143,8 +149,14 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
-                                MenuAction::PlantEditor => app.enter_plant_editor(),
+                                MenuAction::Herbarium => app.enter_herbarium(),
+                                MenuAction::OpenPlantEditor(i) => {
+                                    app.enter_plant_editor_for_entry(i)
+                                }
+                                MenuAction::NewPlant => app.enter_plant_editor_new_plant(),
+                                MenuAction::LeaveHerbarium => app.leave_herbarium(),
                                 MenuAction::LeaveEditor => app.leave_plant_editor(),
+                                MenuAction::DeletePlant => app.delete_current_plant(),
                                 MenuAction::Exit => {
                                     #[cfg(not(target_arch = "wasm32"))]
                                     target.exit();
@@ -157,7 +169,11 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
             }
             Event::DeviceEvent { event, .. } => {
                 // Block mouse delta when on start menu, config panel, or plant editor
-                if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                if app.is_on_menu()
+                    || app.is_on_herbarium()
+                    || app.config_panel.is_visible()
+                    || app.is_on_editor()
+                {
                     // skip device events
                 } else {
                     app.process_device_event(&event);
@@ -244,12 +260,15 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                 }
 
                 // Feed events to egui when on start menu, config panel, or plant editor
-                let egui_wants_event =
-                    if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
-                        app.egui_bridge.on_window_event(&event)
-                    } else {
-                        false
-                    };
+                let egui_wants_event = if app.is_on_menu()
+                    || app.is_on_herbarium()
+                    || app.config_panel.is_visible()
+                    || app.is_on_editor()
+                {
+                    app.egui_bridge.on_window_event(&event)
+                } else {
+                    false
+                };
 
                 if !egui_wants_event {
                     app.process_window_event(&event);
@@ -263,6 +282,8 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                         if !app.is_on_menu() {
                             if app.is_on_editor() {
                                 app.leave_plant_editor();
+                            } else if app.is_on_herbarium() {
+                                app.leave_herbarium();
                             } else {
                                 if app.config_panel.is_visible() {
                                     app.config_panel.toggle();
@@ -287,10 +308,11 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                                 editor.on_mouse_press();
                             }
                         } else if app.is_on_menu()
+                            || app.is_on_herbarium()
                             || app.config_panel.is_visible()
                             || app.is_on_editor()
                         {
-                            // Don't capture cursor on menu, config panel, or plant editor
+                            // Don't capture cursor on menu, herbarium, config panel, or plant editor
                         } else {
                             app.capture_cursor();
                         }
@@ -325,8 +347,14 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             match action {
                                 MenuAction::NewGame => app.start_game(false),
                                 MenuAction::ResumeGame => app.start_game(true),
-                                MenuAction::PlantEditor => app.enter_plant_editor(),
+                                MenuAction::Herbarium => app.enter_herbarium(),
+                                MenuAction::OpenPlantEditor(i) => {
+                                    app.enter_plant_editor_for_entry(i)
+                                }
+                                MenuAction::NewPlant => app.enter_plant_editor_new_plant(),
+                                MenuAction::LeaveHerbarium => app.leave_herbarium(),
                                 MenuAction::LeaveEditor => app.leave_plant_editor(),
+                                MenuAction::DeletePlant => app.delete_current_plant(),
                                 MenuAction::Exit => {} // no-op on WASM
                             }
                         }
@@ -335,7 +363,11 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                 }
             }
             Event::DeviceEvent { event, .. } => {
-                if app.is_on_menu() || app.config_panel.is_visible() || app.is_on_editor() {
+                if app.is_on_menu()
+                    || app.is_on_herbarium()
+                    || app.config_panel.is_visible()
+                    || app.is_on_editor()
+                {
                     // skip device events
                 } else {
                     app.process_device_event(&event);

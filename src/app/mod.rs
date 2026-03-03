@@ -10,8 +10,10 @@ use crate::renderer_wgpu::egui_bridge::EguiBridge;
 use crate::renderer_wgpu::egui_pass::EguiPass;
 use crate::renderer_wgpu::gpu_context::GpuContext;
 use crate::renderer_wgpu::world::WorldRenderer;
-use crate::ui::{ConfigPanel, MenuAction, PlantEditorPanel, StartMenu, UiRegistry};
+use crate::ui::plant_editor_panel::PlantParams;
+use crate::ui::{ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, StartMenu, UiRegistry};
 use crate::world_core::config::GameConfig;
+use crate::world_core::herbarium::Herbarium;
 use crate::world_runtime::WorldRuntime;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -43,6 +45,7 @@ pub use event_loop::run_event_loop_web;
 enum Screen {
     StartMenu,
     Playing,
+    Herbarium,
     PlantEditor,
 }
 
@@ -74,6 +77,9 @@ pub struct AppState {
     plant_editor: Option<plant_editor::PlantEditorState>,
     screen: Screen,
     start_menu: StartMenu,
+    herbarium: Herbarium,
+    herbarium_ui: HerbariumUi,
+    editing_plant_index: Option<usize>,
     #[cfg(not(target_arch = "wasm32"))]
     save: Option<SaveData>,
     config: GameConfig,
@@ -116,6 +122,8 @@ impl AppState {
 
         let asset_watcher = AssetWatcher::start();
 
+        let herbarium = Herbarium::load();
+
         let scale_factor = window.scale_factor() as f32;
         let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
         let egui_pass = EguiPass::new(&gpu.device, gpu.render_format);
@@ -145,6 +153,9 @@ impl AppState {
             plant_editor: None,
             screen: Screen::StartMenu,
             start_menu: StartMenu::new(save_exists),
+            herbarium,
+            herbarium_ui: HerbariumUi,
+            editing_plant_index: None,
             save,
             config,
             pending_menu_action: None,
@@ -171,6 +182,8 @@ impl AppState {
         let camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         let camera_controller = CameraController::new(180.0, 0.0022);
 
+        let herbarium = Herbarium::default_seeded();
+
         let scale_factor = window.scale_factor() as f32;
         let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
         let egui_pass = EguiPass::new(&gpu.device, gpu.render_format);
@@ -196,6 +209,9 @@ impl AppState {
             plant_editor: None,
             screen: Screen::StartMenu,
             start_menu: StartMenu::new(false), // no save files on WASM
+            herbarium,
+            herbarium_ui: HerbariumUi,
+            editing_plant_index: None,
             config,
             pending_menu_action: None,
             ui_registry: UiRegistry::new(),
@@ -246,6 +262,7 @@ impl AppState {
         match self.screen {
             Screen::StartMenu => "start_menu",
             Screen::Playing => "playing",
+            Screen::Herbarium => "herbarium",
             Screen::PlantEditor => "plant_editor",
         }
     }
@@ -254,25 +271,35 @@ impl AppState {
         matches!(self.screen, Screen::PlantEditor)
     }
 
+    fn is_on_herbarium(&self) -> bool {
+        matches!(self.screen, Screen::Herbarium)
+    }
+
     fn return_to_menu(&mut self) {
         self.screen = Screen::StartMenu;
         self.start_menu.set_save_exists(true);
     }
 
-    fn enter_plant_editor(&mut self) {
+    fn enter_herbarium(&mut self) {
+        self.screen = Screen::Herbarium;
+    }
+
+    fn leave_herbarium(&mut self) {
+        self.screen = Screen::StartMenu;
+    }
+
+    fn enter_plant_editor_for_entry(&mut self, index: usize) {
         self.screen = Screen::PlantEditor;
+        self.editing_plant_index = Some(index);
 
+        let species = &self.herbarium.plants[index].species;
         let mut editor =
-            plant_editor::PlantEditorState::new(&self.gpu.device, self.config.world.seed);
+            plant_editor::PlantEditorState::new(&self.gpu.device, self.config.world.seed, species);
 
-        // Initialize panel with species names and the first species' params
-        self.plant_editor_panel
-            .set_species_names(editor.species_names());
-        let initial_params = editor.set_base_species("Oak");
+        let initial_params = PlantParams::from_species(species);
         self.plant_editor_panel.set_params(initial_params.clone());
         editor.request_generation(&initial_params);
 
-        // Set camera from orbit
         let (cam_pos, yaw, pitch) = editor.orbit_camera();
         self.camera = FlyCamera::new(cam_pos);
         self.camera.yaw = yaw;
@@ -281,9 +308,45 @@ impl AppState {
         self.plant_editor = Some(editor);
     }
 
+    fn enter_plant_editor_new_plant(&mut self) {
+        let name = format!("Plant {}", self.herbarium.plants.len() + 1);
+        let entry = crate::world_core::herbarium::Herbarium::new_entry(name);
+        self.herbarium.plants.push(entry);
+        let index = self.herbarium.plants.len() - 1;
+        self.enter_plant_editor_for_entry(index);
+    }
+
     fn leave_plant_editor(&mut self) {
+        // Save current editor state back to herbarium entry
+        if let (Some(editor), Some(index)) = (&self.plant_editor, self.editing_plant_index) {
+            let params = self.plant_editor_panel.current_params();
+            let species = editor.current_species(params);
+            if let Some(entry) = self.herbarium.plants.get_mut(index) {
+                entry.species = species;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Err(e) = self.herbarium.save() {
+                log::warn!("failed to save herbarium: {e}");
+            }
+        }
         self.plant_editor = None;
-        self.screen = Screen::StartMenu;
+        self.editing_plant_index = None;
+        self.screen = Screen::Herbarium;
+    }
+
+    fn delete_current_plant(&mut self) {
+        if let Some(index) = self.editing_plant_index {
+            if index < self.herbarium.plants.len() {
+                self.herbarium.plants.remove(index);
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Err(e) = self.herbarium.save() {
+                    log::warn!("failed to save herbarium after delete: {e}");
+                }
+            }
+        }
+        self.plant_editor = None;
+        self.editing_plant_index = None;
+        self.screen = Screen::Herbarium;
     }
 
     fn start_game(&mut self, resume: bool) {
@@ -366,7 +429,7 @@ impl AppState {
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
         self.elapsed_seconds += dt;
 
-        if self.is_on_menu() {
+        if self.is_on_menu() || self.is_on_herbarium() {
             self.update_menu(dt);
             return;
         }
@@ -508,30 +571,13 @@ impl AppState {
         #[cfg(not(target_arch = "wasm32"))]
         self.apply_editor_debug_commands();
 
-        // Check for species preset change and/or dirty params
-        let species_change = self.plant_editor_panel.take_species_change();
-        let dirty_params = self
+        // Check for dirty params (slider/combo changes)
+        if let Some(params) = self
             .plant_editor_panel
-            .take_dirty_params(self.egui_bridge.ctx());
-
-        if let Some(editor) = &mut self.plant_editor {
-            match (species_change, dirty_params) {
-                (Some(name), Some(params)) => {
-                    // Both changed (e.g. Randomize picks random species + random params)
-                    editor.set_base_species(&name);
-                    editor.request_generation(&params);
-                }
-                (Some(name), None) => {
-                    // Species dropdown changed — use species defaults
-                    let new_params = editor.set_base_species(&name);
-                    self.plant_editor_panel.set_params(new_params.clone());
-                    editor.request_generation(&new_params);
-                }
-                (None, Some(params)) => {
-                    // Slider/combo changed — apply on current base
-                    editor.request_generation(&params);
-                }
-                (None, None) => {}
+            .take_dirty_params(self.egui_bridge.ctx())
+        {
+            if let Some(editor) = &mut self.plant_editor {
+                editor.request_generation(&params);
             }
         }
 
@@ -786,6 +832,7 @@ impl AppState {
             });
 
         let is_menu = self.is_on_menu();
+        let is_herbarium = self.is_on_herbarium();
         let is_editor = self.is_on_editor();
 
         {
@@ -820,7 +867,7 @@ impl AppState {
                     }
                     self.world_renderer.render_editor_scene(&mut pass, &meshes);
                 }
-            } else if is_menu {
+            } else if is_menu || is_herbarium {
                 self.world_renderer.render_sky_only(&mut pass);
             } else {
                 self.world_renderer.render(&mut pass);
@@ -830,7 +877,7 @@ impl AppState {
         // egui overlay pass (renders on top of 3D scene)
         {
             self.ui_registry.clear();
-            let show_egui = is_menu || self.config_panel.is_visible() || is_editor;
+            let show_egui = is_menu || is_herbarium || self.config_panel.is_visible() || is_editor;
             if show_egui {
                 let raw_input = self.egui_bridge.take_raw_input();
                 let mut menu_action = None;
@@ -841,12 +888,30 @@ impl AppState {
                         Screen::StartMenu => {
                             menu_action = self.start_menu.ui(ctx, &mut self.ui_registry);
                         }
+                        Screen::Herbarium => {
+                            use crate::ui::herbarium_ui::HerbariumAction;
+                            if let Some(ha) =
+                                self.herbarium_ui
+                                    .ui(ctx, &self.herbarium, &mut self.ui_registry)
+                            {
+                                menu_action = Some(match ha {
+                                    HerbariumAction::OpenPlant(i) => MenuAction::OpenPlantEditor(i),
+                                    HerbariumAction::NewPlant => MenuAction::NewPlant,
+                                    HerbariumAction::Back => MenuAction::LeaveHerbarium,
+                                });
+                            }
+                        }
                         Screen::Playing => {
                             self.config_panel.ui(ctx, &mut self.ui_registry);
                         }
                         Screen::PlantEditor => {
-                            if self.plant_editor_panel.ui(ctx, &mut self.ui_registry) {
-                                menu_action = Some(MenuAction::LeaveEditor);
+                            if let Some(ea) = self.plant_editor_panel.ui(ctx, &mut self.ui_registry)
+                            {
+                                use crate::ui::plant_editor_panel::EditorAction;
+                                menu_action = Some(match ea {
+                                    EditorAction::Back => MenuAction::LeaveEditor,
+                                    EditorAction::Delete => MenuAction::DeletePlant,
+                                });
                             }
                         }
                     });
