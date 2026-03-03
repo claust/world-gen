@@ -492,6 +492,7 @@ impl AppState {
             &self.gpu.device,
             self.camera.position,
             self.camera.yaw,
+            stats.hour,
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );
