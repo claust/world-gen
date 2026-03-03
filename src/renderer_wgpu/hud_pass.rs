@@ -208,12 +208,14 @@ impl HudPass {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         queue: &wgpu::Queue,
         device: &wgpu::Device,
         camera_pos: Vec3,
         camera_yaw: f32,
+        hour: f32,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -253,6 +255,9 @@ impl HudPass {
         // --- Compass rose (top-right) ---
         build_compass(&mut verts, camera_yaw, screen_w);
 
+        // --- Sky clock (below compass) ---
+        build_sky_clock(&mut verts, hour, screen_w);
+
         // Upload vertices
         self.vertex_count = verts.len() as u32;
         let byte_size = verts.len() * std::mem::size_of::<HudVertex>();
@@ -286,6 +291,24 @@ impl HudPass {
 
 /// Sentinel UV marking a vertex as solid-color (no texture sampling).
 const NO_UV: [f32; 2] = [-1.0, -1.0];
+
+fn push_tri(verts: &mut Vec<HudVertex>, a: [f32; 2], b: [f32; 2], c: [f32; 2], color: [f32; 4]) {
+    verts.push(HudVertex {
+        position: a,
+        uv: NO_UV,
+        color,
+    });
+    verts.push(HudVertex {
+        position: b,
+        uv: NO_UV,
+        color,
+    });
+    verts.push(HudVertex {
+        position: c,
+        uv: NO_UV,
+        color,
+    });
+}
 
 fn build_compass(verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {
     let cx = screen_w - 70.0;
@@ -358,5 +381,153 @@ fn build_compass(verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {
         let lx = pos[0] - gw * 0.5;
         let ly = pos[1] - gh * 0.5;
         hud_font::build_text_quads(label, lx, ly, label_scale, label_color, verts);
+    }
+}
+
+/// Sky clock: a 24-hour dial showing sun/moon position relative to the horizon.
+/// Placed below the compass rose in the top-right corner.
+///
+/// Layout:  12h (noon) at top, 0h (midnight) at bottom,
+///          6h (sunrise) at left, 18h (sunset) at right.
+fn build_sky_clock(verts: &mut Vec<HudVertex>, hour: f32, screen_w: f32) {
+    use std::f32::consts::{PI, TAU};
+
+    let cx = screen_w - 70.0;
+    let cy = 150.0;
+    let radius = 26.0;
+    let ring_w = 1.5;
+    let segments: usize = 32;
+
+    // --- Dark background disc for contrast ---
+    let bg_r = radius + 6.0;
+    let bg_color = [0.0, 0.0, 0.0, 0.35];
+    for i in 0..segments {
+        let a0 = (i as f32 / segments as f32) * TAU;
+        let a1 = ((i + 1) as f32 / segments as f32) * TAU;
+        push_tri(
+            verts,
+            [cx, cy],
+            [cx + a0.cos() * bg_r, cy + a0.sin() * bg_r],
+            [cx + a1.cos() * bg_r, cy + a1.sin() * bg_r],
+            bg_color,
+        );
+    }
+
+    // --- Circle ring ---
+    let inner_r = radius - ring_w;
+    let outer_r = radius + ring_w;
+    let ring_color = [0.8, 0.8, 0.8, 0.6];
+
+    for i in 0..segments {
+        let a0 = (i as f32 / segments as f32) * TAU;
+        let a1 = ((i + 1) as f32 / segments as f32) * TAU;
+        let (s0, c0) = (a0.sin(), a0.cos());
+        let (s1, c1) = (a1.sin(), a1.cos());
+
+        let pi = [cx + s0 * inner_r, cy - c0 * inner_r];
+        let po = [cx + s0 * outer_r, cy - c0 * outer_r];
+        let qi = [cx + s1 * inner_r, cy - c1 * inner_r];
+        let qo = [cx + s1 * outer_r, cy - c1 * outer_r];
+
+        push_tri(verts, pi, po, qo, ring_color);
+        push_tri(verts, pi, qo, qi, ring_color);
+    }
+
+    // --- Horizon line ---
+    let horizon_color = [0.6, 0.6, 0.6, 0.35];
+    let hw = radius - 3.0;
+    let hh = 0.75;
+    push_tri(
+        verts,
+        [cx - hw, cy - hh],
+        [cx + hw, cy - hh],
+        [cx + hw, cy + hh],
+        horizon_color,
+    );
+    push_tri(
+        verts,
+        [cx - hw, cy - hh],
+        [cx + hw, cy + hh],
+        [cx - hw, cy + hh],
+        horizon_color,
+    );
+
+    // --- Tick marks at 0h, 6h, 12h, 18h ---
+    let tick_color = [0.8, 0.8, 0.8, 0.45];
+    let tick_inner = radius - 4.0;
+    let tick_outer = radius + 1.0;
+    let tick_half_w = 0.75;
+
+    for &h in &[0.0_f32, 6.0, 12.0, 18.0] {
+        let a = (h - 12.0) / 12.0 * PI;
+        let dx = a.sin();
+        let dy = -a.cos();
+        // Perpendicular
+        let px = -dy * tick_half_w;
+        let py = dx * tick_half_w;
+
+        let p0 = [cx + dx * tick_inner + px, cy + dy * tick_inner + py];
+        let p1 = [cx + dx * tick_inner - px, cy + dy * tick_inner - py];
+        let p2 = [cx + dx * tick_outer + px, cy + dy * tick_outer + py];
+        let p3 = [cx + dx * tick_outer - px, cy + dy * tick_outer - py];
+
+        push_tri(verts, p0, p2, p3, tick_color);
+        push_tri(verts, p0, p3, p1, tick_color);
+    }
+
+    // --- Sun / Moon body ---
+    let angle = (hour - 12.0) / 12.0 * PI;
+    let bx = cx + angle.sin() * radius;
+    let by = cy - angle.cos() * radius;
+
+    // Above horizon → sun (gold), below → moon (pale blue)
+    let is_sun = by < cy - 0.5;
+    let is_moon = by > cy + 0.5;
+
+    let body_color = if is_sun {
+        [1.0, 0.85, 0.2, 0.95]
+    } else if is_moon {
+        [0.8, 0.85, 1.0, 0.85]
+    } else {
+        // Near horizon — blend toward orange
+        [1.0, 0.6, 0.2, 0.9]
+    };
+
+    let body_r = 6.0;
+    let body_segs: usize = 12;
+    for i in 0..body_segs {
+        let a0 = (i as f32 / body_segs as f32) * TAU;
+        let a1 = ((i + 1) as f32 / body_segs as f32) * TAU;
+        push_tri(
+            verts,
+            [bx, by],
+            [bx + a0.cos() * body_r, by + a0.sin() * body_r],
+            [bx + a1.cos() * body_r, by + a1.sin() * body_r],
+            body_color,
+        );
+    }
+
+    // Sun rays (only when above horizon)
+    if is_sun {
+        let ray_color = [1.0, 0.9, 0.3, 0.5];
+        let ray_inner = body_r + 1.5;
+        let ray_outer = body_r + 4.5;
+        let ray_half_w = 0.6;
+        let ray_count = 8;
+        for i in 0..ray_count {
+            let a = (i as f32 / ray_count as f32) * TAU;
+            let rdx = a.cos();
+            let rdy = a.sin();
+            let rpx = -rdy * ray_half_w;
+            let rpy = rdx * ray_half_w;
+
+            let r0 = [bx + rdx * ray_inner + rpx, by + rdy * ray_inner + rpy];
+            let r1 = [bx + rdx * ray_inner - rpx, by + rdy * ray_inner - rpy];
+            let r2 = [bx + rdx * ray_outer + rpx, by + rdy * ray_outer + rpy];
+            let r3 = [bx + rdx * ray_outer - rpx, by + rdy * ray_outer - rpy];
+
+            push_tri(verts, r0, r2, r3, ray_color);
+            push_tri(verts, r0, r3, r1, ray_color);
+        }
     }
 }

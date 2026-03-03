@@ -119,17 +119,20 @@ impl WorldRenderer {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_hud(
         &mut self,
         queue: &wgpu::Queue,
         device: &wgpu::Device,
         camera_pos: Vec3,
         camera_yaw: f32,
+        hour: f32,
         screen_w: f32,
         screen_h: f32,
     ) {
-        self.hud
-            .update(queue, device, camera_pos, camera_yaw, screen_w, screen_h);
+        self.hud.update(
+            queue, device, camera_pos, camera_yaw, hour, screen_w, screen_h,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
