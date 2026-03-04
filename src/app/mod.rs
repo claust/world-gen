@@ -1141,26 +1141,30 @@ impl AppState {
 
         // Capture the rendered frame and apply Gaussian blur
         if self.blur_capture_pending {
-            self.blur_pass
-                .capture_and_blur(&mut encoder, &output.texture, 6);
-            // Blit the blurred result back onto the surface before egui draws
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("blur-blit-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                self.blur_pass.blit(&mut pass);
+            // Only perform the blur capture when the surface format matches the blur pass format.
+            // This avoids potential wgpu validation errors from copying between mismatched formats.
+            if self.gpu.render_format == self.gpu.config.format {
+                self.blur_pass
+                    .capture_and_blur(&mut encoder, &output.texture, 6);
+                // Blit the blurred result back onto the surface before egui draws
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("blur-blit-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    self.blur_pass.blit(&mut pass);
+                }
             }
             self.blur_capture_pending = false;
         }
