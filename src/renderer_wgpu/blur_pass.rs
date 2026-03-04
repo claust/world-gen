@@ -22,6 +22,9 @@ pub struct BlurPass {
     bg_b_v: wgpu::BindGroup,
     bg_a_blit: wgpu::BindGroup,
     has_result: bool,
+    /// The surface texture format (used for texture storage so copies match).
+    surface_format: wgpu::TextureFormat,
+    /// The render view format (may be sRGB reinterpretation of surface_format).
     render_format: wgpu::TextureFormat,
     width: u32,
     height: u32,
@@ -30,6 +33,7 @@ pub struct BlurPass {
 impl BlurPass {
     pub fn new(
         device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
         render_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
@@ -122,9 +126,24 @@ impl BlurPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let (tex_a, view_a) = Self::create_texture(device, render_format, w, h, "blur-tex-a", true);
-        let (tex_b, view_b) =
-            Self::create_texture(device, render_format, w, h, "blur-tex-b", false);
+        let (tex_a, view_a) = Self::create_texture(
+            device,
+            surface_format,
+            render_format,
+            w,
+            h,
+            "blur-tex-a",
+            true,
+        );
+        let (tex_b, view_b) = Self::create_texture(
+            device,
+            surface_format,
+            render_format,
+            w,
+            h,
+            "blur-tex-b",
+            false,
+        );
 
         let bg_a_h = Self::create_bind_group(
             device,
@@ -166,6 +185,7 @@ impl BlurPass {
             bg_b_v,
             bg_a_blit,
             has_result: false,
+            surface_format,
             render_format,
             width: w,
             height: h,
@@ -182,10 +202,24 @@ impl BlurPass {
         self.height = h;
         self.has_result = false;
 
-        let (tex_a, view_a) =
-            Self::create_texture(device, self.render_format, w, h, "blur-tex-a", true);
-        let (tex_b, view_b) =
-            Self::create_texture(device, self.render_format, w, h, "blur-tex-b", false);
+        let (tex_a, view_a) = Self::create_texture(
+            device,
+            self.surface_format,
+            self.render_format,
+            w,
+            h,
+            "blur-tex-a",
+            true,
+        );
+        let (tex_b, view_b) = Self::create_texture(
+            device,
+            self.surface_format,
+            self.render_format,
+            w,
+            h,
+            "blur-tex-b",
+            false,
+        );
 
         let texel_size = [1.0 / w as f32, 1.0 / h as f32];
         queue.write_buffer(
@@ -375,7 +409,8 @@ impl BlurPass {
 
     fn create_texture(
         device: &wgpu::Device,
-        format: wgpu::TextureFormat,
+        surface_format: wgpu::TextureFormat,
+        render_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
         label: &str,
@@ -387,6 +422,15 @@ impl BlurPass {
             usage |= wgpu::TextureUsages::COPY_DST;
         }
 
+        // Store in surface_format so copy_texture_to_texture matches the
+        // swapchain. List render_format as a view format so we can create
+        // sRGB views for rendering (mirrors GpuContext's approach).
+        let view_formats = if render_format != surface_format {
+            vec![render_format]
+        } else {
+            vec![]
+        };
+
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
@@ -397,12 +441,15 @@ impl BlurPass {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: surface_format,
             usage,
-            view_formats: &[],
+            view_formats: &view_formats,
         });
 
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(render_format),
+            ..Default::default()
+        });
         (texture, view)
     }
 
