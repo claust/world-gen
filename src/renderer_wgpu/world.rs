@@ -31,6 +31,7 @@ pub struct WorldRenderer {
     fog_end: f32,
     registry: PlantRegistry,
     view_proj: Mat4,
+    camera_position: Vec3,
 }
 
 impl WorldRenderer {
@@ -79,6 +80,7 @@ impl WorldRenderer {
             fog_end,
             registry,
             view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
         }
     }
 
@@ -111,6 +113,7 @@ impl WorldRenderer {
         hour: f32,
     ) {
         self.view_proj = view_proj;
+        self.camera_position = camera_position;
         self.frame_bg.update(
             queue,
             &FrameUniform::new(view_proj, camera_position, elapsed, hour),
@@ -236,16 +239,21 @@ impl WorldRenderer {
     }
 
     pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        self.render_scene(pass);
+        self.hud.render(pass);
+        self.minimap.render(pass);
+    }
+
+    /// Render the 3D scene without HUD/minimap overlays.
+    pub fn render_scene<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
 
         let frustum = Frustum::from_view_proj(self.view_proj);
         self.sky.render(pass);
         self.terrain.render(pass, &frustum);
-        self.instanced.render(pass, &frustum);
+        self.instanced.render(pass, &frustum, self.camera_position);
         self.water.render(pass, &frustum);
-        self.hud.render(pass);
-        self.minimap.render(pass);
     }
 
     pub fn clear_color(&self) -> wgpu::Color {

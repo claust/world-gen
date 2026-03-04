@@ -5,6 +5,10 @@ pub struct EguiPass {
 }
 
 impl EguiPass {
+    pub fn renderer_mut(&mut self) -> &mut egui_wgpu::Renderer {
+        &mut self.renderer
+    }
+
     pub fn new(device: &wgpu::Device, output_format: wgpu::TextureFormat) -> Self {
         let renderer = egui_wgpu::Renderer::new(
             device,

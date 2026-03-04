@@ -1,5 +1,6 @@
 use crate::world_core::config::GameConfig;
 
+use super::theme;
 use super::ui_registry::UiRegistry;
 
 pub struct ConfigPanel {
@@ -56,12 +57,11 @@ impl ConfigPanel {
 
         egui::SidePanel::left("config_panel")
             .default_width(320.0)
-            .frame(
-                egui::Frame::side_top_panel(ctx.style().as_ref())
-                    .fill(egui::Color32::from_rgba_unmultiplied(30, 30, 30, 220)),
-            )
+            .frame(egui::Frame::side_top_panel(ctx.style().as_ref()).fill(theme::PANEL_BG))
             .show(ctx, |ui| {
-                ui.heading("World Config");
+                ui.add_space(8.0);
+                ui.label(theme::title("World Config", theme::PANEL_TITLE_SIZE));
+                ui.add_space(4.0);
                 ui.separator();
 
                 egui::ScrollArea::vertical().show(ui, |ui| {

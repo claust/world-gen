@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use glam::IVec2;
+use glam::{IVec2, Vec3};
 
 use super::frustum::Frustum;
 use super::geometry::Vertex;
@@ -11,15 +11,20 @@ use super::instancing::{
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
 use super::pipeline::create_render_pipeline;
-use crate::world_core::chunk::ChunkData;
+use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::plant_gen;
+
+/// Squared distance (in world units) beyond which chunks use LOD meshes.
+const LOD_THRESHOLD_SQ: f32 = 512.0 * 512.0;
 
 pub struct InstancedPass {
     pipeline: wgpu::RenderPipeline,
     models: ModelRegistry,
     /// species_names[i] = model key in ModelRegistry for species i
     species_names: Vec<String>,
+    /// species_lod_names[i] = LOD model key for species i
+    species_lod_names: Vec<String>,
     /// plant_instances[species_index] = per-chunk instance buffers
     plant_instances: Vec<HashMap<IVec2, GpuInstanceChunk>>,
     house_instances: HashMap<IVec2, GpuInstanceChunk>,
@@ -97,6 +102,7 @@ impl InstancedPass {
 
         let mut models = ModelRegistry::new(device);
         let mut species_names = Vec::new();
+        let mut species_lod_names = Vec::new();
 
         // Generate procedural meshes for each species using the full plant_gen system
         for (i, species) in registry.species.iter().enumerate() {
@@ -114,6 +120,23 @@ impl InstancedPass {
             let mesh = upload_prototype(device, &verts, &plant_mesh.indices, &key);
             models.models.insert(key.clone(), mesh);
             species_names.push(key);
+
+            // LOD version with reduced complexity
+            let lod_key = format!("plant-{}-lod", species.name);
+            let lod_config = species.species_config.simplify_for_lod();
+            let lod_plant_mesh = plant_gen::generate_plant_mesh(&lod_config, i as u32);
+            let lod_verts: Vec<Vertex> = lod_plant_mesh
+                .vertices
+                .iter()
+                .map(|v| Vertex {
+                    position: v.position,
+                    normal: v.normal,
+                    color: v.color,
+                })
+                .collect();
+            let lod_mesh = upload_prototype(device, &lod_verts, &lod_plant_mesh.indices, &lod_key);
+            models.models.insert(lod_key.clone(), lod_mesh);
+            species_lod_names.push(lod_key);
         }
 
         let plant_instances = (0..registry.species.len())
@@ -124,6 +147,7 @@ impl InstancedPass {
             pipeline,
             models,
             species_names,
+            species_lod_names,
             plant_instances,
             house_instances: HashMap::new(),
         }
@@ -133,6 +157,7 @@ impl InstancedPass {
     /// Clears all plant instance buffers so `sync_chunks` rebuilds them.
     pub fn rebuild_species(&mut self, device: &wgpu::Device, registry: &PlantRegistry) {
         self.species_names.clear();
+        self.species_lod_names.clear();
         self.plant_instances.clear();
 
         for (i, species) in registry.species.iter().enumerate() {
@@ -150,6 +175,22 @@ impl InstancedPass {
             let mesh = upload_prototype(device, &verts, &plant_mesh.indices, &key);
             self.models.models.insert(key.clone(), mesh);
             self.species_names.push(key);
+
+            let lod_key = format!("plant-{}-lod", species.name);
+            let lod_config = species.species_config.simplify_for_lod();
+            let lod_plant_mesh = plant_gen::generate_plant_mesh(&lod_config, i as u32);
+            let lod_verts: Vec<Vertex> = lod_plant_mesh
+                .vertices
+                .iter()
+                .map(|v| Vertex {
+                    position: v.position,
+                    normal: v.normal,
+                    color: v.color,
+                })
+                .collect();
+            let lod_mesh = upload_prototype(device, &lod_verts, &lod_plant_mesh.indices, &lod_key);
+            self.models.models.insert(lod_key.clone(), lod_mesh);
+            self.species_lod_names.push(lod_key);
         }
 
         self.plant_instances = (0..registry.species.len())
@@ -236,18 +277,50 @@ impl InstancedPass {
         }
     }
 
-    pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, frustum: &Frustum) {
+    pub fn render<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        frustum: &Frustum,
+        camera_position: Vec3,
+    ) {
         pass.set_pipeline(&self.pipeline);
 
-        // Draw each species
+        // Draw each species, batching by LOD level to minimise state changes
         for (i, key) in self.species_names.iter().enumerate() {
+            let lod_key = &self.species_lod_names[i];
+
+            // Partition visible chunks into near (hi-res) and far (LOD)
+            let mut near: Vec<&GpuInstanceChunk> = Vec::new();
+            let mut far: Vec<&GpuInstanceChunk> = Vec::new();
+            for (coord, inst) in &self.plant_instances[i] {
+                if !frustum.is_chunk_visible(*coord) {
+                    continue;
+                }
+                let dx = (coord.x as f32 + 0.5) * CHUNK_SIZE_METERS - camera_position.x;
+                let dz = (coord.y as f32 + 0.5) * CHUNK_SIZE_METERS - camera_position.z;
+                let dist_sq = dx * dx + dz * dz;
+                if dist_sq < LOD_THRESHOLD_SQ {
+                    near.push(inst);
+                } else {
+                    far.push(inst);
+                }
+            }
+
+            // Draw near chunks with hi-res mesh
             if let Some(mesh) = self.models.get(key) {
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                for (coord, inst) in &self.plant_instances[i] {
-                    if !frustum.is_chunk_visible(*coord) {
-                        continue;
-                    }
+                for inst in &near {
+                    pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                    pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+                }
+            }
+
+            // Draw far chunks with LOD mesh
+            if let Some(mesh) = self.models.get(lod_key) {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for inst in &far {
                     pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
                     pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
                 }

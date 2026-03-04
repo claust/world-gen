@@ -33,6 +33,41 @@ fn vs_main(@builtin(vertex_index) id: u32) -> VertexOutput {
     return out;
 }
 
+// --- Noise functions for procedural clouds ---
+
+fn hash2d(p: vec2<f32>) -> f32 {
+    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+    p3 = p3 + dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+fn noise2d(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+
+    let a = hash2d(i);
+    let b = hash2d(i + vec2<f32>(1.0, 0.0));
+    let c = hash2d(i + vec2<f32>(0.0, 1.0));
+    let d = hash2d(i + vec2<f32>(1.0, 1.0));
+
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn fbm(p: vec2<f32>) -> f32 {
+    var val = 0.0;
+    var amp = 0.5;
+    var pos = p;
+    for (var i = 0; i < 5; i = i + 1) {
+        val = val + amp * noise2d(pos);
+        pos = pos * 2.0 + vec2<f32>(1.7, 9.2);
+        amp = amp * 0.5;
+    }
+    return val;
+}
+
+// --- End noise functions ---
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Reconstruct world-space ray direction from NDC
@@ -71,7 +106,39 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let sun_contribution = material.sun_color.rgb * (disc + glow + wide_glow) * sun_brightness;
 
-    let final_color = sky + sun_contribution;
+    var final_color = sky + sun_contribution;
+
+    // --- Procedural clouds ---
+    // Guard against near-horizontal rays to avoid huge cloud distances / unstable noise
+    if elevation > 0.0 && ray_dir.y > 0.01 {
+        // Intersect ray with cloud plane at fixed altitude above camera
+        let cloud_altitude = 800.0;
+        let t_cloud = min(cloud_altitude / ray_dir.y, 10000.0);
+        let cloud_pos = frame.camera_position.xyz + ray_dir * t_cloud;
+
+        // Sample FBM noise at cloud position, scrolled by time
+        let cloud_scale = 0.0008;
+        let wind_speed = 15.0;
+        let uv = cloud_pos.xz * cloud_scale + vec2<f32>(frame.time.x * wind_speed * cloud_scale, 0.0);
+
+        let noise_val = fbm(uv);
+
+        // Shape clouds: threshold + smoothstep for coverage control
+        let coverage = 0.45;
+        let density = smoothstep(coverage, coverage + 0.25, noise_val);
+
+        // Fade clouds near horizon to avoid hard cutoff
+        let horizon_fade = smoothstep(0.0, 0.15, elevation);
+
+        let cloud_alpha = density * horizon_fade;
+
+        // Cloud color: lit by sun, tinted by time of day
+        let base_cloud = vec3<f32>(1.0, 1.0, 1.0);
+        let sun_lit = mix(material.ambient.rgb, material.sun_color.rgb, 0.7);
+        let cloud_color = base_cloud * sun_lit;
+
+        final_color = mix(final_color, cloud_color, cloud_alpha);
+    }
 
     return vec4<f32>(final_color, 1.0);
 }

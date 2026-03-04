@@ -12,8 +12,10 @@ pub mod pipeline;
 pub mod sky;
 mod sky_pass;
 pub mod terrain_compute;
+pub mod thumbnail;
 pub mod world;
 
+pub(crate) mod blur_pass;
 mod frustum;
 mod hud_font;
 mod hud_pass;
