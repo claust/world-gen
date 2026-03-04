@@ -109,10 +109,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var final_color = sky + sun_contribution;
 
     // --- Procedural clouds ---
-    if elevation > 0.0 {
+    // Guard against near-horizontal rays to avoid huge cloud distances / unstable noise
+    if elevation > 0.0 && ray_dir.y > 0.01 {
         // Intersect ray with cloud plane at fixed altitude above camera
         let cloud_altitude = 800.0;
-        let t_cloud = cloud_altitude / ray_dir.y;
+        let t_cloud = min(cloud_altitude / ray_dir.y, 10000.0);
         let cloud_pos = frame.camera_position.xyz + ray_dir * t_cloud;
 
         // Sample FBM noise at cloud position, scrolled by time
