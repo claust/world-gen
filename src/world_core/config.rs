@@ -139,16 +139,26 @@ pub struct HousesConfig {
     pub max_slope: f32,
     pub height_min: f32,
     pub height_max: f32,
+    pub hamlet_spacing: f32,
+    pub hamlet_density: f32,
+    pub hamlet_house_min: u32,
+    pub hamlet_house_max: u32,
+    pub hamlet_radius: f32,
 }
 
 impl Default for HousesConfig {
     fn default() -> Self {
         Self {
             grid_spacing: 40.0,
-            grassland_density: 0.04,
+            grassland_density: 0.01,
             max_slope: 0.3,
             height_min: 0.0,
             height_max: 100.0,
+            hamlet_spacing: 100.0,
+            hamlet_density: 0.03,
+            hamlet_house_min: 3,
+            hamlet_house_max: 5,
+            hamlet_radius: 15.0,
         }
     }
 }
