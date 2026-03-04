@@ -13,5 +13,6 @@ pub mod herbarium;
 pub mod layer;
 pub mod plant_gen;
 pub mod save;
+pub mod storage;
 pub mod terrain;
 pub mod time;

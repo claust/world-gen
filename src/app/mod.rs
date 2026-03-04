@@ -14,10 +14,9 @@ use crate::ui::plant_editor_panel::PlantParams;
 use crate::ui::{ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, StartMenu, UiRegistry};
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::Herbarium;
-use crate::world_runtime::WorldRuntime;
-
-#[cfg(not(target_arch = "wasm32"))]
 use crate::world_core::save::{CameraSave, SaveData, WorldSave};
+use crate::world_core::storage::{create_storage, Storage};
+use crate::world_runtime::WorldRuntime;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -80,7 +79,7 @@ pub struct AppState {
     herbarium: Herbarium,
     herbarium_ui: HerbariumUi,
     editing_plant_index: Option<usize>,
-    #[cfg(not(target_arch = "wasm32"))]
+    storage: Box<dyn Storage>,
     save: Option<SaveData>,
     config: GameConfig,
     pending_menu_action: Option<MenuAction>,
@@ -94,12 +93,13 @@ impl AppState {
         debug_api_config: DebugApiConfig,
         _cursor_captured: bool,
     ) -> Result<Self> {
-        let config = GameConfig::load();
-        let save = SaveData::load();
+        let storage = create_storage();
+        let config = GameConfig::load(&*storage);
+        let save = SaveData::load(&*storage);
 
         let gpu = GpuContext::new(window).await?;
 
-        let herbarium = Herbarium::load();
+        let herbarium = Herbarium::load(&*storage);
         let registry = crate::world_core::herbarium::PlantRegistry::from_herbarium(&herbarium);
 
         let world_renderer = WorldRenderer::new(
@@ -158,6 +158,7 @@ impl AppState {
             herbarium,
             herbarium_ui: HerbariumUi,
             editing_plant_index: None,
+            storage,
             save,
             config,
             pending_menu_action: None,
@@ -167,11 +168,13 @@ impl AppState {
 
     #[cfg(target_arch = "wasm32")]
     pub async fn new_web(window: &'static Window, _cursor_captured: bool) -> Result<Self> {
-        let config = GameConfig::default();
+        let storage = create_storage();
+        let config = GameConfig::load(&*storage);
+        let save = SaveData::load(&*storage);
 
         let gpu = GpuContext::new(window).await?;
 
-        let herbarium = Herbarium::default_seeded();
+        let herbarium = Herbarium::load(&*storage);
         let registry = crate::world_core::herbarium::PlantRegistry::from_herbarium(&herbarium);
 
         let world_renderer = WorldRenderer::new(
@@ -192,6 +195,7 @@ impl AppState {
         let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
         let egui_pass = EguiPass::new(&gpu.device, gpu.render_format);
         let config_panel = ConfigPanel::new(&config);
+        let save_exists = save.is_some();
 
         Ok(Self {
             window,
@@ -212,10 +216,12 @@ impl AppState {
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
-            start_menu: StartMenu::new(false), // no save files on WASM
+            start_menu: StartMenu::new(save_exists),
             herbarium,
             herbarium_ui: HerbariumUi,
             editing_plant_index: None,
+            storage,
+            save,
             config,
             pending_menu_action: None,
             ui_registry: UiRegistry::new(),
@@ -330,8 +336,7 @@ impl AppState {
             if let Some(entry) = self.herbarium.plants.get_mut(index) {
                 entry.species = species;
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Err(e) = self.herbarium.save() {
+            if let Err(e) = self.herbarium.save(&*self.storage) {
                 log::warn!("failed to save herbarium: {e}");
             }
         }
@@ -344,8 +349,7 @@ impl AppState {
         if let Some(index) = self.editing_plant_index {
             if index < self.herbarium.plants.len() {
                 self.herbarium.plants.remove(index);
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Err(e) = self.herbarium.save() {
+                if let Err(e) = self.herbarium.save(&*self.storage) {
                     log::warn!("failed to save herbarium after delete: {e}");
                 }
             }
@@ -363,13 +367,7 @@ impl AppState {
             return;
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
         let save_ref = if resume { self.save.as_ref() } else { None };
-        #[cfg(target_arch = "wasm32")]
-        let save_ref = {
-            let _ = resume;
-            None::<&crate::world_core::save::SaveData>
-        };
 
         // Set camera from save or defaults
         let (cam_pos, cam_yaw, cam_pitch) = match save_ref {
@@ -968,21 +966,19 @@ impl AppState {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn save_game(&self) {
         let Some(world) = &self.world else { return };
         let save = Self::build_save_data(&self.camera, world);
-        if let Err(e) = save.save() {
+        if let Err(e) = save.save(&*self.storage) {
             log::warn!("failed to save game state: {e}");
         }
     }
 
-    /// Save to disk and update the in-memory save (for mid-session resume).
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Save to storage and update the in-memory save (for mid-session resume).
     fn save_and_update(&mut self) {
         let Some(world) = &self.world else { return };
         let save = Self::build_save_data(&self.camera, world);
-        match save.save() {
+        match save.save(&*self.storage) {
             Ok(()) => {
                 self.save = Some(save);
             }
@@ -992,7 +988,6 @@ impl AppState {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn build_save_data(camera: &FlyCamera, world: &WorldRuntime) -> SaveData {
         SaveData {
             camera: CameraSave {

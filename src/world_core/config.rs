@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::storage::Storage;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameConfig {
@@ -23,26 +25,20 @@ impl Default for GameConfig {
 }
 
 impl GameConfig {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn load() -> Self {
-        let path = std::path::Path::new("config.json");
-        if !path.exists() {
-            log::info!("no config.json found, using defaults");
-            return Self::default();
-        }
-        match std::fs::read_to_string(path) {
-            Ok(contents) => match serde_json::from_str(&contents) {
+    pub fn load(storage: &dyn Storage) -> Self {
+        match storage.load("config") {
+            Some(contents) => match serde_json::from_str(&contents) {
                 Ok(config) => {
-                    log::info!("loaded config.json");
+                    log::info!("loaded config");
                     config
                 }
                 Err(e) => {
-                    log::warn!("failed to parse config.json: {e}, using defaults");
+                    log::warn!("failed to parse config: {e}, using defaults");
                     Self::default()
                 }
             },
-            Err(e) => {
-                log::warn!("failed to read config.json: {e}, using defaults");
+            None => {
+                log::info!("no config found, using defaults");
                 Self::default()
             }
         }
