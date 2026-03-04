@@ -32,33 +32,35 @@ impl HousesLayer {
         }
     }
 
-    fn is_valid_site(
+    /// Returns the sampled height if the site is valid, or `None` if rejected.
+    fn validate_site(
         &self,
         terrain: &ChunkTerrain,
         biome_map: &BiomeMap,
         local_x: f32,
         local_z: f32,
-    ) -> bool {
+    ) -> Option<f32> {
         if local_x < 0.0
             || local_z < 0.0
             || local_x >= CHUNK_SIZE_METERS
             || local_z >= CHUNK_SIZE_METERS
         {
-            return false;
+            return None;
         }
         let biome = sample_biome_nearest(&biome_map.values, local_x, local_z);
         if biome != Biome::Grassland {
-            return false;
+            return None;
         }
         let height = sample_field_bilinear(&terrain.heights, local_x, local_z);
         let slope = estimate_slope(&terrain.heights, local_x, local_z);
-        slope <= self.config.max_slope
+        if slope <= self.config.max_slope
             && height >= self.sea_level
             && (self.config.height_min..=self.config.height_max).contains(&height)
-    }
-
-    fn height_at(&self, terrain: &ChunkTerrain, local_x: f32, local_z: f32) -> f32 {
-        sample_field_bilinear(&terrain.heights, local_x, local_z)
+        {
+            Some(height)
+        } else {
+            None
+        }
     }
 }
 
@@ -82,62 +84,78 @@ impl<'a> Layer<HousesInput<'a>, Vec<HouseInstance>> for HousesLayer {
 
         // Phase 1: Hamlet clusters on a coarse grid
         let hamlet_spacing = self.config.hamlet_spacing;
-        let hamlet_cells = (CHUNK_SIZE_METERS / hamlet_spacing) as i32;
+        if hamlet_spacing.is_finite() && hamlet_spacing > 0.0 {
+            let hamlet_cells = (CHUNK_SIZE_METERS / hamlet_spacing) as i32;
+            let min_houses = self
+                .config
+                .hamlet_house_min
+                .min(self.config.hamlet_house_max);
+            let max_houses = self
+                .config
+                .hamlet_house_min
+                .max(self.config.hamlet_house_max);
+            let range = max_houses.saturating_sub(min_houses).saturating_add(1);
 
-        for gz in 0..hamlet_cells {
-            for gx in 0..hamlet_cells {
-                let cell_id = ((gx as u32) << 16) | (gz as u32);
+            for gz in 0..hamlet_cells {
+                for gx in 0..hamlet_cells {
+                    let cell_id = ((gx as u32) << 16) | (gz as u32);
 
-                let rnd = hash_to_unit_float(hash4(self.seed.wrapping_add(3001), cx, cy, cell_id));
-                if rnd > self.config.hamlet_density {
-                    continue;
-                }
-
-                // Hamlet center position (with jitter)
-                let jx = hash_to_unit_float(hash4(self.seed.wrapping_add(3071), cx, cy, cell_id));
-                let jz = hash_to_unit_float(hash4(self.seed.wrapping_add(3093), cx, cy, cell_id));
-                let center_x = (gx as f32 + jx) * hamlet_spacing;
-                let center_z = (gz as f32 + jz) * hamlet_spacing;
-
-                if !self.is_valid_site(terrain, biome_map, center_x, center_z) {
-                    continue;
-                }
-
-                // Determine house count for this hamlet
-                let range = self.config.hamlet_house_max - self.config.hamlet_house_min + 1;
-                let count_rnd = hash4(self.seed.wrapping_add(3201), cx, cy, cell_id);
-                let count = self.config.hamlet_house_min + (count_rnd % range);
-
-                for i in 0..count {
-                    let sub_id = cell_id.wrapping_mul(31).wrapping_add(i);
-
-                    let angle =
-                        hash_to_unit_float(hash4(self.seed.wrapping_add(3301), cx, cy, sub_id))
-                            * std::f32::consts::TAU;
-
-                    // sqrt for uniform disk distribution
-                    let raw_dist =
-                        hash_to_unit_float(hash4(self.seed.wrapping_add(3401), cx, cy, sub_id));
-                    let dist = raw_dist.sqrt() * self.config.hamlet_radius;
-
-                    let local_x = center_x + angle.cos() * dist;
-                    let local_z = center_z + angle.sin() * dist;
-
-                    if !self.is_valid_site(terrain, biome_map, local_x, local_z) {
+                    let rnd =
+                        hash_to_unit_float(hash4(self.seed.wrapping_add(3001), cx, cy, cell_id));
+                    if rnd > self.config.hamlet_density {
                         continue;
                     }
 
-                    let height = self.height_at(terrain, local_x, local_z);
-                    let rotation =
-                        hash_to_unit_float(hash4(self.seed.wrapping_add(3501), cx, cy, sub_id))
-                            * std::f32::consts::TAU;
+                    // Hamlet center position (with jitter)
+                    let jx =
+                        hash_to_unit_float(hash4(self.seed.wrapping_add(3071), cx, cy, cell_id));
+                    let jz =
+                        hash_to_unit_float(hash4(self.seed.wrapping_add(3093), cx, cy, cell_id));
+                    let center_x = (gx as f32 + jx) * hamlet_spacing;
+                    let center_z = (gz as f32 + jz) * hamlet_spacing;
 
-                    let world_x = coord.x as f32 * CHUNK_SIZE_METERS + local_x;
-                    let world_z = coord.y as f32 * CHUNK_SIZE_METERS + local_z;
-                    houses.push(HouseInstance {
-                        position: Vec3::new(world_x, height, world_z),
-                        rotation,
-                    });
+                    if self
+                        .validate_site(terrain, biome_map, center_x, center_z)
+                        .is_none()
+                    {
+                        continue;
+                    }
+
+                    let count_rnd = hash4(self.seed.wrapping_add(3201), cx, cy, cell_id);
+                    let count = min_houses + (count_rnd % range);
+
+                    for i in 0..count {
+                        let sub_id = cell_id.wrapping_mul(31).wrapping_add(i);
+
+                        let angle =
+                            hash_to_unit_float(hash4(self.seed.wrapping_add(3301), cx, cy, sub_id))
+                                * std::f32::consts::TAU;
+
+                        // sqrt for uniform disk distribution
+                        let raw_dist =
+                            hash_to_unit_float(hash4(self.seed.wrapping_add(3401), cx, cy, sub_id));
+                        let dist = raw_dist.sqrt() * self.config.hamlet_radius;
+
+                        let local_x = center_x + angle.cos() * dist;
+                        let local_z = center_z + angle.sin() * dist;
+
+                        let height = match self.validate_site(terrain, biome_map, local_x, local_z)
+                        {
+                            Some(h) => h,
+                            None => continue,
+                        };
+
+                        let rotation =
+                            hash_to_unit_float(hash4(self.seed.wrapping_add(3501), cx, cy, sub_id))
+                                * std::f32::consts::TAU;
+
+                        let world_x = coord.x as f32 * CHUNK_SIZE_METERS + local_x;
+                        let world_z = coord.y as f32 * CHUNK_SIZE_METERS + local_z;
+                        houses.push(HouseInstance {
+                            position: Vec3::new(world_x, height, world_z),
+                            rotation,
+                        });
+                    }
                 }
             }
         }
@@ -168,14 +186,10 @@ impl<'a> Layer<HousesInput<'a>, Vec<HouseInstance>> for HousesLayer {
                     continue;
                 }
 
-                let slope = estimate_slope(&terrain.heights, local_x, local_z);
-                let height = sample_field_bilinear(&terrain.heights, local_x, local_z);
-                if slope > self.config.max_slope
-                    || height < self.sea_level
-                    || !(self.config.height_min..=self.config.height_max).contains(&height)
-                {
-                    continue;
-                }
+                let height = match self.validate_site(terrain, biome_map, local_x, local_z) {
+                    Some(h) => h,
+                    None => continue,
+                };
 
                 let rotation =
                     hash_to_unit_float(hash4(self.seed.wrapping_add(1401), cx, cy, cell_id))
