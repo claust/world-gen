@@ -1,8 +1,9 @@
-use egui::{self, Color32, CornerRadius, Pos2, Rect, RichText, Sense, Vec2};
+use egui::{self, Color32, CornerRadius, Pos2, Rect, Sense, Vec2};
 
 use crate::renderer_wgpu::thumbnail::ThumbnailRenderer;
 use crate::world_core::herbarium::Herbarium;
 
+use super::theme;
 use super::ui_registry::UiRegistry;
 
 pub enum HerbariumAction {
@@ -27,28 +28,23 @@ impl HerbariumUi {
         egui::CentralPanel::default()
             .frame({
                 #[allow(deprecated)]
-                egui::Frame::none().fill(Color32::from_rgba_unmultiplied(10, 40, 15, 200))
+                egui::Frame::none().fill(theme::PANEL_BG)
             })
             .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(30.0);
-
-                    ui.label(
-                        RichText::new("Herbarium")
-                            .size(42.0)
-                            .color(Color32::from_rgb(140, 220, 120)),
-                    );
-                    ui.add_space(20.0);
-
-                    // Back button
+                // Back button — top-left, fixed square size
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    let back_size = egui::vec2(theme::BACK_BUTTON_SIZE, theme::BACK_BUTTON_SIZE);
                     registry.register_button("btn-herbarium-back", "Back");
-                    let back_btn = ui.add(
-                        egui::Button::new(RichText::new("Back").size(16.0).color(Color32::WHITE))
-                            .fill(Color32::from_rgba_unmultiplied(30, 80, 30, 180)),
-                    );
-                    if back_btn.clicked() || registry.consume_click("btn-herbarium-back") {
+                    if ui.add_sized(back_size, theme::back_button()).clicked()
+                        || registry.consume_click("btn-herbarium-back")
+                    {
                         action = Some(HerbariumAction::Back);
                     }
+                });
+                ui.vertical_centered(|ui| {
+                    ui.add_space(10.0);
+                    ui.label(theme::title("Herbarium", theme::TITLE_SIZE));
                     ui.add_space(20.0);
                 });
 
@@ -99,7 +95,7 @@ impl HerbariumUi {
 
                                             // Tile background — derive color from leaf HSL
                                             let leaf = &entry.species.color.leaf;
-                                            let tile_color = hsl_to_color32(
+                                            let tile_color = theme::hsl_to_color32(
                                                 leaf.h,
                                                 leaf.s * 0.7,
                                                 leaf.l * 0.8,
@@ -108,7 +104,7 @@ impl HerbariumUi {
 
                                             let hover = response.hovered();
                                             let bg = if hover {
-                                                lighten(tile_color, 30)
+                                                theme::lighten(tile_color, 30)
                                             } else {
                                                 tile_color
                                             };
@@ -121,7 +117,7 @@ impl HerbariumUi {
                                                 CornerRadius::same(8),
                                                 egui::Stroke::new(
                                                     if hover { 2.0 } else { 1.0 },
-                                                    Color32::from_rgb(140, 220, 120),
+                                                    theme::ACCENT,
                                                 ),
                                                 egui::StrokeKind::Outside,
                                             );
@@ -168,7 +164,7 @@ impl HerbariumUi {
                                                 egui::Align2::CENTER_CENTER,
                                                 &entry.species.name,
                                                 egui::FontId::proportional(11.0),
-                                                Color32::from_white_alpha(160),
+                                                theme::TEXT_SECONDARY,
                                             );
                                         }
 
@@ -187,9 +183,9 @@ impl HerbariumUi {
                                             let hover = response.hovered();
 
                                             let bg = if hover {
-                                                Color32::from_rgba_unmultiplied(50, 100, 50, 200)
+                                                theme::TILE_BG_HOVER
                                             } else {
-                                                Color32::from_rgba_unmultiplied(30, 70, 30, 180)
+                                                theme::TILE_BG
                                             };
 
                                             painter.rect_filled(rect, CornerRadius::same(8), bg);
@@ -197,10 +193,7 @@ impl HerbariumUi {
                                             painter.rect_stroke(
                                                 rect,
                                                 CornerRadius::same(8),
-                                                egui::Stroke::new(
-                                                    1.0,
-                                                    Color32::from_rgb(100, 180, 90),
-                                                ),
+                                                egui::Stroke::new(1.0, theme::ACCENT_MUTED),
                                                 egui::StrokeKind::Outside,
                                             );
 
@@ -210,7 +203,7 @@ impl HerbariumUi {
                                                 egui::Align2::CENTER_CENTER,
                                                 "+",
                                                 egui::FontId::proportional(48.0),
-                                                Color32::from_rgb(140, 220, 120),
+                                                theme::ACCENT,
                                             );
                                         }
 
@@ -229,35 +222,4 @@ impl HerbariumUi {
 
         action
     }
-}
-
-fn hsl_to_color32(h: f32, s: f32, l: f32, alpha: u8) -> Color32 {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let h_prime = h.rem_euclid(360.0) / 60.0;
-    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
-    let (r1, g1, b1) = match h_prime as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        5 => (c, 0.0, x),
-        _ => (0.0, 0.0, 0.0),
-    };
-    let m = l - c / 2.0;
-    Color32::from_rgba_unmultiplied(
-        ((r1 + m) * 255.0) as u8,
-        ((g1 + m) * 255.0) as u8,
-        ((b1 + m) * 255.0) as u8,
-        alpha,
-    )
-}
-
-fn lighten(c: Color32, amount: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(
-        c.r().saturating_add(amount),
-        c.g().saturating_add(amount),
-        c.b().saturating_add(amount),
-        c.a(),
-    )
 }

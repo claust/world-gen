@@ -2,6 +2,7 @@ mod config_panel;
 pub mod herbarium_ui;
 pub mod plant_editor_panel;
 mod start_menu;
+pub mod theme;
 mod ui_registry;
 
 pub use config_panel::ConfigPanel;

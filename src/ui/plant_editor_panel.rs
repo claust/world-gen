@@ -3,6 +3,7 @@ use serde::Serialize;
 
 use crate::world_core::plant_gen::config::SpeciesConfig;
 
+use super::theme;
 use super::ui_registry::UiRegistry;
 
 const CROWN_SHAPES: &[&str] = &[
@@ -296,17 +297,25 @@ impl PlantEditorPanel {
 
         egui::SidePanel::left("plant_editor_panel")
             .default_width(400.0)
-            .frame(
-                egui::Frame::side_top_panel(ctx.style().as_ref())
-                    .fill(egui::Color32::from_rgba_unmultiplied(30, 30, 30, 220)),
-            )
+            .frame(egui::Frame::side_top_panel(ctx.style().as_ref()).fill(theme::PANEL_BG))
             .show(ctx, |ui| {
-                ui.heading("Plant Editor");
+                // Back button — top-left, fixed square size
+                ui.add_space(4.0);
+                let back_size = egui::vec2(theme::BACK_BUTTON_SIZE, theme::BACK_BUTTON_SIZE);
+                registry.register_button("btn-back-to-herbarium", "Back to Herbarium");
+                if ui.add_sized(back_size, theme::back_button()).clicked()
+                    || registry.consume_click("btn-back-to-herbarium")
+                {
+                    action = Some(EditorAction::Back);
+                }
+                ui.add_space(4.0);
+                ui.label(theme::title("Plant Editor", theme::PANEL_TITLE_SIZE));
+                ui.add_space(4.0);
                 ui.separator();
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // --- Body Plan ---
-                    egui::CollapsingHeader::new("Body Plan")
+                    egui::CollapsingHeader::new(theme::section_header("Body Plan"))
                         .default_open(false)
                         .show(ui, |ui| {
                             registry.register_combo(
@@ -368,7 +377,7 @@ impl PlantEditorPanel {
                         });
 
                     // --- Trunk ---
-                    egui::CollapsingHeader::new("Trunk")
+                    egui::CollapsingHeader::new(theme::section_header("Trunk"))
                         .default_open(false)
                         .show(ui, |ui| {
                             reg_f32(
@@ -421,7 +430,7 @@ impl PlantEditorPanel {
                         });
 
                     // --- Crown ---
-                    egui::CollapsingHeader::new("Crown")
+                    egui::CollapsingHeader::new(theme::section_header("Crown"))
                         .default_open(true)
                         .show(ui, |ui| {
                             registry.register_combo(
@@ -492,7 +501,7 @@ impl PlantEditorPanel {
                         });
 
                     // --- Branching ---
-                    egui::CollapsingHeader::new("Branching")
+                    egui::CollapsingHeader::new(theme::section_header("Branching"))
                         .default_open(false)
                         .show(ui, |ui| {
                             registry.register_combo(
@@ -728,7 +737,7 @@ impl PlantEditorPanel {
                         });
 
                     // --- Foliage ---
-                    egui::CollapsingHeader::new("Foliage")
+                    egui::CollapsingHeader::new(theme::section_header("Foliage"))
                         .default_open(false)
                         .show(ui, |ui| {
                             registry.register_combo(
@@ -837,7 +846,7 @@ impl PlantEditorPanel {
                         });
 
                     // --- Color ---
-                    egui::CollapsingHeader::new("Color")
+                    egui::CollapsingHeader::new(theme::section_header("Color"))
                         .default_open(false)
                         .show(ui, |ui| {
                             ui.label("Bark");
@@ -929,60 +938,60 @@ impl PlantEditorPanel {
 
                     ui.add_space(8.0);
                     ui.separator();
+                    ui.add_space(8.0);
+
+                    let btn_width = ui.available_width() * 0.8;
+                    let btn_size = egui::vec2(btn_width, 36.0);
 
                     registry.register_button("btn-randomize", "Randomize");
                     registry.register_button("btn-reset-defaults-editor", "Reset Defaults");
-                    ui.horizontal(|ui| {
-                        if ui.button("Randomize").clicked()
+
+                    ui.vertical_centered(|ui| {
+                        if ui
+                            .add_sized(btn_size, theme::menu_button("Randomize"))
+                            .clicked()
                             || registry.consume_click("btn-randomize")
                         {
                             self.params = PlantParams::randomize();
                             self.dirty = true;
                         }
-                        if ui.button("Reset Defaults").clicked()
+
+                        ui.add_space(6.0);
+
+                        if ui
+                            .add_sized(btn_size, theme::menu_button("Reset Defaults"))
+                            .clicked()
                             || registry.consume_click("btn-reset-defaults-editor")
                         {
                             self.params = self.initial_params.clone();
                             self.dirty = true;
                         }
-                    });
 
-                    ui.add_space(12.0);
+                        ui.add_space(6.0);
 
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        registry.register_button("btn-screenshot-plant", "Save Screenshot");
-                        if ui.button("Save Screenshot").clicked()
-                            || registry.consume_click("btn-screenshot-plant")
+                        #[cfg(not(target_arch = "wasm32"))]
                         {
-                            action = Some(EditorAction::Screenshot);
+                            registry.register_button("btn-screenshot-plant", "Save Screenshot");
+                            if ui
+                                .add_sized(btn_size, theme::menu_button("Save Screenshot"))
+                                .clicked()
+                                || registry.consume_click("btn-screenshot-plant")
+                            {
+                                action = Some(EditorAction::Screenshot);
+                            }
+
+                            ui.add_space(6.0);
                         }
-                        ui.add_space(8.0);
-                    }
 
-                    registry.register_button("btn-back-to-herbarium", "Back to Herbarium");
-                    if ui.button("Back to Herbarium").clicked()
-                        || registry.consume_click("btn-back-to-herbarium")
-                    {
-                        action = Some(EditorAction::Back);
-                    }
-
-                    ui.add_space(8.0);
-
-                    registry.register_button("btn-delete-plant", "Delete Plant");
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Delete Plant")
-                                    .color(egui::Color32::from_rgb(255, 120, 120)),
-                            )
-                            .fill(egui::Color32::from_rgb(80, 20, 20)),
-                        )
-                        .clicked()
-                        || registry.consume_click("btn-delete-plant")
-                    {
-                        action = Some(EditorAction::Delete);
-                    }
+                        registry.register_button("btn-delete-plant", "Delete Plant");
+                        if ui
+                            .add_sized(btn_size, theme::danger_button("Delete Plant"))
+                            .clicked()
+                            || registry.consume_click("btn-delete-plant")
+                        {
+                            action = Some(EditorAction::Delete);
+                        }
+                    });
                 });
             });
 
