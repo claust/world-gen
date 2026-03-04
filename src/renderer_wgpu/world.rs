@@ -31,6 +31,7 @@ pub struct WorldRenderer {
     fog_end: f32,
     registry: PlantRegistry,
     view_proj: Mat4,
+    camera_position: Vec3,
 }
 
 impl WorldRenderer {
@@ -79,6 +80,7 @@ impl WorldRenderer {
             fog_end,
             registry,
             view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
         }
     }
 
@@ -111,6 +113,7 @@ impl WorldRenderer {
         hour: f32,
     ) {
         self.view_proj = view_proj;
+        self.camera_position = camera_position;
         self.frame_bg.update(
             queue,
             &FrameUniform::new(view_proj, camera_position, elapsed, hour),
@@ -242,7 +245,7 @@ impl WorldRenderer {
         let frustum = Frustum::from_view_proj(self.view_proj);
         self.sky.render(pass);
         self.terrain.render(pass, &frustum);
-        self.instanced.render(pass, &frustum);
+        self.instanced.render(pass, &frustum, self.camera_position);
         self.water.render(pass, &frustum);
         self.hud.render(pass);
         self.minimap.render(pass);
