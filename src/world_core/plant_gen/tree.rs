@@ -61,13 +61,6 @@ pub fn compact_foliage(blobs: &mut Vec<FoliageBlob>) {
         }
     }
     blobs.truncate(w);
-
-    // Cap foliage blob count — keep the largest (most visually significant) blobs
-    const MAX_FOLIAGE_BLOBS: usize = 100;
-    if blobs.len() > MAX_FOLIAGE_BLOBS {
-        blobs.sort_by(|a, b| b.radius.partial_cmp(&a.radius).unwrap());
-        blobs.truncate(MAX_FOLIAGE_BLOBS);
-    }
 }
 
 /// Compute a branch direction by tilting `parent_dir` by `insert_angle`, rotated around it by `rot_angle`.
