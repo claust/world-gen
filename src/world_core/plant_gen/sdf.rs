@@ -7,20 +7,22 @@ use super::tree::FoliageBlob;
 use super::PlantVertex;
 use crate::world_core::color::hsl_to_linear;
 
-fn sdf_sphere(p: Vec3, center: Vec3, r: f32) -> f32 {
-    p.distance(center) - r
-}
-
 fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
     let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
     let m = a * h + b * (1.0 - h);
     m - k * h * (1.0 - h)
 }
 
-fn eval_sdf(p: Vec3, blobs: &[FoliageBlob], k: f32) -> f32 {
+fn eval_sdf(p: Vec3, blobs: &[FoliageBlob], k: f32, max_influence: f32) -> f32 {
     let mut d = f32::MAX;
     for blob in blobs {
-        let sd = sdf_sphere(p, blob.center, blob.radius);
+        // Skip blobs too far to influence the result
+        let dist_sq = p.distance_squared(blob.center);
+        let reach = blob.radius + max_influence;
+        if dist_sq > reach * reach {
+            continue;
+        }
+        let sd = dist_sq.sqrt() - blob.radius;
         d = smooth_min(d, sd, k);
     }
     d
@@ -45,8 +47,11 @@ pub fn extract_foliage_surface(blobs: &[FoliageBlob], leaf: &Hsl) -> (Vec<PlantV
     }
     let mean_radius = radius_sum / blobs.len() as f32;
     let k = mean_radius * 0.6;
+    // Max distance at which a blob can influence the SDF (for spatial culling)
+    let max_influence = k + mean_radius;
 
-    // Cell size: half the smallest blob radius, clamped so grid stays 8-48 per axis
+    // Cell size: half the smallest blob radius, clamped so the largest axis stays 8-48 cells
+    // (smaller axes may have fewer cells, with a floor of 4)
     let extent = aabb_max - aabb_min;
     let max_extent = extent.x.max(extent.y).max(extent.z);
     let cell_size_desired = min_radius * 0.5;
@@ -72,7 +77,7 @@ pub fn extract_foliage_surface(blobs: &[FoliageBlob], leaf: &Hsl) -> (Vec<PlantV
             for xi in 0..nx {
                 let world_pos = grid_min + Vec3::new(xi as f32, yi as f32, zi as f32) * cell_size;
                 let idx = shape.linearize([xi, yi, zi]) as usize;
-                sdf_values[idx] = eval_sdf(world_pos, blobs, k);
+                sdf_values[idx] = eval_sdf(world_pos, blobs, k, max_influence);
             }
         }
     }
@@ -100,7 +105,7 @@ pub fn extract_foliage_surface(blobs: &[FoliageBlob], leaf: &Hsl) -> (Vec<PlantV
             let world_pos = grid_min + Vec3::from_array(*grid_pos) * cell_size;
 
             // SDF gradient via central differences for smoother normals
-            let normal = sdf_gradient(world_pos, blobs, k, cell_size * 0.5, inv_2h);
+            let normal = sdf_gradient(world_pos, blobs, k, max_influence, cell_size * 0.5, inv_2h);
 
             // Blob-weighted color blend
             let color = blend_blob_color(world_pos, blobs, leaf);
@@ -116,10 +121,20 @@ pub fn extract_foliage_surface(blobs: &[FoliageBlob], leaf: &Hsl) -> (Vec<PlantV
     (vertices, buffer.indices)
 }
 
-fn sdf_gradient(p: Vec3, blobs: &[FoliageBlob], k: f32, eps: f32, inv_2h: f32) -> [f32; 3] {
-    let dx = eval_sdf(p + Vec3::X * eps, blobs, k) - eval_sdf(p - Vec3::X * eps, blobs, k);
-    let dy = eval_sdf(p + Vec3::Y * eps, blobs, k) - eval_sdf(p - Vec3::Y * eps, blobs, k);
-    let dz = eval_sdf(p + Vec3::Z * eps, blobs, k) - eval_sdf(p - Vec3::Z * eps, blobs, k);
+fn sdf_gradient(
+    p: Vec3,
+    blobs: &[FoliageBlob],
+    k: f32,
+    max_influence: f32,
+    eps: f32,
+    inv_2h: f32,
+) -> [f32; 3] {
+    let dx = eval_sdf(p + Vec3::X * eps, blobs, k, max_influence)
+        - eval_sdf(p - Vec3::X * eps, blobs, k, max_influence);
+    let dy = eval_sdf(p + Vec3::Y * eps, blobs, k, max_influence)
+        - eval_sdf(p - Vec3::Y * eps, blobs, k, max_influence);
+    let dz = eval_sdf(p + Vec3::Z * eps, blobs, k, max_influence)
+        - eval_sdf(p - Vec3::Z * eps, blobs, k, max_influence);
     let n = Vec3::new(dx, dy, dz) * inv_2h;
     let len = n.length();
     if len > 1e-8 {
