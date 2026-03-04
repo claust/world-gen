@@ -1,6 +1,7 @@
 pub mod config;
 pub mod crown;
 pub mod mesh;
+pub mod sdf;
 pub mod tree;
 
 use config::SpeciesConfig;

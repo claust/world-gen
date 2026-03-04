@@ -1,47 +1,12 @@
 use glam::Vec3;
 
 use super::config::SpeciesConfig;
+use super::sdf;
 use super::tree::TreeData;
 use super::PlantVertex;
 use crate::world_core::color::hsl_to_linear;
 
 const CYL_SIDES: usize = 8;
-
-const PHI: f32 = 1.618_034;
-
-#[rustfmt::skip]
-const ICO_V: [[f32; 3]; 12] = [
-    [-1.0,  PHI,  0.0],
-    [ 1.0,  PHI,  0.0],
-    [-1.0, -PHI,  0.0],
-    [ 1.0, -PHI,  0.0],
-    [ 0.0, -1.0,  PHI],
-    [ 0.0,  1.0,  PHI],
-    [ 0.0, -1.0, -PHI],
-    [ 0.0,  1.0, -PHI],
-    [ PHI,  0.0, -1.0],
-    [ PHI,  0.0,  1.0],
-    [-PHI,  0.0, -1.0],
-    [-PHI,  0.0,  1.0],
-];
-
-#[rustfmt::skip]
-const ICO_F: [[usize; 3]; 20] = [
-    [0, 11, 5],  [0, 5, 1],   [0, 1, 7],   [0, 7, 10],  [0, 10, 11],
-    [1, 5, 9],   [5, 11, 4],  [11, 10, 2], [10, 7, 6],  [7, 1, 8],
-    [3, 9, 4],   [3, 4, 2],   [3, 2, 6],   [3, 6, 8],   [3, 8, 9],
-    [4, 9, 5],   [2, 4, 11],  [6, 2, 10],  [8, 6, 7],   [9, 8, 1],
-];
-
-/// Precomputed normalized icosahedron vertices.
-fn ico_normals() -> [[f32; 3]; 12] {
-    let mut out = [[0.0; 3]; 12];
-    for (i, v) in ICO_V.iter().enumerate() {
-        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-        out[i] = [v[0] / len, v[1] / len, v[2] / len];
-    }
-    out
-}
 
 pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> (Vec<PlantVertex>, Vec<u32>) {
     let mut vertices = Vec::new();
@@ -68,22 +33,13 @@ pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> (Vec<PlantVertex>, V
         );
     }
 
-    // Leaf colors
-    let leaf = &spec.color.leaf;
-    let ico_n = ico_normals();
-
-    for blob in &data.foliage {
-        let h = leaf.h + blob.hue_shift;
-        let l = (leaf.l + blob.light_shift).clamp(0.15, 0.6);
-        let color = hsl_to_linear(h, leaf.s, l);
-        add_icosahedron(
-            blob.center,
-            blob.radius,
-            color,
-            &ico_n,
-            &mut vertices,
-            &mut indices,
-        );
+    // Foliage via SDF smooth union + surface nets
+    if !data.foliage.is_empty() {
+        let base_idx = vertices.len() as u32;
+        let (foliage_verts, foliage_idx) =
+            sdf::extract_foliage_surface(&data.foliage, &spec.color.leaf);
+        vertices.extend(foliage_verts);
+        indices.extend(foliage_idx.iter().map(|i| i + base_idx));
     }
 
     (vertices, indices)
@@ -133,35 +89,5 @@ fn add_cylinder(
         let i2 = base_idx + sides + i;
         let i3 = base_idx + sides + (i + 1) % sides;
         indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
-    }
-}
-
-fn add_icosahedron(
-    center: Vec3,
-    radius: f32,
-    color: [f32; 3],
-    ico_n: &[[f32; 3]; 12],
-    verts: &mut Vec<PlantVertex>,
-    indices: &mut Vec<u32>,
-) {
-    let base_idx = verts.len() as u32;
-    for (i, n) in ico_n.iter().enumerate() {
-        let v = ICO_V[i];
-        verts.push(PlantVertex {
-            position: [
-                center.x + n[0] * radius,
-                center.y + n[1] * radius,
-                center.z + n[2] * radius,
-            ],
-            normal: [v[0], v[1], v[2]],
-            color,
-        });
-    }
-    for f in &ICO_F {
-        indices.extend_from_slice(&[
-            base_idx + f[0] as u32,
-            base_idx + f[1] as u32,
-            base_idx + f[2] as u32,
-        ]);
     }
 }
