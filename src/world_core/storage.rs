@@ -33,7 +33,15 @@ impl Storage for FileStorage {
             Ok(p) => p,
             Err(_) => return None,
         };
-        std::fs::read_to_string(&path).ok()
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => Some(contents),
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("Warning: failed to read storage file '{}': {}", path, err);
+                }
+                None
+            }
+        }
     }
 
     fn save(&self, key: &str, data: &str) -> anyhow::Result<()> {
