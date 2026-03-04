@@ -21,7 +21,11 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     if key_event.state == ElementState::Pressed
                         && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F1))
                     {
-                        if !app.is_on_menu() && !app.is_on_herbarium() && !app.is_on_editor() {
+                        if !app.is_on_menu()
+                            && !app.is_loading()
+                            && !app.is_on_herbarium()
+                            && !app.is_on_editor()
+                        {
                             app.config_panel.toggle();
                             if app.config_panel.is_visible() {
                                 app.release_cursor();
@@ -35,6 +39,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
 
                 // Feed events to egui when on start menu, config panel, or plant editor
                 let egui_wants_event = if app.is_on_menu()
+                    || app.is_loading()
                     || app.is_on_herbarium()
                     || app.config_panel.is_visible()
                     || app.is_on_editor()
@@ -58,7 +63,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
-                        if !app.is_on_menu() {
+                        if !app.is_on_menu() && !app.is_loading() {
                             if app.is_on_editor() {
                                 app.leave_plant_editor();
                             } else if app.is_on_herbarium() {
@@ -110,11 +115,12 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                                 editor.on_mouse_press();
                             }
                         } else if app.is_on_menu()
+                            || app.is_loading()
                             || app.is_on_herbarium()
                             || app.config_panel.is_visible()
                             || app.is_on_editor()
                         {
-                            // Don't capture cursor on menu, herbarium, config panel, or plant editor
+                            // Don't capture cursor on menu, loading, herbarium, config panel, or plant editor
                         } else {
                             app.capture_cursor();
                         }
@@ -145,8 +151,8 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         if let Some(action) = app.pending_menu_action.take() {
                             use crate::ui::MenuAction;
                             match action {
-                                MenuAction::NewGame => app.start_game(false),
-                                MenuAction::ResumeGame => app.start_game(true),
+                                MenuAction::NewGame => app.begin_loading(false),
+                                MenuAction::ResumeGame => app.begin_loading(true),
                                 MenuAction::Herbarium => app.enter_herbarium(),
                                 MenuAction::OpenPlantEditor(i) => {
                                     app.enter_plant_editor_for_entry(i)
@@ -170,8 +176,9 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                 }
             }
             Event::DeviceEvent { event, .. } => {
-                // Block mouse delta when on start menu, config panel, or plant editor
+                // Block mouse delta when on start menu, loading, config panel, or plant editor
                 if app.is_on_menu()
+                    || app.is_loading()
                     || app.is_on_herbarium()
                     || app.config_panel.is_visible()
                     || app.is_on_editor()
@@ -249,7 +256,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                     if key_event.state == ElementState::Pressed
                         && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F1))
                     {
-                        if !app.is_on_menu() {
+                        if !app.is_on_menu() && !app.is_loading() {
                             app.config_panel.toggle();
                             if app.config_panel.is_visible() {
                                 app.release_cursor();
@@ -261,8 +268,9 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                     }
                 }
 
-                // Feed events to egui when on start menu, config panel, or plant editor
+                // Feed events to egui when on start menu, loading, config panel, or plant editor
                 let egui_wants_event = if app.is_on_menu()
+                    || app.is_loading()
                     || app.is_on_herbarium()
                     || app.config_panel.is_visible()
                     || app.is_on_editor()
@@ -281,7 +289,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
-                        if !app.is_on_menu() {
+                        if !app.is_on_menu() && !app.is_loading() {
                             if app.is_on_editor() {
                                 app.leave_plant_editor();
                             } else if app.is_on_herbarium() {
@@ -311,11 +319,12 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                                 editor.on_mouse_press();
                             }
                         } else if app.is_on_menu()
+                            || app.is_loading()
                             || app.is_on_herbarium()
                             || app.config_panel.is_visible()
                             || app.is_on_editor()
                         {
-                            // Don't capture cursor on menu, herbarium, config panel, or plant editor
+                            // Don't capture cursor on menu, loading, herbarium, config panel, or plant editor
                         } else {
                             app.capture_cursor();
                         }
@@ -348,8 +357,8 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                         if let Some(action) = app.pending_menu_action.take() {
                             use crate::ui::MenuAction;
                             match action {
-                                MenuAction::NewGame => app.start_game(false),
-                                MenuAction::ResumeGame => app.start_game(true),
+                                MenuAction::NewGame => app.begin_loading(false),
+                                MenuAction::ResumeGame => app.begin_loading(true),
                                 MenuAction::Herbarium => app.enter_herbarium(),
                                 MenuAction::OpenPlantEditor(i) => {
                                     app.enter_plant_editor_for_entry(i)
@@ -367,6 +376,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
             }
             Event::DeviceEvent { event, .. } => {
                 if app.is_on_menu()
+                    || app.is_loading()
                     || app.is_on_herbarium()
                     || app.config_panel.is_visible()
                     || app.is_on_editor()
