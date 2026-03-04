@@ -15,8 +15,8 @@ use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::plant_gen;
 
-/// Distance (in world units) beyond which chunks use LOD meshes.
-const LOD_THRESHOLD: f32 = 512.0;
+/// Squared distance (in world units) beyond which chunks use LOD meshes.
+const LOD_THRESHOLD_SQ: f32 = 512.0 * 512.0;
 
 pub struct InstancedPass {
     pipeline: wgpu::RenderPipeline,
@@ -285,32 +285,42 @@ impl InstancedPass {
     ) {
         pass.set_pipeline(&self.pipeline);
 
-        // Draw each species, selecting LOD mesh based on distance
+        // Draw each species, batching by LOD level to minimise state changes
         for (i, key) in self.species_names.iter().enumerate() {
             let lod_key = &self.species_lod_names[i];
-            let hi_mesh = self.models.get(key);
-            let lo_mesh = self.models.get(lod_key);
 
+            // Partition visible chunks into near (hi-res) and far (LOD)
+            let mut near: Vec<&GpuInstanceChunk> = Vec::new();
+            let mut far: Vec<&GpuInstanceChunk> = Vec::new();
             for (coord, inst) in &self.plant_instances[i] {
                 if !frustum.is_chunk_visible(*coord) {
                     continue;
                 }
-
-                let chunk_center = Vec3::new(
-                    (coord.x as f32 + 0.5) * CHUNK_SIZE_METERS,
-                    camera_position.y,
-                    (coord.y as f32 + 0.5) * CHUNK_SIZE_METERS,
-                );
-                let dist = (chunk_center - camera_position).length();
-
-                let mesh = if dist < LOD_THRESHOLD {
-                    hi_mesh
+                let dx = (coord.x as f32 + 0.5) * CHUNK_SIZE_METERS - camera_position.x;
+                let dz = (coord.y as f32 + 0.5) * CHUNK_SIZE_METERS - camera_position.z;
+                let dist_sq = dx * dx + dz * dz;
+                if dist_sq < LOD_THRESHOLD_SQ {
+                    near.push(inst);
                 } else {
-                    lo_mesh
-                };
-                if let Some(mesh) = mesh {
-                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                    pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    far.push(inst);
+                }
+            }
+
+            // Draw near chunks with hi-res mesh
+            if let Some(mesh) = self.models.get(key) {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for inst in &near {
+                    pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                    pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+                }
+            }
+
+            // Draw far chunks with LOD mesh
+            if let Some(mesh) = self.models.get(lod_key) {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for inst in &far {
                     pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
                     pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
                 }

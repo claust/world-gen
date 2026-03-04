@@ -97,7 +97,7 @@ impl SpeciesConfig {
     /// Return a simplified clone for distant LOD rendering.
     pub fn simplify_for_lod(&self) -> Self {
         let mut c = self.clone();
-        c.branching.max_depth = c.branching.max_depth.saturating_sub(1).max(1);
+        c.branching.max_depth = c.branching.max_depth.saturating_sub(1);
         c.branching.branches_per_node = [
             c.branching.branches_per_node[0].min(2),
             c.branching.branches_per_node[1].min(2),
