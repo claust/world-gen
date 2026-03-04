@@ -65,5 +65,5 @@ Replace far-away instances with camera-facing textured quads. Requires texture b
 | 2 | Simplified world meshes | 3-5x vertex reduction | Low | — |
 | 3 | Reduce shrub density | 2-4x fewer instances | Trivial | — |
 | 4 | Foliage blob cap | Medium vert reduction | Low | — |
-| 5 | Distance-based LOD | High for far chunks | High | — |
+| 5 | Distance-based LOD | High for far chunks | High | Done (2-level) |
 | 6 | Billboards | Best for scale | Major | — |
