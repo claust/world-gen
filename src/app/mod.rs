@@ -43,9 +43,30 @@ pub use event_loop::run_event_loop_web;
 
 enum Screen {
     StartMenu,
+    Loading,
     Playing,
     Herbarium,
     PlantEditor,
+}
+
+#[derive(Clone, Copy)]
+enum LoadingPhase {
+    Init,
+    BuildRegistry,
+    CreateWorld,
+    DispatchChunks,
+    WaitForChunks,
+    SyncTerrain,
+    SyncWater,
+    SyncInstances,
+    SyncMinimap,
+    Done,
+}
+
+struct LoadingState {
+    phase: LoadingPhase,
+    resume: bool,
+    progress: f32,
 }
 
 pub struct AppState {
@@ -84,6 +105,8 @@ pub struct AppState {
     config: GameConfig,
     pending_menu_action: Option<MenuAction>,
     ui_registry: UiRegistry,
+    loading_state: Option<LoadingState>,
+    loading_registry: Option<std::sync::Arc<crate::world_core::herbarium::PlantRegistry>>,
 }
 
 impl AppState {
@@ -163,6 +186,8 @@ impl AppState {
             config,
             pending_menu_action: None,
             ui_registry: UiRegistry::new(),
+            loading_state: None,
+            loading_registry: None,
         })
     }
 
@@ -225,6 +250,8 @@ impl AppState {
             config,
             pending_menu_action: None,
             ui_registry: UiRegistry::new(),
+            loading_state: None,
+            loading_registry: None,
         })
     }
 
@@ -267,10 +294,15 @@ impl AppState {
         matches!(self.screen, Screen::StartMenu)
     }
 
+    fn is_loading(&self) -> bool {
+        matches!(self.screen, Screen::Loading)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn screen_name(&self) -> &'static str {
         match self.screen {
             Screen::StartMenu => "start_menu",
+            Screen::Loading => "loading",
             Screen::Playing => "playing",
             Screen::Herbarium => "herbarium",
             Screen::PlantEditor => "plant_editor",
@@ -359,7 +391,7 @@ impl AppState {
         self.screen = Screen::Herbarium;
     }
 
-    fn start_game(&mut self, resume: bool) {
+    fn begin_loading(&mut self, resume: bool) {
         // If resuming and the world is still alive in memory, just switch back
         if resume && self.world.is_some() {
             self.screen = Screen::Playing;
@@ -367,59 +399,181 @@ impl AppState {
             return;
         }
 
-        let save_ref = if resume { self.save.as_ref() } else { None };
+        self.screen = Screen::Loading;
+        self.loading_state = Some(LoadingState {
+            phase: LoadingPhase::Init,
+            resume,
+            progress: 0.0,
+        });
+    }
 
-        // Set camera from save or defaults
-        let (cam_pos, cam_yaw, cam_pitch) = match save_ref {
-            Some(s) => (
-                Vec3::new(
-                    s.camera.position[0],
-                    s.camera.position[1],
-                    s.camera.position[2],
-                ),
-                s.camera.yaw,
-                s.camera.pitch,
-            ),
-            None => (Vec3::new(96.0, 150.0, 16.0), 1.02, -0.38),
+    fn tick_loading(&mut self) {
+        let Some(state) = &self.loading_state else {
+            return;
         };
-        self.camera = FlyCamera::new(cam_pos);
-        self.camera.yaw = cam_yaw;
-        self.camera.pitch = cam_pitch;
+        let phase = state.phase;
+        let resume = state.resume;
 
-        // Starting a new game drops any existing world and clears GPU chunk caches
-        self.world = None;
-        self.world_renderer
-            .clear_chunks(&self.gpu.device, &self.gpu.queue);
+        match phase {
+            LoadingPhase::Init => {
+                let save_ref = if resume { self.save.as_ref() } else { None };
+                let (cam_pos, cam_yaw, cam_pitch) = match save_ref {
+                    Some(s) => (
+                        Vec3::new(
+                            s.camera.position[0],
+                            s.camera.position[1],
+                            s.camera.position[2],
+                        ),
+                        s.camera.yaw,
+                        s.camera.pitch,
+                    ),
+                    None => (Vec3::new(96.0, 150.0, 16.0), 1.02, -0.38),
+                };
+                self.camera = FlyCamera::new(cam_pos);
+                self.camera.yaw = cam_yaw;
+                self.camera.pitch = cam_pitch;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-        #[cfg(target_arch = "wasm32")]
-        let threads = 1;
+                self.world = None;
+                self.world_renderer
+                    .clear_chunks(&self.gpu.device, &self.gpu.queue);
 
-        // Build registry from current herbarium — shared by renderer and runtime
-        let registry = crate::world_core::herbarium::PlantRegistry::from_herbarium(&self.herbarium);
-        self.world_renderer
-            .update_registry(&self.gpu.device, registry);
-        let arc_registry = std::sync::Arc::new(
-            crate::world_core::herbarium::PlantRegistry::from_herbarium(&self.herbarium),
-        );
-        let mut world = match WorldRuntime::new(&self.config, save_ref, threads, arc_registry) {
-            Ok(world) => world,
-            Err(err) => {
-                log::error!("failed to create world runtime: {err}");
-                return;
+                if let Some(s) = &mut self.loading_state {
+                    s.phase = LoadingPhase::BuildRegistry;
+                    s.progress = 0.05;
+                }
             }
-        };
-        world.update(0.0, self.camera.position);
+            LoadingPhase::BuildRegistry => {
+                let registry =
+                    crate::world_core::herbarium::PlantRegistry::from_herbarium(&self.herbarium);
+                let arc_registry = std::sync::Arc::new(registry);
+                self.world_renderer.update_registry(
+                    &self.gpu.device,
+                    crate::world_core::herbarium::PlantRegistry::clone(&arc_registry),
+                );
+                self.loading_registry = Some(arc_registry);
 
-        self.world_renderer
-            .sync_chunks(&self.gpu.device, &self.gpu.queue, world.chunks());
+                if let Some(s) = &mut self.loading_state {
+                    s.phase = LoadingPhase::CreateWorld;
+                    s.progress = 0.15;
+                }
+            }
+            LoadingPhase::CreateWorld => {
+                let save_ref = if resume { self.save.as_ref() } else { None };
 
-        self.world = Some(world);
-        self.screen = Screen::Playing;
-        self.capture_cursor();
+                #[cfg(not(target_arch = "wasm32"))]
+                let threads = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4);
+                #[cfg(target_arch = "wasm32")]
+                let threads = 1;
+
+                let arc_registry = self.loading_registry.take().unwrap_or_else(|| {
+                    std::sync::Arc::new(
+                        crate::world_core::herbarium::PlantRegistry::from_herbarium(
+                            &self.herbarium,
+                        ),
+                    )
+                });
+                match WorldRuntime::new(&self.config, save_ref, threads, arc_registry) {
+                    Ok(world) => {
+                        self.world = Some(world);
+                    }
+                    Err(err) => {
+                        log::error!("failed to create world runtime: {err}");
+                        self.screen = Screen::StartMenu;
+                        self.loading_state = None;
+                        return;
+                    }
+                }
+
+                if let Some(s) = &mut self.loading_state {
+                    s.phase = LoadingPhase::DispatchChunks;
+                    s.progress = 0.30;
+                }
+            }
+            LoadingPhase::DispatchChunks => {
+                if let Some(world) = &mut self.world {
+                    world.update(0.0, self.camera.position);
+                }
+
+                if let Some(s) = &mut self.loading_state {
+                    s.phase = LoadingPhase::WaitForChunks;
+                    s.progress = 0.40;
+                }
+            }
+            LoadingPhase::WaitForChunks => {
+                // Poll for completed chunks each frame until all are loaded
+                if let Some(world) = &mut self.world {
+                    world.update(0.0, self.camera.position);
+                    let stats = world.stats();
+                    if stats.pending_chunks == 0 {
+                        if let Some(s) = &mut self.loading_state {
+                            s.phase = LoadingPhase::SyncTerrain;
+                            s.progress = 0.55;
+                        }
+                    } else {
+                        // Show progress based on how many chunks have loaded
+                        let total = stats.loaded_chunks + stats.pending_chunks;
+                        let frac = stats.loaded_chunks as f32 / total.max(1) as f32;
+                        if let Some(s) = &mut self.loading_state {
+                            s.progress = 0.40 + frac * 0.15;
+                        }
+                    }
+                }
+            }
+            LoadingPhase::SyncTerrain => {
+                if let Some(world) = &self.world {
+                    self.world_renderer.sync_terrain(
+                        &self.gpu.device,
+                        &self.gpu.queue,
+                        world.chunks(),
+                    );
+                }
+
+                if let Some(s) = &mut self.loading_state {
+                    s.phase = LoadingPhase::SyncWater;
+                    s.progress = 0.70;
+                }
+            }
+            LoadingPhase::SyncWater => {
+                if let Some(world) = &self.world {
+                    self.world_renderer
+                        .sync_water(&self.gpu.device, world.chunks());
+                }
+
+                if let Some(s) = &mut self.loading_state {
+                    s.phase = LoadingPhase::SyncInstances;
+                    s.progress = 0.80;
+                }
+            }
+            LoadingPhase::SyncInstances => {
+                if let Some(world) = &self.world {
+                    self.world_renderer
+                        .sync_instances(&self.gpu.device, world.chunks());
+                }
+
+                if let Some(s) = &mut self.loading_state {
+                    s.phase = LoadingPhase::SyncMinimap;
+                    s.progress = 0.92;
+                }
+            }
+            LoadingPhase::SyncMinimap => {
+                if let Some(world) = &self.world {
+                    self.world_renderer
+                        .sync_minimap(&self.gpu.queue, world.chunks());
+                }
+
+                if let Some(s) = &mut self.loading_state {
+                    s.phase = LoadingPhase::Done;
+                    s.progress = 1.0;
+                }
+            }
+            LoadingPhase::Done => {
+                self.screen = Screen::Playing;
+                self.capture_cursor();
+                self.loading_state = None;
+            }
+        }
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -439,6 +593,12 @@ impl AppState {
 
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
         self.elapsed_seconds += dt;
+
+        if self.is_loading() {
+            self.update_menu(dt);
+            self.tick_loading();
+            return;
+        }
 
         if self.is_on_menu() || self.is_on_herbarium() {
             self.update_menu(dt);
@@ -846,6 +1006,7 @@ impl AppState {
             });
 
         let is_menu = self.is_on_menu();
+        let is_loading = self.is_loading();
         let is_herbarium = self.is_on_herbarium();
         let is_editor = self.is_on_editor();
 
@@ -881,7 +1042,7 @@ impl AppState {
                     }
                     self.world_renderer.render_editor_scene(&mut pass, &meshes);
                 }
-            } else if is_menu || is_herbarium {
+            } else if is_menu || is_loading || is_herbarium {
                 self.world_renderer.render_sky_only(&mut pass);
             } else {
                 self.world_renderer.render(&mut pass);
@@ -891,16 +1052,28 @@ impl AppState {
         // egui overlay pass (renders on top of 3D scene)
         {
             self.ui_registry.clear();
-            let show_egui = is_menu || is_herbarium || self.config_panel.is_visible() || is_editor;
+            let show_egui = is_menu
+                || is_loading
+                || is_herbarium
+                || self.config_panel.is_visible()
+                || is_editor;
             if show_egui {
                 let raw_input = self.egui_bridge.take_raw_input();
                 let mut menu_action = None;
+                let loading_progress = self
+                    .loading_state
+                    .as_ref()
+                    .map(|s| s.progress)
+                    .unwrap_or(0.0);
                 let full_output = self
                     .egui_bridge
                     .ctx()
                     .run(raw_input, |ctx| match self.screen {
                         Screen::StartMenu => {
                             menu_action = self.start_menu.ui(ctx, &mut self.ui_registry);
+                        }
+                        Screen::Loading => {
+                            render_loading_ui(ctx, loading_progress);
                         }
                         Screen::Herbarium => {
                             use crate::ui::herbarium_ui::HerbariumAction;
@@ -1002,6 +1175,38 @@ impl AppState {
             },
         }
     }
+}
+
+fn render_loading_ui(ctx: &egui::Context, progress: f32) {
+    let message = match progress {
+        p if p < 0.15 => "Preparing the soil...",
+        p if p < 0.35 => "Planting seeds...",
+        p if p < 0.65 => "Growing forests...",
+        p if p < 0.85 => "Carving rivers...",
+        p if p < 0.95 => "Welcoming wildlife...",
+        _ => "World ready!",
+    };
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(egui::Color32::from_black_alpha(140)))
+        .show(ctx, |ui| {
+            let available = ui.available_size();
+            ui.add_space(available.y * 0.45);
+
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(message)
+                        .size(22.0)
+                        .color(egui::Color32::WHITE),
+                );
+                ui.add_space(12.0);
+                ui.add(
+                    egui::ProgressBar::new(progress)
+                        .desired_width(300.0)
+                        .animate(true),
+                );
+            });
+        });
 }
 
 pub fn try_grab_window_cursor(window: &Window) -> bool {

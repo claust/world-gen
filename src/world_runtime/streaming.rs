@@ -197,17 +197,14 @@ impl StreamingWorld {
         let loader =
             PlatformLoader::new_loader(seed, threads, Arc::clone(&config), Arc::clone(&registry))?;
 
-        let generator = ChunkGenerator::new(seed, &config, Arc::clone(&registry));
-        let center_chunk = IVec2::ZERO;
-        let initial_chunk = generator.generate_chunk(center_chunk);
-        let mut loaded = HashMap::with_capacity(1);
-        loaded.insert(center_chunk, initial_chunk);
-
+        // No synchronous chunk generation in this constructor — all chunks (including
+        // the center) are dispatched via update(); native loaders use background
+        // threads, while the wasm32 loader runs synchronously on the main thread.
         Ok(Self {
             seed,
             load_radius,
-            loaded,
-            center_chunk,
+            loaded: HashMap::new(),
+            center_chunk: IVec2::ZERO,
             loader,
             thread_count: threads,
             registry,
