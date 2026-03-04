@@ -1,4 +1,4 @@
-use egui::{self, RichText};
+use egui;
 
 use super::theme;
 use super::ui_registry::UiRegistry;
@@ -70,10 +70,7 @@ impl StartMenu {
                         }
                     } else {
                         ui.add_enabled_ui(false, |ui| {
-                            ui.add_sized(
-                                button_size,
-                                egui::Button::new(RichText::new("Resume Game").size(20.0)),
-                            );
+                            ui.add_sized(button_size, theme::menu_button("Resume Game"));
                         });
                     }
 

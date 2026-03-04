@@ -37,8 +37,7 @@ pub const ACCENT: Color32 = Color32::from_rgb(140, 220, 120);
 /// Slightly muted green accent (e.g. tile borders on new-plant tile).
 pub const ACCENT_MUTED: Color32 = Color32::from_rgb(100, 180, 90);
 
-/// Subdued white for secondary labels.
-/// Original unmultiplied: (255, 255, 255, 160)
+/// Soft grey for secondary labels (premultiplied from white at 63% opacity).
 pub const TEXT_SECONDARY: Color32 = Color32::from_rgba_premultiplied(160, 160, 160, 160);
 
 // ── Layout constants ────────────────────────────────────────────────────────
@@ -88,17 +87,6 @@ pub fn hsl_to_color32(h: f32, s: f32, l: f32, alpha: u8) -> Color32 {
         ((b1 + m) * 255.0) as u8,
         alpha,
     )
-}
-
-/// Create a styled green button matching the game's visual theme.
-pub fn themed_button(label: &str) -> egui::Button<'_> {
-    egui::Button::new(
-        egui::RichText::new(label)
-            .size(BUTTON_TEXT_SIZE)
-            .color(Color32::WHITE),
-    )
-    .fill(BUTTON_BG)
-    .stroke(egui::Stroke::new(1.0, ACCENT_MUTED))
 }
 
 /// Create a styled menu button (larger text, for start screen / main navigation).
