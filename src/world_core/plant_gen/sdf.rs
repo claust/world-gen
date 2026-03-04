@@ -43,8 +43,8 @@ pub fn extract_foliage_surface(blobs: &[FoliageBlob], leaf: &Hsl) -> (Vec<PlantV
         radius_sum += r;
         min_radius = min_radius.min(r);
     }
-    let median_radius = radius_sum / blobs.len() as f32;
-    let k = median_radius * 0.6;
+    let mean_radius = radius_sum / blobs.len() as f32;
+    let k = mean_radius * 0.6;
 
     // Cell size: half the smallest blob radius, clamped so grid stays 8-48 per axis
     let extent = aabb_max - aabb_min;
