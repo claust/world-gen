@@ -460,7 +460,7 @@ impl AppState {
                         s.camera.yaw,
                         s.camera.pitch,
                     ),
-                    None => (Vec3::new(96.0, 150.0, 16.0), 1.02, -0.38),
+                    None => (Vec3::new(158.0, 72.0, -51.0), 4.0, -0.23),
                 };
                 self.camera = FlyCamera::new(cam_pos);
                 self.camera.yaw = cam_yaw;
