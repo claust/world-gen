@@ -14,19 +14,25 @@ const THUMBNAIL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrg
 /// Minimum extent for camera framing to avoid degenerate matrices.
 const MIN_EXTENT: f32 = 0.1;
 
+struct CachedThumbnail {
+    hash: u64,
+    texture_id: egui::TextureId,
+}
+
 pub struct ThumbnailRenderer {
     pipeline: wgpu::RenderPipeline,
     frame_bind: FrameBindGroup,
     material_bind: MaterialBindGroup,
     depth_view: wgpu::TextureView,
-    textures: Vec<Option<egui::TextureId>>,
+    thumbnails: Vec<Option<CachedThumbnail>>,
 }
 
 /// Temporary GPU resources for rendering a single thumbnail.
+#[allow(dead_code)] // color_tex read on native only (GPU readback)
 struct PlantRenderData {
     prototype: PrototypeMesh,
     instance: wgpu::Buffer,
-    _color_tex: wgpu::Texture,
+    color_tex: wgpu::Texture,
     color_view: wgpu::TextureView,
     frame_uniform: FrameUniform,
 }
@@ -112,7 +118,7 @@ impl ThumbnailRenderer {
             frame_bind,
             material_bind,
             depth_view,
-            textures: Vec::new(),
+            thumbnails: Vec::new(),
         }
     }
 
@@ -124,42 +130,50 @@ impl ThumbnailRenderer {
         seed: u32,
         egui_renderer: &mut egui_wgpu::Renderer,
     ) {
-        // Write material uniform
         write_thumbnail_material(queue, &self.material_bind);
 
-        // Free old textures
-        for id in self.textures.drain(..).flatten() {
-            egui_renderer.free_texture(&id);
+        // Resize thumbnails vec to match herbarium, freeing removed entries
+        while self.thumbnails.len() > herbarium.plants.len() {
+            if let Some(Some(cached)) = self.thumbnails.pop() {
+                egui_renderer.free_texture(&cached.texture_id);
+            }
+        }
+        while self.thumbnails.len() < herbarium.plants.len() {
+            self.thumbnails.push(None);
         }
 
-        // Prepare all plants on CPU, collecting GPU resources
-        let mut render_data: Vec<Option<PlantRenderData>> = Vec::new();
-        for entry in &herbarium.plants {
-            render_data.push(prepare_plant(device, &entry.species, seed));
-        }
+        for (i, entry) in herbarium.plants.iter().enumerate() {
+            let hash = species_hash(&entry.species, seed);
 
-        // Encode all render passes into a single command buffer
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("thumb-encoder"),
-        });
+            // Skip if already cached with the same hash
+            if let Some(cached) = &self.thumbnails[i] {
+                if cached.hash == hash {
+                    continue;
+                }
+                // Hash changed — free old texture
+                egui_renderer.free_texture(&cached.texture_id);
+                self.thumbnails[i] = None;
+            }
 
-        for rd in render_data.iter().flatten() {
-            self.frame_bind.update(queue, &rd.frame_uniform);
-            self.encode_render_pass(&mut encoder, rd);
-        }
+            // Try loading from disk cache (native only)
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(tex_id) = load_cached_png(device, queue, hash, egui_renderer) {
+                self.thumbnails[i] = Some(CachedThumbnail {
+                    hash,
+                    texture_id: tex_id,
+                });
+                continue;
+            }
 
-        queue.submit(std::iter::once(encoder.finish()));
-
-        // Register all textures with egui
-        for data in &render_data {
-            let tex_id = data.as_ref().map(|rd| {
-                egui_renderer.register_native_texture(
-                    device,
-                    &rd.color_view,
-                    wgpu::FilterMode::Linear,
-                )
-            });
-            self.textures.push(tex_id);
+            // Cache miss — render offscreen
+            if let Some(tex_id) =
+                self.render_single_plant(device, queue, &entry.species, seed, egui_renderer)
+            {
+                self.thumbnails[i] = Some(CachedThumbnail {
+                    hash,
+                    texture_id: tex_id,
+                });
+            }
         }
     }
 
@@ -172,44 +186,100 @@ impl ThumbnailRenderer {
         seed: u32,
         egui_renderer: &mut egui_wgpu::Renderer,
     ) {
-        // Ensure textures vec is big enough
-        while self.textures.len() <= index {
-            self.textures.push(None);
+        while self.thumbnails.len() <= index {
+            self.thumbnails.push(None);
         }
 
         // Free old texture
-        if let Some(Some(id)) = self.textures.get(index) {
-            egui_renderer.free_texture(id);
+        if let Some(cached) = self.thumbnails[index].take() {
+            egui_renderer.free_texture(&cached.texture_id);
         }
 
         if let Some(entry) = herbarium.plants.get(index) {
             write_thumbnail_material(queue, &self.material_bind);
-
-            if let Some(rd) = prepare_plant(device, &entry.species, seed) {
-                self.frame_bind.update(queue, &rd.frame_uniform);
-
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("thumb-encoder-single"),
+            let hash = species_hash(&entry.species, seed);
+            if let Some(tex_id) =
+                self.render_single_plant(device, queue, &entry.species, seed, egui_renderer)
+            {
+                self.thumbnails[index] = Some(CachedThumbnail {
+                    hash,
+                    texture_id: tex_id,
                 });
-                self.encode_render_pass(&mut encoder, &rd);
-                queue.submit(std::iter::once(encoder.finish()));
-
-                let tex_id = egui_renderer.register_native_texture(
-                    device,
-                    &rd.color_view,
-                    wgpu::FilterMode::Linear,
-                );
-                self.textures[index] = Some(tex_id);
-            } else {
-                self.textures[index] = None;
             }
-        } else {
-            self.textures[index] = None;
         }
     }
 
     pub fn get_texture_id(&self, index: usize) -> Option<egui::TextureId> {
-        self.textures.get(index).copied().flatten()
+        self.thumbnails
+            .get(index)
+            .and_then(|c| c.as_ref())
+            .map(|c| c.texture_id)
+    }
+
+    fn render_single_plant(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        species: &crate::world_core::plant_gen::config::SpeciesConfig,
+        seed: u32,
+        egui_renderer: &mut egui_wgpu::Renderer,
+    ) -> Option<egui::TextureId> {
+        let rd = prepare_plant(device, species, seed)?;
+        self.frame_bind.update(queue, &rd.frame_uniform);
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("thumb-encoder"),
+        });
+        self.encode_render_pass(&mut encoder, &rd);
+
+        // Native: also encode GPU readback for disk caching
+        #[cfg(not(target_arch = "wasm32"))]
+        let staging = {
+            let bytes_per_row = 4 * THUMBNAIL_SIZE;
+            let staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("thumb-readback"),
+                size: (bytes_per_row * THUMBNAIL_SIZE) as u64,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &rd.color_tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &staging,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(bytes_per_row),
+                        rows_per_image: Some(THUMBNAIL_SIZE),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: THUMBNAIL_SIZE,
+                    height: THUMBNAIL_SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+            staging
+        };
+
+        queue.submit(std::iter::once(encoder.finish()));
+
+        // Native: save rendered pixels to disk cache
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let hash = species_hash(species, seed);
+            save_thumbnail_png(device, &staging, hash);
+        }
+
+        Some(egui_renderer.register_native_texture(
+            device,
+            &rd.color_view,
+            wgpu::FilterMode::Linear,
+        ))
     }
 
     fn encode_render_pass(&self, encoder: &mut wgpu::CommandEncoder, rd: &PlantRenderData) {
@@ -255,6 +325,19 @@ impl ThumbnailRenderer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn species_hash(species: &crate::world_core::plant_gen::config::SpeciesConfig, seed: u32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let json = serde_json::to_string(species).unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    json.hash(&mut hasher);
+    seed.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn write_thumbnail_material(queue: &wgpu::Queue, material_bind: &MaterialBindGroup) {
     let material_data = TerrainMaterialUniform {
         light_direction: [0.3, 0.9, 0.2, 0.0],
@@ -280,7 +363,6 @@ fn prepare_plant(
         return None;
     }
 
-    // Convert PlantVertex -> Vertex
     let verts: Vec<Vertex> = plant_mesh
         .vertices
         .iter()
@@ -304,7 +386,6 @@ fn prepare_plant(
     let extent = max - min;
     let max_dim = extent.x.max(extent.y).max(extent.z).max(MIN_EXTENT);
 
-    // Camera at ~30° elevation, looking at center
     let distance = max_dim * 1.8;
     let elevation_angle: f32 = 30.0_f32.to_radians();
     let cam_pos = center
@@ -315,17 +396,10 @@ fn prepare_plant(
         );
 
     let view = Mat4::look_at_rh(cam_pos, center, Vec3::Y);
-    let proj = Mat4::perspective_rh(
-        45.0_f32.to_radians(),
-        1.0, // square aspect
-        0.1,
-        (distance * 4.0).max(0.2),
-    );
+    let proj = Mat4::perspective_rh(45.0_f32.to_radians(), 1.0, 0.1, (distance * 4.0).max(0.2));
     let view_proj = proj * view;
-
     let frame_uniform = FrameUniform::new(view_proj, cam_pos, 0.0, 12.0);
 
-    // Single instance at origin
     let instance_data = InstanceData {
         position: [0.0, 0.0, 0.0],
         rotation_y: 0.0,
@@ -335,7 +409,6 @@ fn prepare_plant(
     };
     let instance = upload_instances(device, &[instance_data], "thumb-inst")?.instance_buffer;
 
-    // Create offscreen color texture
     let color_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("thumb-color"),
         size: wgpu::Extent3d {
@@ -347,7 +420,9 @@ fn prepare_plant(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: THUMBNAIL_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -355,7 +430,7 @@ fn prepare_plant(
     Some(PlantRenderData {
         prototype,
         instance,
-        _color_tex: color_tex,
+        color_tex,
         color_view,
         frame_uniform,
     })
@@ -377,4 +452,103 @@ fn create_depth_texture(device: &wgpu::Device) -> wgpu::TextureView {
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+// ---------------------------------------------------------------------------
+// Native-only: PNG disk cache
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cache_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("thumbnails")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cache_path(hash: u64) -> std::path::PathBuf {
+    cache_dir().join(format!("{hash:016x}.png"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_cached_png(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    hash: u64,
+    egui_renderer: &mut egui_wgpu::Renderer,
+) -> Option<egui::TextureId> {
+    let path = cache_path(hash);
+    let img = image::open(&path).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("thumb-cached"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: THUMBNAIL_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &img,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * w),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Some(egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_thumbnail_png(device: &wgpu::Device, staging: &wgpu::Buffer, hash: u64) {
+    let slice = staging.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+
+    let Ok(Ok(())) = rx.recv() else {
+        log::warn!("thumbnail readback failed");
+        return;
+    };
+
+    let data = slice.get_mapped_range();
+    let Some(img) = image::RgbaImage::from_raw(THUMBNAIL_SIZE, THUMBNAIL_SIZE, data.to_vec())
+    else {
+        return;
+    };
+    drop(data);
+    staging.unmap();
+
+    let dir = cache_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = cache_path(hash);
+    if let Err(e) = img.save(&path) {
+        log::warn!("failed to save thumbnail cache {}: {e}", path.display());
+    }
 }
