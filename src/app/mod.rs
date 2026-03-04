@@ -106,6 +106,7 @@ pub struct AppState {
     pending_menu_action: Option<MenuAction>,
     ui_registry: UiRegistry,
     loading_state: Option<LoadingState>,
+    loading_registry: Option<std::sync::Arc<crate::world_core::herbarium::PlantRegistry>>,
 }
 
 impl AppState {
@@ -186,6 +187,7 @@ impl AppState {
             pending_menu_action: None,
             ui_registry: UiRegistry::new(),
             loading_state: None,
+            loading_registry: None,
         })
     }
 
@@ -249,6 +251,7 @@ impl AppState {
             pending_menu_action: None,
             ui_registry: UiRegistry::new(),
             loading_state: None,
+            loading_registry: None,
         })
     }
 
@@ -442,8 +445,12 @@ impl AppState {
             LoadingPhase::BuildRegistry => {
                 let registry =
                     crate::world_core::herbarium::PlantRegistry::from_herbarium(&self.herbarium);
-                self.world_renderer
-                    .update_registry(&self.gpu.device, registry);
+                let arc_registry = std::sync::Arc::new(registry);
+                self.world_renderer.update_registry(
+                    &self.gpu.device,
+                    crate::world_core::herbarium::PlantRegistry::clone(&arc_registry),
+                );
+                self.loading_registry = Some(arc_registry);
 
                 if let Some(s) = &mut self.loading_state {
                     s.phase = LoadingPhase::CreateWorld;
@@ -460,9 +467,13 @@ impl AppState {
                 #[cfg(target_arch = "wasm32")]
                 let threads = 1;
 
-                let arc_registry = std::sync::Arc::new(
-                    crate::world_core::herbarium::PlantRegistry::from_herbarium(&self.herbarium),
-                );
+                let arc_registry = self.loading_registry.take().unwrap_or_else(|| {
+                    std::sync::Arc::new(
+                        crate::world_core::herbarium::PlantRegistry::from_herbarium(
+                            &self.herbarium,
+                        ),
+                    )
+                });
                 match WorldRuntime::new(&self.config, save_ref, threads, arc_registry) {
                     Ok(world) => {
                         self.world = Some(world);

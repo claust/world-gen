@@ -197,8 +197,9 @@ impl StreamingWorld {
         let loader =
             PlatformLoader::new_loader(seed, threads, Arc::clone(&config), Arc::clone(&registry))?;
 
-        // No synchronous chunk generation — all chunks (including the center)
-        // are dispatched to background threads via update().
+        // No synchronous chunk generation in this constructor — all chunks (including
+        // the center) are dispatched via update(); native loaders use background
+        // threads, while the wasm32 loader runs synchronously on the main thread.
         Ok(Self {
             seed,
             load_radius,

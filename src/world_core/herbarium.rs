@@ -47,11 +47,13 @@ pub struct Herbarium {
 /// A deduplicated, indexed view of the herbarium for world generation.
 /// Each species appears once; `species_index` values in `PlantInstance` refer
 /// to indices in `species`.
+#[derive(Clone)]
 pub struct PlantRegistry {
     pub species: Vec<PlantSpeciesInfo>,
 }
 
 /// Flattened info for one species used during placement and rendering.
+#[derive(Clone)]
 pub struct PlantSpeciesInfo {
     pub name: String,
     pub kind: String,
