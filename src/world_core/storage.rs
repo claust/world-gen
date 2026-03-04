@@ -33,7 +33,14 @@ impl WebStorage {
 #[cfg(target_arch = "wasm32")]
 impl Storage for WebStorage {
     fn load(&self, key: &str) -> Option<String> {
-        Self::local_storage()?.get_item(key).ok()?
+        let storage = Self::local_storage()?;
+        match storage.get_item(key) {
+            Ok(value) => value,
+            Err(err) => {
+                log::warn!("localStorage get_item failed for key '{}': {:?}", key, err);
+                None
+            }
+        }
     }
 
     fn save(&self, key: &str, data: &str) -> anyhow::Result<()> {
