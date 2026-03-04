@@ -5,6 +5,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, WindowEvent};
 use winit::window::{CursorGrabMode, Window};
 
+use crate::renderer_wgpu::blur_pass::BlurPass;
 use crate::renderer_wgpu::camera::{CameraController, FlyCamera};
 use crate::renderer_wgpu::egui_bridge::EguiBridge;
 use crate::renderer_wgpu::egui_pass::EguiPass;
@@ -109,6 +110,8 @@ pub struct AppState {
     loading_state: Option<LoadingState>,
     loading_registry: Option<std::sync::Arc<crate::world_core::herbarium::PlantRegistry>>,
     thumbnail_renderer: Option<ThumbnailRenderer>,
+    blur_pass: BlurPass,
+    blur_capture_pending: bool,
 }
 
 impl AppState {
@@ -155,6 +158,12 @@ impl AppState {
         let egui_bridge = EguiBridge::new(scale_factor, gpu.config.width, gpu.config.height);
         let egui_pass = EguiPass::new(&gpu.device, gpu.render_format);
         let config_panel = ConfigPanel::new(&config);
+        let blur_pass = BlurPass::new(
+            &gpu.device,
+            gpu.render_format,
+            gpu.config.width,
+            gpu.config.height,
+        );
 
         Ok(Self {
             window,
@@ -191,6 +200,8 @@ impl AppState {
             loading_state: None,
             loading_registry: None,
             thumbnail_renderer: None,
+            blur_pass,
+            blur_capture_pending: false,
         })
     }
 
@@ -224,6 +235,12 @@ impl AppState {
         let egui_pass = EguiPass::new(&gpu.device, gpu.render_format);
         let config_panel = ConfigPanel::new(&config);
         let save_exists = save.is_some();
+        let blur_pass = BlurPass::new(
+            &gpu.device,
+            gpu.render_format,
+            gpu.config.width,
+            gpu.config.height,
+        );
 
         Ok(Self {
             window,
@@ -256,6 +273,8 @@ impl AppState {
             loading_state: None,
             loading_registry: None,
             thumbnail_renderer: None,
+            blur_pass,
+            blur_capture_pending: false,
         })
     }
 
@@ -322,6 +341,12 @@ impl AppState {
     }
 
     fn return_to_menu(&mut self) {
+        // Capture the current frame for a blurred menu background (desktop only;
+        // WASM surface textures lack COPY_SRC).
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.world.is_some() {
+            self.blur_capture_pending = true;
+        }
         self.screen = Screen::StartMenu;
         self.start_menu.set_save_exists(true);
     }
@@ -432,6 +457,7 @@ impl AppState {
             return;
         }
 
+        self.blur_pass.clear_result();
         self.screen = Screen::Loading;
         self.loading_state = Some(LoadingState {
             phase: LoadingPhase::Init,
@@ -615,6 +641,12 @@ impl AppState {
             .resize(&self.gpu.device, &self.gpu.config);
         self.egui_bridge
             .resize(self.gpu.config.width, self.gpu.config.height);
+        self.blur_pass.resize(
+            &self.gpu.device,
+            &self.gpu.queue,
+            self.gpu.config.width,
+            self.gpu.config.height,
+        );
     }
 
     fn update(&mut self) {
@@ -1043,7 +1075,29 @@ impl AppState {
         let is_herbarium = self.is_on_herbarium();
         let is_editor = self.is_on_editor();
 
-        {
+        // When we have a blurred background ready, blit it directly (no depth needed).
+        // Otherwise, run the normal 3D render pass.
+        let use_blur_blit =
+            (is_menu || is_loading) && self.blur_pass.has_result() && !self.blur_capture_pending;
+
+        if use_blur_blit {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("blur-blit-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.blur_pass.blit(&mut pass);
+        } else {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("terrain-render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1075,11 +1129,40 @@ impl AppState {
                     }
                     self.world_renderer.render_editor_scene(&mut pass, &meshes);
                 }
+            } else if self.blur_capture_pending {
+                // Render scene without HUD so we can capture it for the blur
+                self.world_renderer.render_scene(&mut pass);
             } else if is_menu || is_loading || is_herbarium {
                 self.world_renderer.render_sky_only(&mut pass);
             } else {
                 self.world_renderer.render(&mut pass);
             }
+        }
+
+        // Capture the rendered frame and apply Gaussian blur
+        if self.blur_capture_pending {
+            self.blur_pass
+                .capture_and_blur(&mut encoder, &output.texture, 6);
+            // Blit the blurred result back onto the surface before egui draws
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("blur-blit-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                self.blur_pass.blit(&mut pass);
+            }
+            self.blur_capture_pending = false;
         }
 
         // egui overlay pass (renders on top of 3D scene)

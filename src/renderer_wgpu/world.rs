@@ -236,6 +236,13 @@ impl WorldRenderer {
     }
 
     pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        self.render_scene(pass);
+        self.hud.render(pass);
+        self.minimap.render(pass);
+    }
+
+    /// Render the 3D scene without HUD/minimap overlays.
+    pub fn render_scene<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
 
@@ -244,8 +251,6 @@ impl WorldRenderer {
         self.terrain.render(pass, &frustum);
         self.instanced.render(pass, &frustum);
         self.water.render(pass, &frustum);
-        self.hud.render(pass);
-        self.minimap.render(pass);
     }
 
     pub fn clear_color(&self) -> wgpu::Color {
