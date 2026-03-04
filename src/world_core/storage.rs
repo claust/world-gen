@@ -77,9 +77,9 @@ impl Storage for WebStorage {
     fn save(&self, key: &str, data: &str) -> anyhow::Result<()> {
         let storage =
             Self::local_storage().ok_or_else(|| anyhow::anyhow!("localStorage not available"))?;
-        storage
-            .set_item(key, data)
-            .map_err(|_| anyhow::anyhow!("localStorage setItem failed"))?;
+        storage.set_item(key, data).map_err(|e| {
+            anyhow::anyhow!("localStorage setItem failed for key '{}': {:?}", key, e)
+        })?;
         Ok(())
     }
 }
