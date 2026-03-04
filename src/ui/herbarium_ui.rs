@@ -1,5 +1,6 @@
-use egui::{self, Color32, CornerRadius, Pos2, RichText, Sense, Vec2};
+use egui::{self, Color32, CornerRadius, Pos2, Rect, RichText, Sense, Vec2};
 
+use crate::renderer_wgpu::thumbnail::ThumbnailRenderer;
 use crate::world_core::herbarium::Herbarium;
 
 use super::ui_registry::UiRegistry;
@@ -19,6 +20,7 @@ impl HerbariumUi {
         ctx: &egui::Context,
         herbarium: &Herbarium,
         registry: &mut UiRegistry,
+        thumbnails: Option<&ThumbnailRenderer>,
     ) -> Option<HerbariumAction> {
         let mut action = None;
 
@@ -124,9 +126,32 @@ impl HerbariumUi {
                                                 egui::StrokeKind::Outside,
                                             );
 
+                                            // Thumbnail image in the middle area
+                                            if let Some(tex_id) =
+                                                thumbnails.and_then(|t| t.get_texture_id(idx))
+                                            {
+                                                let thumb_size = 100.0;
+                                                let thumb_rect = Rect::from_center_size(
+                                                    Pos2::new(
+                                                        rect.center().x,
+                                                        rect.min.y + 35.0 + thumb_size / 2.0,
+                                                    ),
+                                                    Vec2::splat(thumb_size),
+                                                );
+                                                painter.image(
+                                                    tex_id,
+                                                    thumb_rect,
+                                                    Rect::from_min_max(
+                                                        egui::pos2(0.0, 0.0),
+                                                        egui::pos2(1.0, 1.0),
+                                                    ),
+                                                    Color32::WHITE,
+                                                );
+                                            }
+
                                             // Plant name centered
                                             let text_pos =
-                                                Pos2::new(rect.center().x, rect.max.y - 28.0);
+                                                Pos2::new(rect.center().x, rect.max.y - 16.0);
                                             painter.text(
                                                 text_pos,
                                                 egui::Align2::CENTER_CENTER,
@@ -137,7 +162,7 @@ impl HerbariumUi {
 
                                             // Small species indicator at top
                                             let species_pos =
-                                                Pos2::new(rect.center().x, rect.min.y + 20.0);
+                                                Pos2::new(rect.center().x, rect.min.y + 14.0);
                                             painter.text(
                                                 species_pos,
                                                 egui::Align2::CENTER_CENTER,

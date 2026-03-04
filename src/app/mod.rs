@@ -9,6 +9,7 @@ use crate::renderer_wgpu::camera::{CameraController, FlyCamera};
 use crate::renderer_wgpu::egui_bridge::EguiBridge;
 use crate::renderer_wgpu::egui_pass::EguiPass;
 use crate::renderer_wgpu::gpu_context::GpuContext;
+use crate::renderer_wgpu::thumbnail::ThumbnailRenderer;
 use crate::renderer_wgpu::world::WorldRenderer;
 use crate::ui::plant_editor_panel::PlantParams;
 use crate::ui::{ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, StartMenu, UiRegistry};
@@ -107,6 +108,7 @@ pub struct AppState {
     ui_registry: UiRegistry,
     loading_state: Option<LoadingState>,
     loading_registry: Option<std::sync::Arc<crate::world_core::herbarium::PlantRegistry>>,
+    thumbnail_renderer: Option<ThumbnailRenderer>,
 }
 
 impl AppState {
@@ -188,6 +190,7 @@ impl AppState {
             ui_registry: UiRegistry::new(),
             loading_state: None,
             loading_registry: None,
+            thumbnail_renderer: None,
         })
     }
 
@@ -252,6 +255,7 @@ impl AppState {
             ui_registry: UiRegistry::new(),
             loading_state: None,
             loading_registry: None,
+            thumbnail_renderer: None,
         })
     }
 
@@ -324,6 +328,19 @@ impl AppState {
 
     fn enter_herbarium(&mut self) {
         self.screen = Screen::Herbarium;
+        self.generate_thumbnails();
+    }
+
+    fn generate_thumbnails(&mut self) {
+        let renderer = self
+            .thumbnail_renderer
+            .get_or_insert_with(|| ThumbnailRenderer::new(&self.gpu.device));
+        renderer.generate_all(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &self.herbarium,
+            self.egui_pass.renderer_mut(),
+        );
     }
 
     fn leave_herbarium(&mut self) {
@@ -372,6 +389,17 @@ impl AppState {
                 log::warn!("failed to save herbarium: {e}");
             }
         }
+        if let Some(index) = self.editing_plant_index {
+            if let Some(thumb) = &mut self.thumbnail_renderer {
+                thumb.invalidate(
+                    index,
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &self.herbarium,
+                    self.egui_pass.renderer_mut(),
+                );
+            }
+        }
         self.plant_editor = None;
         self.editing_plant_index = None;
         self.screen = Screen::Herbarium;
@@ -389,6 +417,7 @@ impl AppState {
         self.plant_editor = None;
         self.editing_plant_index = None;
         self.screen = Screen::Herbarium;
+        self.generate_thumbnails();
     }
 
     fn begin_loading(&mut self, resume: bool) {
@@ -1077,10 +1106,12 @@ impl AppState {
                         }
                         Screen::Herbarium => {
                             use crate::ui::herbarium_ui::HerbariumAction;
-                            if let Some(ha) =
-                                self.herbarium_ui
-                                    .ui(ctx, &self.herbarium, &mut self.ui_registry)
-                            {
+                            if let Some(ha) = self.herbarium_ui.ui(
+                                ctx,
+                                &self.herbarium,
+                                &mut self.ui_registry,
+                                self.thumbnail_renderer.as_ref(),
+                            ) {
                                 menu_action = Some(match ha {
                                     HerbariumAction::OpenPlant(i) => MenuAction::OpenPlantEditor(i),
                                     HerbariumAction::NewPlant => MenuAction::NewPlant,
