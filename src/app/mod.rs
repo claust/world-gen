@@ -335,10 +335,12 @@ impl AppState {
         let renderer = self
             .thumbnail_renderer
             .get_or_insert_with(|| ThumbnailRenderer::new(&self.gpu.device));
+        let seed = self.config.world.seed;
         renderer.generate_all(
             &self.gpu.device,
             &self.gpu.queue,
             &self.herbarium,
+            seed,
             self.egui_pass.renderer_mut(),
         );
     }
@@ -391,11 +393,13 @@ impl AppState {
         }
         if let Some(index) = self.editing_plant_index {
             if let Some(thumb) = &mut self.thumbnail_renderer {
+                let seed = self.config.world.seed;
                 thumb.invalidate(
                     index,
                     &self.gpu.device,
                     &self.gpu.queue,
                     &self.herbarium,
+                    seed,
                     self.egui_pass.renderer_mut(),
                 );
             }
