@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use super::plant_gen::config::SpeciesConfig;
+use super::storage::Storage;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -225,39 +226,33 @@ impl Herbarium {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Herbarium {
-    pub fn load() -> Self {
-        let path = std::path::Path::new("herbarium.json");
-        if !path.exists() {
-            let herb = Self::default_seeded();
-            if let Err(e) = herb.save() {
-                log::warn!("failed to write initial herbarium.json: {e}");
-            }
-            return herb;
-        }
-        match std::fs::read_to_string(path) {
-            Ok(contents) => match serde_json::from_str(&contents) {
+    pub fn load(storage: &dyn Storage) -> Self {
+        match storage.load("herbarium") {
+            Some(contents) => match serde_json::from_str(&contents) {
                 Ok(herb) => {
-                    log::info!("loaded herbarium.json");
+                    log::info!("loaded herbarium");
                     herb
                 }
                 Err(e) => {
-                    log::warn!("failed to parse herbarium.json: {e}");
+                    log::warn!("failed to parse herbarium: {e}");
                     Self::default_seeded()
                 }
             },
-            Err(e) => {
-                log::warn!("failed to read herbarium.json: {e}");
-                Self::default_seeded()
+            None => {
+                let herb = Self::default_seeded();
+                if let Err(e) = herb.save(storage) {
+                    log::warn!("failed to write initial herbarium: {e}");
+                }
+                herb
             }
         }
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub fn save(&self, storage: &dyn Storage) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write("herbarium.json", json)?;
-        log::info!("saved herbarium.json");
+        storage.save("herbarium", &json)?;
+        log::info!("saved herbarium");
         Ok(())
     }
 }
