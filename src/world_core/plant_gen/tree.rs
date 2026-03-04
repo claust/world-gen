@@ -31,42 +31,47 @@ pub struct TreeData {
 
 /// Remove foliage blobs completely enclosed inside another blob.
 /// Blob A is inside blob B when `distance(A.center, B.center) + A.radius <= B.radius`.
+///
+/// For pathologically large inputs (>500 blobs), the O(n²) enclosure test is
+/// skipped and we fall back to keeping only the largest blobs by radius.
 pub fn compact_foliage(blobs: &mut Vec<FoliageBlob>) {
+    const MAX_FOR_QUADRATIC: usize = 500;
+
     let n = blobs.len();
     if n <= 1 {
         return;
     }
-    let mut keep = vec![true; n];
-    for i in 0..n {
-        if !keep[i] {
-            continue;
-        }
-        for j in 0..n {
-            if i == j || !keep[j] {
+
+    if n <= MAX_FOR_QUADRATIC {
+        let mut keep = vec![true; n];
+        for i in 0..n {
+            if !keep[i] {
                 continue;
             }
-            let dist = blobs[i].center.distance(blobs[j].center);
-            if dist + blobs[j].radius <= blobs[i].radius {
-                keep[j] = false;
+            for j in 0..n {
+                if i == j || !keep[j] {
+                    continue;
+                }
+                let dist = blobs[i].center.distance(blobs[j].center);
+                if dist + blobs[j].radius <= blobs[i].radius {
+                    keep[j] = false;
+                }
             }
         }
-    }
-    let mut w = 0;
-    for r in 0..n {
-        if keep[r] {
-            if w != r {
-                blobs[w] = blobs[r].clone();
+        let mut w = 0;
+        for r in 0..n {
+            if keep[r] {
+                if w != r {
+                    blobs[w] = blobs[r].clone();
+                }
+                w += 1;
             }
-            w += 1;
         }
-    }
-    blobs.truncate(w);
-
-    // Cap foliage blob count — keep the largest (most visually significant) blobs
-    const MAX_FOLIAGE_BLOBS: usize = 100;
-    if blobs.len() > MAX_FOLIAGE_BLOBS {
+        blobs.truncate(w);
+    } else {
+        // Too many blobs for O(n²) — keep the largest ones
         blobs.sort_by(|a, b| b.radius.partial_cmp(&a.radius).unwrap());
-        blobs.truncate(MAX_FOLIAGE_BLOBS);
+        blobs.truncate(MAX_FOR_QUADRATIC);
     }
 }
 

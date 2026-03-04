@@ -178,17 +178,36 @@ impl WorldRenderer {
         queue: &wgpu::Queue,
         chunks: &HashMap<IVec2, ChunkData>,
     ) {
+        self.sync_terrain(device, queue, chunks);
+        self.sync_water(device, chunks);
+        self.sync_instances(device, chunks);
+        self.sync_minimap(queue, chunks);
+    }
+
+    pub fn sync_terrain(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        chunks: &HashMap<IVec2, ChunkData>,
+    ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("terrain-gen-encoder"),
         });
-
         let dispatched = self.terrain.sync_chunks(device, &mut encoder, chunks);
         if dispatched {
             queue.submit(Some(encoder.finish()));
         }
+    }
 
+    pub fn sync_water(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
         self.water.sync_chunks(device, chunks);
+    }
+
+    pub fn sync_instances(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
         self.instanced.sync_chunks(device, chunks, &self.registry);
+    }
+
+    pub fn sync_minimap(&mut self, queue: &wgpu::Queue, chunks: &HashMap<IVec2, ChunkData>) {
         self.minimap.sync_chunks(queue, chunks);
     }
 

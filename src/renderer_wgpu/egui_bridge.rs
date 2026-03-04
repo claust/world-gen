@@ -10,6 +10,9 @@ pub struct EguiBridge {
     modifiers: Modifiers,
     pixels_per_point: f32,
     screen_size: (u32, u32),
+    /// Deferred PointerGone flag — set on TouchPhase::Ended so the event is
+    /// emitted at the start of the *next* frame, after the click has resolved.
+    pending_pointer_gone: bool,
 }
 
 impl EguiBridge {
@@ -21,6 +24,7 @@ impl EguiBridge {
             modifiers: Modifiers::NONE,
             pixels_per_point,
             screen_size: (width, height),
+            pending_pointer_gone: false,
         }
     }
 
@@ -164,7 +168,11 @@ impl EguiBridge {
                             pressed: false,
                             modifiers: self.modifiers,
                         });
-                        self.events.push(Event::PointerGone);
+                        // Defer PointerGone to the next frame so egui resolves the
+                        // click before the pointer is cleared. Emitting it in the
+                        // same batch as the release causes buttons to silently
+                        // ignore taps on iOS Safari.
+                        self.pending_pointer_gone = true;
                     }
                     TouchPhase::Cancelled => {
                         self.events.push(Event::PointerButton {
@@ -192,6 +200,14 @@ impl EguiBridge {
 
     /// Drain accumulated events into a RawInput for this frame.
     pub fn take_raw_input(&mut self) -> RawInput {
+        // Emit deferred PointerGone from a previous touch-end. This ensures the
+        // click is resolved in the frame the release arrived, and the pointer is
+        // cleared one frame later to avoid persistent hover states.
+        if self.pending_pointer_gone {
+            self.pending_pointer_gone = false;
+            self.events.insert(0, Event::PointerGone);
+        }
+
         let (w, h) = self.screen_size;
         let screen_rect = Rect::from_min_size(
             Pos2::ZERO,

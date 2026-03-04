@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::storage::Storage;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveData {
     pub camera: CameraSave,
@@ -20,35 +22,25 @@ pub struct WorldSave {
     pub day_speed: f32,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl SaveData {
-    pub fn load() -> Option<Self> {
-        let path = std::path::Path::new("save.json");
-        if !path.exists() {
-            return None;
-        }
-        match std::fs::read_to_string(path) {
-            Ok(contents) => match serde_json::from_str(&contents) {
-                Ok(save) => {
-                    log::info!("loaded save.json");
-                    Some(save)
-                }
-                Err(e) => {
-                    log::warn!("failed to parse save.json: {e}");
-                    None
-                }
-            },
+    pub fn load(storage: &dyn Storage) -> Option<Self> {
+        let contents = storage.load("save")?;
+        match serde_json::from_str(&contents) {
+            Ok(save) => {
+                log::info!("loaded save");
+                Some(save)
+            }
             Err(e) => {
-                log::warn!("failed to read save.json: {e}");
+                log::warn!("failed to parse save: {e}");
                 None
             }
         }
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub fn save(&self, storage: &dyn Storage) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write("save.json", json)?;
-        log::info!("saved game state to save.json");
+        storage.save("save", &json)?;
+        log::info!("saved game state");
         Ok(())
     }
 }
