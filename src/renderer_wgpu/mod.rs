@@ -15,6 +15,7 @@ pub mod terrain_compute;
 pub mod thumbnail;
 pub mod world;
 
+pub(crate) mod blur_pass;
 mod frustum;
 mod hud_font;
 mod hud_pass;
