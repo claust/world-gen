@@ -200,6 +200,24 @@ Steps:
 
 Don't tick every frame. Tick once per game-hour (check `floor(current_hour) > floor(last_sim_hour)`). At default `day_speed` this means one tick every few real-seconds.
 
+### Lifecycle Invariants
+
+These invariants must hold at all times. Violations are bugs — assert them in debug builds.
+
+1. **No negative ages.** `born_hour <= current_total_hours` for every `DeltaPlant`. A plant cannot be born in the future. Enforced at insertion: `born_hour` is set to the current `total_hours` at the moment the seed lands.
+
+2. **Stage monotonicity.** Growth stages only advance: `Seedling → Young → Mature`. A plant's stage never regresses. There is no code path that sets a lower stage. (Death/decay would add a terminal stage in a future iteration — it would not reuse existing stages.)
+
+3. **No duplicate seedlings within min spacing.** Before inserting a `DeltaPlant`, check minimum distance to all existing plants (base + delta) in the target chunk. Use species-appropriate spacing (e.g. 8m for trees, 3m for shrubs — same values as `FloraLayer`'s grid spacing). If a position is too close to an existing plant, the seed is silently discarded. This prevents clumping from multiple spread rounds targeting the same area.
+
+4. **Stable prune-on-load.** When a chunk loads and its delta contains plants that landed in unloaded terrain (eligibility was deferred), run the same `FloraLayer` eligibility filter (biome, moisture, altitude, slope) and min-spacing check against the now-available terrain data. Pruning must be **idempotent**: loading the same chunk twice with the same delta and terrain produces the same result. Pruned plants are removed from `added_plants` permanently (the delta is mutated, not filtered transiently). This means a save after prune will not contain the invalid plants.
+
+5. **`removed_base` indices are valid.** Every index in `removed_base` must be `< base_plants.len()` for that chunk. If base generation changes (e.g. species registry update), stale indices are pruned on load. Assert `removed_base` is sorted and deduplicated after any mutation.
+
+6. **`last_sim_hour` never exceeds `total_hours`.** The simulation cannot run ahead of the world clock. After each tick: `delta.last_sim_hour <= runtime.total_hours`.
+
+7. **Finite catch-up bound.** Cap the catch-up loop at a configurable maximum (default: 500 hours). If `current_hour - last_sim_hour > max_catchup_hours`, clamp to `max_catchup_hours` and log a warning. This prevents a long-idle save from freezing the game on load with thousands of tick rounds.
+
 ---
 
 ## Rendering Integration
@@ -288,6 +306,22 @@ pub struct WorldSave {
 ```
 
 `DeltaStore` saves separately via `Storage` under key `"deltas"`. Format: JSON map of `"x,y" -> ChunkDelta`. Only non-empty deltas are stored.
+
+### Simulation clock semantics
+
+`total_hours` is the **authoritative clock** for all lifecycle operations. It is the single source of truth for:
+
+- **Aging:** `DeltaPlant.born_hour` is compared against `total_hours` to compute age and determine growth stage. `born_hour` values are always written as the `total_hours` at insertion time.
+- **Tick scheduling:** `ChunkDelta.last_sim_hour` and the current `total_hours` determine whether a tick fires and how many catch-up rounds to run.
+- **Spread windows:** The spread check interval (24 game-hours) is measured in `total_hours` units.
+
+`total_hours` is **monotonically increasing** — it never rewinds. It advances by `delta_time * day_speed` each frame, accumulated as `f64` to avoid precision loss over long sessions. On save, `total_hours` is persisted. On load, it is restored exactly — the lifecycle system resumes from where it left off.
+
+**Relationship to `hour`:** The existing `hour: f32` field is the time-of-day cycle (0.0–24.0, wrapping). It drives lighting and sky rendering. The lifecycle system does **not** use `hour` — it uses `total_hours` exclusively. The two are related by: `hour ≈ total_hours % 24.0` (modulo float precision), but `total_hours` is the canonical reference.
+
+**New-world initialization:** When a fresh world is created, `total_hours` starts at `hour / 1.0` (matching the initial time-of-day). All `ChunkDelta.last_sim_hour` values default to `0.0`, so the first tick for each chunk will catch up from hour 0 to the current `total_hours` — which for a new world is near-zero, producing no spread (no time has elapsed).
+
+**Save migration:** Existing saves lack `total_hours`. On load, if missing, compute `total_hours = hour` (assume the world has existed for less than one day cycle). This is an approximation but safe: it means existing deltas (there are none in pre-lifecycle saves) would at most lose a few hours of catch-up, and base plants are unaffected.
 
 ### Memory budget
 
