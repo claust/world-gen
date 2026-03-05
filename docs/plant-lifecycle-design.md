@@ -108,6 +108,39 @@ spread_count:           1-2 seeds per successful check
 spread_radius:          10-40m (species-dependent, configurable in PlacementConfig)
 ```
 
+### RNG Determinism Contract
+
+Seed spread uses the same `hash4` + `hash_to_unit_float` pattern as `FloraLayer` — no `rand` crate. Every random decision is a pure function of fixed inputs, so the same world state always produces the same spread results. This matters for save/load stability: a save captures `DeltaStore` + `total_hours`, and replaying ticks from that state must yield identical deltas.
+
+**Seed offset range:** Lifecycle uses offsets **4000–4999** (flora uses 0–2999, houses use 1001–3999). All lifecycle hashes follow:
+
+```
+hash_to_unit_float(hash4(world_seed.wrapping_add(OFFSET), input_a, input_b, input_c))
+```
+
+**Per-decision inputs:**
+
+| Decision | Offset | a | b | c | Notes |
+|----------|--------|---|---|---|-------|
+| Spread chance | 4001 | chunk_x | chunk_z | plant_index | Roll < `spread_chance` to produce seeds |
+| Seed count | 4002 | chunk_x | chunk_z | plant_index | Maps to 1–2 via `1 + floor(v * 2)` |
+| Landing angle | 4101 | chunk_x | chunk_z | plant_index ⊕ seed_i | `v * TAU` for each seed_i (0, 1) |
+| Landing distance | 4102 | chunk_x | chunk_z | plant_index ⊕ seed_i | `sqrt(v) * spread_radius` (uniform-area disk) |
+| Species height | 4201 | chunk_x | chunk_z | plant_index ⊕ seed_i | Lerp within species `height_range` |
+| Rotation | 4202 | chunk_x | chunk_z | plant_index ⊕ seed_i | `v * TAU` |
+
+Where:
+- `chunk_x`, `chunk_z` are the **source** chunk coordinates (as `u32`).
+- `plant_index` is the plant's index in the combined (base + delta) list for that chunk, cast to `u32`.
+- `seed_i` is the seed ordinal (0 or 1) within one spread event. Combined via `plant_index.wrapping_mul(31).wrapping_add(seed_i)` — same sub-id pattern as hamlet house placement.
+- `⊕` denotes the wrapping_mul+wrapping_add sub-id combinator above.
+
+**Hour bucketing:** Spread is evaluated once per game-hour boundary (`floor(current_hour) > floor(last_sim_hour)`). The hour value is **not** an RNG input — it controls *when* the tick fires, not the hash output. This means a tick at hour 100.3 and one at hour 100.9 produce the same spread results for the same chunk state. The hour bucket implicitly serializes spread rounds: hour 100's seeds exist before hour 101's spread runs, so growth is ordered.
+
+**Catch-up ticks:** When `current_hour - last_sim_hour > 1`, the simulation loops over each missed hour boundary sequentially. Each round uses the same hash inputs (chunk, plant_index) but operates on updated state from the previous round (new delta plants from round N are mature-eligible in round N + seedling_hours + young_hours). This is deterministic because the loop order is fixed: hours ascending, chunks in HashMap iteration order (order doesn't matter — chunks don't interact within a single hour boundary, only via cross-chunk seed landing which is applied lazily).
+
+**What is NOT seeded by hash4:** Growth stage advancement is purely time-based (`age >= threshold`), not random. No RNG involved.
+
 ### Seed landing logic
 
 1. Pick a random angle and distance within `spread_radius`.
@@ -149,17 +182,19 @@ fn tick_chunk_lifecycle(
     terrain: &ChunkTerrain,
     biome_map: &BiomeMap,
     delta_store: &mut DeltaStore,   // for cross-chunk seed spread
-    seed: u32,
+    seed: u32,                      // world_seed — used as hash4 base, see RNG contract
 )
 ```
 
 Steps:
 
-1. **Fast-forward growth**: For each `DeltaPlant`, compute `age = current_hour - born_hour`. Advance `stage` based on species thresholds (`seedling_hours`, `young_hours`).
+1. **Catch-up loop**: Compute `missed = floor(current_hour) - floor(last_sim_hour)`. Loop over each missed hour boundary sequentially (not batched) to preserve deterministic ordering — see RNG contract above.
 
-2. **Spread seeds**: For each mature plant (base + delta), check if enough time has passed since `last_sim_hour` to trigger a spread check. If so, roll for seed spread and insert new `DeltaPlant`s.
+2. **Fast-forward growth** (per round): For each `DeltaPlant`, compute `age = round_hour - born_hour`. Advance `stage` based on species thresholds (`seedling_hours`, `young_hours`). This is pure arithmetic, no RNG.
 
-3. **Update `last_sim_hour`** to `current_hour`.
+3. **Spread seeds** (per round): For each mature plant (base + delta), roll `hash4(seed + 4001, chunk_x, chunk_z, plant_index)` for spread chance. On success, generate 1–2 seeds with landing positions derived from offsets 4101–4202. Insert new `DeltaPlant`s into the appropriate chunk's delta.
+
+4. **Update `last_sim_hour`** to `current_hour`.
 
 ### Tick frequency
 
