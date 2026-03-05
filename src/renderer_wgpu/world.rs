@@ -11,6 +11,7 @@ use super::minimap_pass::MinimapPass;
 use super::sky::SkyPalette;
 use super::sky_pass::SkyPass;
 use super::terrain_pass::TerrainPass;
+use super::terrain_texture::TerrainTexture;
 use super::water_pass::WaterPass;
 use crate::renderer_wgpu::pipeline::DepthTexture;
 use crate::world_core::chunk::ChunkData;
@@ -19,6 +20,7 @@ use crate::world_core::herbarium::PlantRegistry;
 pub struct WorldRenderer {
     frame_bg: FrameBindGroup,
     terrain_material: MaterialBindGroup,
+    terrain_texture: TerrainTexture,
     depth: DepthTexture,
     sky: SkyPass,
     terrain: TerrainPass,
@@ -46,7 +48,9 @@ impl WorldRenderer {
     ) -> Self {
         let frame_bg = FrameBindGroup::new(device);
         let terrain_material = MaterialBindGroup::new_terrain(device);
+        let terrain_texture = TerrainTexture::new(device, queue);
 
+        // Shared 2-group layout for sky/water/instanced passes
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shared-pipeline-layout"),
             bind_group_layouts: &[&frame_bg.layout, &terrain_material.layout],
@@ -54,7 +58,14 @@ impl WorldRenderer {
         });
 
         let sky = SkyPass::new(device, render_format, &pipeline_layout);
-        let terrain = TerrainPass::new(device, render_format, &pipeline_layout);
+        // Terrain gets its own 3-group layout with the texture atlas
+        let terrain = TerrainPass::new(
+            device,
+            render_format,
+            &frame_bg.layout,
+            &terrain_material.layout,
+            &terrain_texture.bind_group_layout,
+        );
         let water = WaterPass::new(device, render_format, &pipeline_layout, sea_level);
         let instanced = InstancedPass::new(device, render_format, &pipeline_layout, &registry);
         let hud = HudPass::new(device, queue, render_format);
@@ -68,6 +79,7 @@ impl WorldRenderer {
         Self {
             frame_bg,
             terrain_material,
+            terrain_texture,
             depth: DepthTexture::new(device, config, "terrain-depth"),
             sky,
             terrain,
@@ -251,7 +263,8 @@ impl WorldRenderer {
 
         let frustum = Frustum::from_view_proj(self.view_proj);
         self.sky.render(pass);
-        self.terrain.render(pass, &frustum);
+        self.terrain
+            .render(pass, &frustum, &self.terrain_texture.bind_group);
         self.instanced.render(pass, &frustum, self.camera_position);
         self.water.render(pass, &frustum);
     }
