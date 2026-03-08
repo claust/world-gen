@@ -1,7 +1,7 @@
-# World Gen
+# FloraForge
 
 ## Project Overview
-A procedurally generated 3D world with mountains, forests, rivers, and other natural landscapes — built entirely from scratch in Rust using `wgpu`. The vision is to create a beautiful, explorable open world with rich biomes and terrain variety, all generated on the fly.
+A procedurally generated 3D world with mountains, forests, rivers, and other natural landscapes — built entirely from scratch in Rust using `wgpu`. FloraForge focuses on plant-first world building: shape vegetation, generate the surrounding terrain, and explore the resulting landscape in real time.
 
 This is an educational project focused on learning Rust and building a homemade 3D engine from the ground up — no Unity, no Unreal, no off-the-shelf game engine. Everything from the rendering pipeline to the terrain generation is written using LLM's.
 
@@ -73,13 +73,13 @@ If the debug API is on a non-default port, pass `--api http://127.0.0.1:9000`.
 
 ### Debug In VS Code (`F5`)
 - Open this folder (`/Users/claus/Repos/world-gen`) as the workspace root.
-- Select launch config `Debug world-gen`.
+- Select launch config `Debug FloraForge`.
 - Press `F5`.
 
 ## Screenshot Capture Workflow
 Use this when you want to share the current rendered world state for review.
 
-1. Capture one frame (put the `world-gen` window frontmost first):
+1. Capture one frame (put the `FloraForge` window frontmost first):
 ```bash
 ./scripts/capture_world.sh
 ```
@@ -92,7 +92,7 @@ This captures every `2s` for `10` frames.
 
 3. Output location:
 - `captures/latest.png` (most recent)
-- `captures/world-gen-YYYYMMDD-HHMMSS.png` (history)
+- `captures/floraforge-YYYYMMDD-HHMMSS.png` (history)
 
 ## Controls
 - `W/A/S/D`: move

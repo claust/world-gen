@@ -1,0 +1,660 @@
+{
+  "plants": [
+    {
+      "name": "Oak",
+      "species": {
+        "name": "Oak",
+        "body_plan": {
+          "kind": "tree",
+          "stem_count": 1,
+          "max_height": [
+            12.0,
+            18.0
+          ]
+        },
+        "trunk": {
+          "taper": 0.4,
+          "base_flare": 0.35,
+          "straightness": 0.82,
+          "thickness_ratio": 0.05
+        },
+        "branching": {
+          "apical_dominance": 0.3,
+          "max_depth": 3,
+          "arrangement": {
+            "type": "spiral",
+            "angle": 137.5,
+            "count": null
+          },
+          "branches_per_node": [
+            2,
+            4
+          ],
+          "insertion_angle": {
+            "base": [
+              65.0,
+              80.0
+            ],
+            "tip": [
+              35.0,
+              50.0
+            ]
+          },
+          "length_profile": "dome",
+          "child_length_ratio": 0.65,
+          "child_thickness_ratio": 0.7,
+          "gravity_response": 0.45,
+          "randomness": 0.4
+        },
+        "crown": {
+          "shape": "dome",
+          "crown_base": 0.25,
+          "aspect_ratio": 1.3,
+          "density": 0.7,
+          "asymmetry": 0.2
+        },
+        "foliage": {
+          "style": "broadleaf",
+          "leaf_size": [
+            0.02,
+            0.05
+          ],
+          "cluster_strategy": {
+            "type": "clusters",
+            "count": 5
+          },
+          "droop": 0.3,
+          "coverage": 0.4
+        },
+        "color": {
+          "bark": {
+            "h": 25.0,
+            "s": 0.4,
+            "l": 0.22
+          },
+          "leaf": {
+            "h": 115.0,
+            "s": 0.5,
+            "l": 0.32
+          },
+          "leaf_variance": 0.15
+        }
+      },
+      "placement": {
+        "biomes": [
+          "Forest",
+          "Grassland"
+        ],
+        "weight": 1.0,
+        "min_moisture": 0.3,
+        "max_moisture": 1.0,
+        "min_altitude": 0.0,
+        "max_altitude": 120.0,
+        "near_water_boost": 0.0,
+        "max_slope": 1.0
+      }
+    },
+    {
+      "name": "Birch",
+      "species": {
+        "name": "Birch",
+        "body_plan": {
+          "kind": "tree",
+          "stem_count": 1,
+          "max_height": [
+            12.0,
+            18.0
+          ]
+        },
+        "trunk": {
+          "taper": 0.35,
+          "base_flare": 0.1,
+          "straightness": 0.8,
+          "thickness_ratio": 0.022
+        },
+        "branching": {
+          "apical_dominance": 0.7,
+          "max_depth": 3,
+          "arrangement": {
+            "type": "spiral",
+            "angle": 137.5,
+            "count": null
+          },
+          "branches_per_node": [
+            2,
+            3
+          ],
+          "insertion_angle": {
+            "base": [
+              45.0,
+              55.0
+            ],
+            "tip": [
+              25.0,
+              35.0
+            ]
+          },
+          "length_profile": "dome",
+          "child_length_ratio": 0.6,
+          "child_thickness_ratio": 0.55,
+          "gravity_response": 0.6,
+          "randomness": 0.25
+        },
+        "crown": {
+          "shape": "oval",
+          "crown_base": 0.35,
+          "aspect_ratio": 0.65,
+          "density": 0.3,
+          "asymmetry": 0.15
+        },
+        "foliage": {
+          "style": "broadleaf",
+          "leaf_size": [
+            0.015,
+            0.03
+          ],
+          "cluster_strategy": {
+            "type": "individual",
+            "count": null
+          },
+          "droop": 0.4,
+          "coverage": 0.5
+        },
+        "color": {
+          "bark": {
+            "h": 40.0,
+            "s": 0.08,
+            "l": 0.85
+          },
+          "leaf": {
+            "h": 110.0,
+            "s": 0.55,
+            "l": 0.45
+          },
+          "leaf_variance": 0.2
+        }
+      },
+      "placement": {
+        "biomes": [
+          "Forest"
+        ],
+        "weight": 0.7,
+        "min_moisture": 0.5,
+        "max_moisture": 1.0,
+        "min_altitude": 0.0,
+        "max_altitude": 120.0,
+        "near_water_boost": 0.0,
+        "max_slope": 1.0
+      }
+    },
+    {
+      "name": "Acacia",
+      "species": {
+        "name": "Acacia",
+        "body_plan": {
+          "kind": "tree",
+          "stem_count": 1,
+          "max_height": [
+            8.0,
+            14.0
+          ]
+        },
+        "trunk": {
+          "taper": 0.3,
+          "base_flare": 0.15,
+          "straightness": 0.7,
+          "thickness_ratio": 0.04
+        },
+        "branching": {
+          "apical_dominance": 0.55,
+          "max_depth": 2,
+          "arrangement": {
+            "type": "spiral",
+            "angle": 137.5,
+            "count": null
+          },
+          "branches_per_node": [
+            2,
+            3
+          ],
+          "insertion_angle": {
+            "base": [
+              75.0,
+              85.0
+            ],
+            "tip": [
+              70.0,
+              80.0
+            ]
+          },
+          "length_profile": "vase",
+          "child_length_ratio": 0.7,
+          "child_thickness_ratio": 0.65,
+          "gravity_response": 0.15,
+          "randomness": 0.35
+        },
+        "crown": {
+          "shape": "umbrella",
+          "crown_base": 0.55,
+          "aspect_ratio": 2.0,
+          "density": 0.45,
+          "asymmetry": 0.25
+        },
+        "foliage": {
+          "style": "broadleaf",
+          "leaf_size": [
+            0.008,
+            0.015
+          ],
+          "cluster_strategy": {
+            "type": "dense_mass",
+            "count": null
+          },
+          "droop": 0.1,
+          "coverage": 0.6
+        },
+        "color": {
+          "bark": {
+            "h": 30.0,
+            "s": 0.35,
+            "l": 0.28
+          },
+          "leaf": {
+            "h": 95.0,
+            "s": 0.4,
+            "l": 0.38
+          },
+          "leaf_variance": 0.18
+        }
+      },
+      "placement": {
+        "biomes": [
+          "Desert",
+          "Grassland"
+        ],
+        "weight": 0.6,
+        "min_moisture": 0.0,
+        "max_moisture": 0.5,
+        "min_altitude": 0.0,
+        "max_altitude": 100.0,
+        "near_water_boost": 0.0,
+        "max_slope": 1.0
+      }
+    },
+    {
+      "name": "Palm",
+      "species": {
+        "name": "Coconut Palm",
+        "body_plan": {
+          "kind": "tree",
+          "stem_count": 1,
+          "max_height": [
+            12.0,
+            20.0
+          ]
+        },
+        "trunk": {
+          "taper": 0.12,
+          "base_flare": 0.2,
+          "straightness": 0.65,
+          "thickness_ratio": 0.025
+        },
+        "branching": {
+          "apical_dominance": 1.0,
+          "max_depth": 0,
+          "arrangement": {
+            "type": "spiral",
+            "angle": 137.5,
+            "count": null
+          },
+          "branches_per_node": [
+            0,
+            0
+          ],
+          "insertion_angle": {
+            "base": [
+              0.0,
+              0.0
+            ],
+            "tip": [
+              0.0,
+              0.0
+            ]
+          },
+          "length_profile": "dome",
+          "child_length_ratio": 0.5,
+          "child_thickness_ratio": 0.5,
+          "gravity_response": 0.0,
+          "randomness": 0.0
+        },
+        "crown": {
+          "shape": "fan_top",
+          "crown_base": 0.8,
+          "aspect_ratio": 1.0,
+          "density": 0.6,
+          "asymmetry": 0.1
+        },
+        "foliage": {
+          "style": "palm_frond",
+          "leaf_size": [
+            1.5,
+            3.0
+          ],
+          "cluster_strategy": {
+            "type": "ring",
+            "count": 16
+          },
+          "droop": 0.6,
+          "coverage": 1.0
+        },
+        "color": {
+          "bark": {
+            "h": 35.0,
+            "s": 0.25,
+            "l": 0.35
+          },
+          "leaf": {
+            "h": 125.0,
+            "s": 0.55,
+            "l": 0.3
+          },
+          "leaf_variance": 0.12
+        }
+      },
+      "placement": {
+        "biomes": [
+          "Grassland",
+          "Forest"
+        ],
+        "weight": 0.5,
+        "min_moisture": 0.4,
+        "max_moisture": 1.0,
+        "min_altitude": 0.0,
+        "max_altitude": 60.0,
+        "near_water_boost": 0.5,
+        "max_slope": 1.0
+      }
+    },
+    {
+      "name": "Shrub",
+      "species": {
+        "name": "Berry Shrub",
+        "body_plan": {
+          "kind": "shrub",
+          "stem_count": 7,
+          "max_height": [
+            1.5,
+            2.5
+          ]
+        },
+        "trunk": {
+          "taper": 0.3,
+          "base_flare": 0.05,
+          "straightness": 0.6,
+          "thickness_ratio": 0.04
+        },
+        "branching": {
+          "apical_dominance": 0.1,
+          "max_depth": 2,
+          "arrangement": {
+            "type": "random",
+            "angle": null,
+            "count": null
+          },
+          "branches_per_node": [
+            2,
+            3
+          ],
+          "insertion_angle": {
+            "base": [
+              35.0,
+              50.0
+            ],
+            "tip": [
+              30.0,
+              40.0
+            ]
+          },
+          "length_profile": "dome",
+          "child_length_ratio": 0.6,
+          "child_thickness_ratio": 0.55,
+          "gravity_response": 0.15,
+          "randomness": 0.5
+        },
+        "crown": {
+          "shape": "dome",
+          "crown_base": 0.0,
+          "aspect_ratio": 1.2,
+          "density": 0.9,
+          "asymmetry": 0.1
+        },
+        "foliage": {
+          "style": "broadleaf",
+          "leaf_size": [
+            0.01,
+            0.025
+          ],
+          "cluster_strategy": {
+            "type": "dense_mass",
+            "count": null
+          },
+          "droop": 0.1,
+          "coverage": 0.8
+        },
+        "color": {
+          "bark": {
+            "h": 20.0,
+            "s": 0.35,
+            "l": 0.28
+          },
+          "leaf": {
+            "h": 130.0,
+            "s": 0.55,
+            "l": 0.28
+          },
+          "leaf_variance": 0.2
+        }
+      },
+      "placement": {
+        "biomes": [
+          "Forest",
+          "Grassland"
+        ],
+        "weight": 1.0,
+        "min_moisture": 0.2,
+        "max_moisture": 1.0,
+        "min_altitude": 0.0,
+        "max_altitude": 120.0,
+        "near_water_boost": 0.0,
+        "max_slope": 0.8
+      }
+    },
+    {
+      "name": "Spruce",
+      "species": {
+        "name": "Spruce",
+        "body_plan": {
+          "kind": "tree",
+          "stem_count": 1,
+          "max_height": [
+            15.0,
+            25.0
+          ]
+        },
+        "trunk": {
+          "taper": 0.5,
+          "base_flare": 0.15,
+          "straightness": 0.95,
+          "thickness_ratio": 0.03
+        },
+        "branching": {
+          "apical_dominance": 0.95,
+          "max_depth": 2,
+          "arrangement": {
+            "type": "whorled",
+            "angle": null,
+            "count": 5
+          },
+          "branches_per_node": [
+            3,
+            5
+          ],
+          "insertion_angle": {
+            "base": [
+              65.0,
+              75.0
+            ],
+            "tip": [
+              40.0,
+              50.0
+            ]
+          },
+          "length_profile": "conical",
+          "child_length_ratio": 0.55,
+          "child_thickness_ratio": 0.5,
+          "gravity_response": 0.25,
+          "randomness": 0.15
+        },
+        "crown": {
+          "shape": "conical",
+          "crown_base": 0.1,
+          "aspect_ratio": 0.55,
+          "density": 0.85,
+          "asymmetry": 0.05
+        },
+        "foliage": {
+          "style": "needle",
+          "leaf_size": [
+            0.01,
+            0.02
+          ],
+          "cluster_strategy": {
+            "type": "dense_mass",
+            "count": null
+          },
+          "droop": 0.15,
+          "coverage": 0.9
+        },
+        "color": {
+          "bark": {
+            "h": 20.0,
+            "s": 0.3,
+            "l": 0.25
+          },
+          "leaf": {
+            "h": 140.0,
+            "s": 0.45,
+            "l": 0.22
+          },
+          "leaf_variance": 0.1
+        }
+      },
+      "placement": {
+        "biomes": [
+          "Forest"
+        ],
+        "weight": 0.8,
+        "min_moisture": 0.3,
+        "max_moisture": 1.0,
+        "min_altitude": 60.0,
+        "max_altitude": 160.0,
+        "near_water_boost": 0.0,
+        "max_slope": 1.0
+      }
+    },
+    {
+      "name": "Willow",
+      "species": {
+        "name": "Weeping Willow",
+        "body_plan": {
+          "kind": "tree",
+          "stem_count": 1,
+          "max_height": [
+            10.0,
+            15.0
+          ]
+        },
+        "trunk": {
+          "taper": 0.35,
+          "base_flare": 0.25,
+          "straightness": 0.75,
+          "thickness_ratio": 0.045
+        },
+        "branching": {
+          "apical_dominance": 0.35,
+          "max_depth": 3,
+          "arrangement": {
+            "type": "spiral",
+            "angle": 137.5,
+            "count": null
+          },
+          "branches_per_node": [
+            2,
+            4
+          ],
+          "insertion_angle": {
+            "base": [
+              50.0,
+              65.0
+            ],
+            "tip": [
+              35.0,
+              45.0
+            ]
+          },
+          "length_profile": "dome",
+          "child_length_ratio": 0.8,
+          "child_thickness_ratio": 0.6,
+          "gravity_response": 0.95,
+          "randomness": 0.3
+        },
+        "crown": {
+          "shape": "weeping",
+          "crown_base": 0.2,
+          "aspect_ratio": 1.4,
+          "density": 0.55,
+          "asymmetry": 0.15
+        },
+        "foliage": {
+          "style": "broadleaf",
+          "leaf_size": [
+            0.04,
+            0.08
+          ],
+          "cluster_strategy": {
+            "type": "individual",
+            "count": null
+          },
+          "droop": 0.85,
+          "coverage": 0.9
+        },
+        "color": {
+          "bark": {
+            "h": 30.0,
+            "s": 0.3,
+            "l": 0.3
+          },
+          "leaf": {
+            "h": 100.0,
+            "s": 0.45,
+            "l": 0.4
+          },
+          "leaf_variance": 0.12
+        }
+      },
+      "placement": {
+        "biomes": [
+          "Forest",
+          "Grassland"
+        ],
+        "weight": 0.4,
+        "min_moisture": 0.5,
+        "max_moisture": 1.0,
+        "min_altitude": 0.0,
+        "max_altitude": 80.0,
+        "near_water_boost": 0.7,
+        "max_slope": 1.0
+      }
+    }
+  ]
+}

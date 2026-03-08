@@ -142,7 +142,7 @@ fn save_screenshot(
     let y = if m <= 2 { y + 1 } else { y };
 
     let filename = format!(
-        "world-gen-{:04}{:02}{:02}-{:02}{:02}{:02}.png",
+        "floraforge-{:04}{:02}{:02}-{:02}{:02}{:02}.png",
         y, m, d, hours, minutes, seconds,
     );
     let path = std::path::Path::new("captures").join(&filename);

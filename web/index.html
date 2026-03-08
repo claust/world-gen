@@ -3,17 +3,1024 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>world-gen</title>
+    <title>FloraForge | Design Plants. Grow Worlds.</title>
+    <meta
+        name="description"
+        content="FloraForge is a procedural world-building game where you design plants, generate living landscapes, and explore them directly in your browser."
+    >
+    <meta property="og:title" content="FloraForge">
+    <meta
+        property="og:description"
+        content="Design plants. Grow worlds. Launch the browser build and explore a procedural ecosystem built with Rust, WebAssembly, and WebGPU."
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://floraforge.eu/">
+    <meta name="theme-color" content="#0a1f0a">
+    <link
+        rel="icon"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3Crect x='29' y='34' width='6' height='18' fill='%235c4033'/%3E%3C/svg%3E"
+    >
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&display=swap"
+        rel="stylesheet"
+    >
     <style>
-        body { margin: 0; overflow: hidden; background: #000; }
-        canvas { width: 100vw; height: 100vh; display: block; touch-action: none; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --green-deep: #081a0c;
+            --green-dark: #132913;
+            --green-mid: #1e4d2b;
+            --green-bright: #3ecf6e;
+            --green-glow: #7cff9f;
+            --cream: #f0ede4;
+            --sand: #c7b99d;
+            --mist: rgba(240, 237, 228, 0.72);
+            --panel: rgba(18, 35, 20, 0.72);
+            --panel-strong: rgba(11, 24, 13, 0.92);
+            --line: rgba(62, 207, 110, 0.14);
+            --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+        }
+
+        html {
+            background: var(--green-deep);
+            color: var(--cream);
+            scroll-behavior: smooth;
+        }
+
+        body {
+            min-height: 100vh;
+            font-family: "DM Sans", sans-serif;
+            background:
+                radial-gradient(circle at top center, rgba(124, 255, 159, 0.16), transparent 36%),
+                linear-gradient(180deg, #09190b 0%, #0d1f0f 40%, #08150a 100%);
+            color: var(--cream);
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        body[data-mode="play"] {
+            overflow: hidden;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .content {
+            position: relative;
+            z-index: 2;
+        }
+
+        .page-shell {
+            transition: opacity 280ms ease, transform 280ms ease;
+        }
+
+        body[data-mode="play"] .page-shell {
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(-16px);
+        }
+
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            bottom: -260px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(76vw, 960px);
+            height: min(76vw, 960px);
+            background: radial-gradient(circle, rgba(62, 207, 110, 0.22) 0%, transparent 68%);
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        .hero-inner,
+        .section-inner,
+        .footer-inner {
+            width: min(1120px, 100%);
+            margin: 0 auto;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 6rem;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.9rem;
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+        }
+
+        .brand-mark {
+            width: 2.4rem;
+            height: 2.4rem;
+            border-radius: 999px;
+            background:
+                radial-gradient(circle at 35% 35%, rgba(124, 255, 159, 0.95), transparent 32%),
+                linear-gradient(180deg, #1f5f30, #0c2611);
+            box-shadow: inset 0 0 0 1px rgba(124, 255, 159, 0.22), 0 0 22px rgba(62, 207, 110, 0.18);
+            position: relative;
+        }
+
+        .brand-mark::before,
+        .brand-mark::after {
+            content: "";
+            position: absolute;
+            background: rgba(240, 237, 228, 0.9);
+            border-radius: 999px;
+        }
+
+        .brand-mark::before {
+            width: 0.2rem;
+            height: 1.05rem;
+            left: 1.1rem;
+            top: 0.85rem;
+        }
+
+        .brand-mark::after {
+            width: 0.85rem;
+            height: 0.36rem;
+            left: 0.78rem;
+            top: 1.22rem;
+            transform: rotate(-24deg);
+        }
+
+        .top-links {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            font-size: 0.95rem;
+            color: var(--mist);
+        }
+
+        .top-links a {
+            border-bottom: 1px solid transparent;
+            transition: color 180ms ease, border-color 180ms ease;
+        }
+
+        .top-links a:hover {
+            color: var(--green-glow);
+            border-color: rgba(124, 255, 159, 0.4);
+        }
+
+        .hero-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+            gap: 3rem;
+            align-items: center;
+        }
+
+        .hero-tag,
+        .section-label {
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 0.8rem;
+            font-weight: 500;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: var(--green-bright);
+            opacity: 0.84;
+        }
+
+        .hero-tag {
+            margin-bottom: 1.8rem;
+        }
+
+        h1,
+        h2,
+        h3 {
+            font-family: "Space Grotesk", sans-serif;
+            letter-spacing: -0.03em;
+        }
+
+        h1 {
+            font-size: clamp(3.4rem, 8vw, 6.7rem);
+            line-height: 0.94;
+            margin-bottom: 1.7rem;
+        }
+
+        .accent {
+            color: var(--green-bright);
+        }
+
+        .hero-copy {
+            max-width: 620px;
+            color: var(--sand);
+            font-size: clamp(1.08rem, 2.4vw, 1.34rem);
+            line-height: 1.65;
+            margin-bottom: 2.4rem;
+        }
+
+        .hero-actions {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 2rem;
+        }
+
+        .button {
+            appearance: none;
+            border: 0;
+            cursor: pointer;
+            border-radius: 999px;
+            padding: 1rem 1.45rem;
+            font: inherit;
+            font-weight: 500;
+            transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease, color 180ms ease;
+        }
+
+        .button:hover {
+            transform: translateY(-1px);
+        }
+
+        .button:focus-visible {
+            outline: 2px solid var(--green-glow);
+            outline-offset: 4px;
+        }
+
+        .button-primary {
+            background: linear-gradient(135deg, var(--green-bright), var(--green-glow));
+            color: #06210e;
+            box-shadow: 0 18px 50px rgba(62, 207, 110, 0.25);
+        }
+
+        .button-secondary {
+            background: rgba(255, 255, 255, 0.02);
+            color: var(--cream);
+            border: 1px solid rgba(240, 237, 228, 0.12);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.85rem;
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 0.82rem;
+            color: var(--mist);
+        }
+
+        .hero-meta span {
+            padding: 0.55rem 0.8rem;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(62, 207, 110, 0.12);
+        }
+
+        .hero-panel {
+            position: relative;
+            border-radius: 28px;
+            border: 1px solid rgba(62, 207, 110, 0.14);
+            background:
+                linear-gradient(180deg, rgba(30, 77, 43, 0.24), rgba(11, 22, 13, 0.86)),
+                radial-gradient(circle at top left, rgba(124, 255, 159, 0.18), transparent 46%);
+            box-shadow: var(--shadow);
+            padding: 1.5rem;
+            overflow: hidden;
+        }
+
+        .hero-panel::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(180deg, rgba(248, 202, 143, 0.12), transparent 34%),
+                linear-gradient(135deg, rgba(12, 48, 23, 0.4), transparent 60%);
+            pointer-events: none;
+        }
+
+        .hero-panel-inner {
+            position: relative;
+            min-height: 460px;
+            border-radius: 22px;
+            padding: 1.4rem;
+            background:
+                radial-gradient(circle at 50% 18%, rgba(247, 197, 145, 0.32), transparent 28%),
+                linear-gradient(180deg, #b9967c 0%, #c09a67 28%, #406631 54%, #0e2b13 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            overflow: hidden;
+        }
+
+        .hero-panel-inner::before {
+            content: "";
+            position: absolute;
+            inset: auto -8% -10% -8%;
+            height: 58%;
+            background:
+                radial-gradient(circle at 20% 26%, rgba(89, 135, 67, 0.9) 0 6%, transparent 7%),
+                radial-gradient(circle at 28% 35%, rgba(53, 113, 45, 0.94) 0 7%, transparent 8%),
+                radial-gradient(circle at 45% 22%, rgba(57, 120, 47, 0.94) 0 9%, transparent 10%),
+                radial-gradient(circle at 62% 28%, rgba(36, 86, 36, 0.94) 0 11%, transparent 12%),
+                radial-gradient(circle at 78% 24%, rgba(26, 67, 28, 0.94) 0 13%, transparent 14%),
+                radial-gradient(circle at 88% 38%, rgba(49, 109, 51, 0.94) 0 9%, transparent 10%),
+                linear-gradient(180deg, transparent 0 26%, rgba(18, 47, 18, 0.35) 40%, rgba(10, 29, 11, 0.84) 100%);
+            filter: blur(0.2px);
+        }
+
+        .hero-panel-copy,
+        .hero-panel-overlay {
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-panel-copy {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 0.82rem;
+            font-family: "Space Grotesk", sans-serif;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .hero-panel-overlay {
+            align-self: flex-start;
+            padding: 0.95rem 1rem;
+            border-radius: 18px;
+            background: rgba(7, 16, 9, 0.64);
+            border: 1px solid rgba(240, 237, 228, 0.1);
+            backdrop-filter: blur(10px);
+            max-width: 290px;
+        }
+
+        .hero-panel-overlay strong {
+            display: block;
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 1rem;
+            margin-bottom: 0.45rem;
+        }
+
+        .hero-panel-overlay p {
+            color: rgba(240, 237, 228, 0.78);
+            line-height: 1.55;
+            font-size: 0.93rem;
+        }
+
+        .divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--green-mid), transparent);
+            margin: 0 2rem;
+        }
+
+        .section {
+            padding: 7rem 2rem;
+        }
+
+        .concept-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 4rem;
+            align-items: start;
+        }
+
+        h2 {
+            font-size: clamp(2rem, 4vw, 3.1rem);
+            line-height: 1.08;
+            margin: 1.1rem 0 1.4rem;
+        }
+
+        .lead {
+            font-size: 1.04rem;
+            color: var(--sand);
+            line-height: 1.85;
+        }
+
+        .concept-cards {
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            padding-top: 0.7rem;
+        }
+
+        .concept-card {
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--line);
+        }
+
+        .concept-card h3 {
+            font-size: 1.08rem;
+            color: var(--green-bright);
+            margin-bottom: 0.7rem;
+        }
+
+        .concept-card p {
+            color: var(--sand);
+            line-height: 1.65;
+            font-size: 0.96rem;
+        }
+
+        .how {
+            background: linear-gradient(180deg, rgba(9, 24, 11, 0.18), rgba(10, 19, 11, 0.7));
+        }
+
+        .how-steps {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 1.5rem;
+            margin-top: 3rem;
+        }
+
+        .how-step {
+            padding: 1.8rem;
+            border-radius: 20px;
+            background: rgba(30, 77, 43, 0.14);
+            border: 1px solid rgba(62, 207, 110, 0.1);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+        }
+
+        .how-step-num {
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 3.4rem;
+            font-weight: 700;
+            line-height: 1;
+            color: rgba(124, 255, 159, 0.18);
+            margin-bottom: 1rem;
+        }
+
+        .how-step h3 {
+            font-size: 1.16rem;
+            margin-bottom: 0.65rem;
+        }
+
+        .how-step p {
+            color: var(--sand);
+            line-height: 1.7;
+            font-size: 0.96rem;
+        }
+
+        .tech {
+            padding: 4rem 2rem;
+            border-top: 1px solid rgba(62, 207, 110, 0.08);
+            border-bottom: 1px solid rgba(62, 207, 110, 0.08);
+        }
+
+        .tech-inner {
+            width: min(900px, 100%);
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .tech-pills {
+            display: flex;
+            justify-content: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.2rem;
+            font-family: "Space Grotesk", sans-serif;
+        }
+
+        .tech-pills span {
+            padding: 0.65rem 0.9rem;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(62, 207, 110, 0.12);
+            color: var(--mist);
+        }
+
+        .tech p {
+            color: var(--sand);
+            max-width: 720px;
+            margin: 0 auto;
+            line-height: 1.7;
+        }
+
+        .cta {
+            padding: 7rem 2rem 6rem;
+            text-align: center;
+        }
+
+        .cta h2 {
+            margin-bottom: 1rem;
+        }
+
+        .cta p {
+            max-width: 620px;
+            margin: 0 auto 2rem;
+            color: var(--sand);
+            line-height: 1.8;
+        }
+
+        footer {
+            padding: 2rem;
+        }
+
+        .footer-inner {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            border-top: 1px solid rgba(62, 207, 110, 0.08);
+            padding-top: 1.4rem;
+            color: rgba(240, 237, 228, 0.56);
+            font-size: 0.92rem;
+        }
+
+        .game-shell {
+            position: fixed;
+            inset: 0;
+            z-index: 3;
+            display: grid;
+            place-items: center;
+            background:
+                radial-gradient(circle at top center, rgba(124, 255, 159, 0.16), transparent 34%),
+                linear-gradient(180deg, #08160a 0%, #050b06 100%);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 260ms ease;
+        }
+
+        body[data-mode="play"] .game-shell {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .game-status {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            padding: 2rem;
+            text-align: center;
+            z-index: 2;
+            transition: opacity 200ms ease;
+        }
+
+        .game-status[hidden] {
+            display: none;
+        }
+
+        .game-status-card {
+            width: min(520px, 100%);
+            padding: 2rem;
+            border-radius: 24px;
+            background: var(--panel);
+            border: 1px solid rgba(62, 207, 110, 0.14);
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(16px);
+        }
+
+        .game-status-card h2 {
+            margin: 0 0 0.8rem;
+            font-size: clamp(1.8rem, 4vw, 2.4rem);
+        }
+
+        .game-status-card p {
+            color: var(--sand);
+            line-height: 1.7;
+        }
+
+        .status-line {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.7rem;
+            margin-bottom: 1rem;
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 0.82rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--green-bright);
+        }
+
+        .status-line::before {
+            content: "";
+            width: 0.75rem;
+            height: 0.75rem;
+            border-radius: 999px;
+            border: 2px solid rgba(124, 255, 159, 0.28);
+            border-top-color: var(--green-glow);
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .status-actions {
+            display: flex;
+            justify-content: center;
+            gap: 0.9rem;
+            flex-wrap: wrap;
+            margin-top: 1.6rem;
+        }
+
+        .error-box {
+            margin-top: 1rem;
+            padding: 0.9rem 1rem;
+            border-radius: 14px;
+            background: rgba(116, 15, 15, 0.28);
+            border: 1px solid rgba(255, 127, 127, 0.18);
+            color: #ffd2d2;
+            font-size: 0.95rem;
+            line-height: 1.55;
+        }
+
+        canvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            touch-action: none;
+            opacity: 0;
+            transition: opacity 220ms ease;
+        }
+
+        body[data-game-ready="true"] canvas {
+            opacity: 1;
+        }
+
+        @media (max-width: 980px) {
+            .hero-grid,
+            .concept-grid,
+            .how-steps {
+                grid-template-columns: 1fr;
+            }
+
+            .topbar {
+                margin-bottom: 4rem;
+            }
+
+            .hero-panel-inner {
+                min-height: 360px;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .hero,
+            .section,
+            .cta,
+            .tech,
+            footer {
+                padding-left: 1.2rem;
+                padding-right: 1.2rem;
+            }
+
+            .hero {
+                padding-top: 1.3rem;
+            }
+
+            .topbar {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .hero-actions,
+            .status-actions {
+                flex-direction: column;
+            }
+
+            .button {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .hero-panel {
+                padding: 1rem;
+            }
+
+            .hero-panel-inner {
+                min-height: 320px;
+                padding: 1rem;
+            }
+
+            .divider {
+                margin: 0 1.2rem;
+            }
+        }
     </style>
 </head>
-<body>
-    <canvas id="world-gen-canvas"></canvas>
+<body data-mode="landing" data-game-ready="false">
+    <div class="content page-shell" id="landing-page">
+        <section class="hero">
+            <div class="hero-inner">
+                <div class="topbar">
+                    <div class="brand">
+                        <span class="brand-mark" aria-hidden="true"></span>
+                        <span>FloraForge</span>
+                    </div>
+                    <nav class="top-links" aria-label="External links">
+                        <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a>
+                        <a href="https://github.com/claust/world-gen/releases" target="_blank" rel="noreferrer">Releases</a>
+                    </nav>
+                </div>
+
+                <div class="hero-grid">
+                    <div>
+                        <p class="hero-tag">World Building Reimagined</p>
+                        <h1>Design plants. <span class="accent">Grow worlds.</span></h1>
+                        <p class="hero-copy">
+                            FloraForge is a procedural world-building game where vegetation comes first.
+                            Shape custom plants, seed them into a living landscape, then fly through the
+                            biome they create in your browser.
+                        </p>
+                        <div class="hero-actions">
+                            <button class="button button-primary" id="launch-button" type="button">Launch FloraForge</button>
+                            <a class="button button-secondary" href="https://github.com/claust/world-gen/releases" target="_blank" rel="noreferrer">Download Release Builds</a>
+                        </div>
+                        <div class="hero-meta" aria-label="Project traits">
+                            <span>Procedural Generation</span>
+                            <span>Plant-First Worlds</span>
+                            <span>Browser-Based 3D</span>
+                            <span>Open Source</span>
+                        </div>
+                    </div>
+
+                    <div class="hero-panel" aria-hidden="true">
+                        <div class="hero-panel-inner">
+                            <div class="hero-panel-copy">
+                                <span>Live Browser Build</span>
+                                <span>Rust + WebGPU</span>
+                            </div>
+                            <div class="hero-panel-overlay">
+                                <strong>Prototype ecosystem</strong>
+                                <p>
+                                    Streaming terrain, flyable camera movement, and a persistent day/night
+                                    cycle wrapped in a landing page that lets the browser build launch on demand.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <div class="divider"></div>
+
+        <section class="section">
+            <div class="section-inner concept-grid">
+                <div>
+                    <p class="section-label">Concept</p>
+                    <h2>The world has enough terrain tools. FloraForge starts with the vegetation.</h2>
+                    <p class="lead">
+                        Instead of treating plants like decoration, FloraForge makes them the source of the world’s
+                        character. The browser build drops you into a living prototype where custom flora, generated
+                        terrain, and exploration systems come together in one continuous simulation.
+                    </p>
+                </div>
+
+                <div class="concept-cards">
+                    <article class="concept-card">
+                        <h3>Plant Editor</h3>
+                        <p>
+                            Shape stems, branches, trunk taper, canopy structure, and species traits in a dedicated editor,
+                            then carry those designs into the runtime world.
+                        </p>
+                    </article>
+                    <article class="concept-card">
+                        <h3>Procedural Biomes</h3>
+                        <p>
+                            Terrain, chunk streaming, and climate-driven placement work together so vegetation feels embedded
+                            in the landscape instead of stamped onto it.
+                        </p>
+                    </article>
+                    <article class="concept-card">
+                        <h3>Explore In 3D</h3>
+                        <p>
+                            Launch directly into the browser build, fly across hills and forests, and watch the lighting
+                            shift as the in-world day progresses.
+                        </p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section class="section how">
+            <div class="section-inner">
+                <p class="section-label">How It Works</p>
+                <div class="how-steps">
+                    <article class="how-step">
+                        <div class="how-step-num">01</div>
+                        <h3>Design</h3>
+                        <p>
+                            Start from species templates or tweak parameters from scratch to define how each plant grows,
+                            scales, and branches.
+                        </p>
+                    </article>
+                    <article class="how-step">
+                        <div class="how-step-num">02</div>
+                        <h3>Generate</h3>
+                        <p>
+                            The engine assembles terrain, streams chunks around the camera, and distributes plants through
+                            a procedural world clock and biome rules.
+                        </p>
+                    </article>
+                    <article class="how-step">
+                        <div class="how-step-num">03</div>
+                        <h3>Explore</h3>
+                        <p>
+                            Launch the WebAssembly build, capture the cursor, and move through a living prototype running
+                            entirely in the browser.
+                        </p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section class="tech">
+            <div class="tech-inner">
+                <div class="tech-pills">
+                    <span>Rust</span>
+                    <span>wgpu</span>
+                    <span>WebAssembly</span>
+                    <span>WebGPU</span>
+                    <span>GitHub Pages</span>
+                </div>
+                <p>
+                    Built from scratch with a custom runtime split between domain logic, world streaming, and rendering.
+                    No Unity. No Unreal. Just FloraForge compiled into the browser.
+                </p>
+            </div>
+        </section>
+
+        <section class="cta">
+            <div class="section-inner">
+                <h2>Every world starts with a single seed.</h2>
+                <p>
+                    Launch FloraForge in your browser to explore the current prototype, or grab a native build if you want
+                    the desktop release instead.
+                </p>
+                <div class="hero-actions" style="justify-content: center;">
+                    <button class="button button-primary" id="launch-button-secondary" type="button">Launch In Browser</button>
+                    <a class="button button-secondary" href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">View Source</a>
+                </div>
+            </div>
+        </section>
+
+        <footer>
+            <div class="footer-inner">
+                <p>FloraForge is a procedural world-building prototype built from scratch in Rust.</p>
+                <p><a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a> · <a href="https://github.com/claust/world-gen/releases" target="_blank" rel="noreferrer">Release Builds</a></p>
+            </div>
+        </footer>
+    </div>
+
+    <section class="game-shell" aria-label="FloraForge game area">
+        <div class="game-status" id="game-status">
+            <div class="game-status-card">
+                <div class="status-line" id="status-label">Preparing world</div>
+                <h2 id="status-heading">Loading FloraForge</h2>
+                <p id="status-copy">
+                    The browser build is downloading its WebAssembly bundle and preparing the runtime.
+                    This can take a few seconds on the first launch.
+                </p>
+                <div class="error-box" id="error-box" hidden></div>
+                <div class="status-actions">
+                    <button class="button button-primary" id="retry-button" type="button" hidden>Retry Launch</button>
+                    <button class="button button-secondary" id="return-button" type="button">Back To Landing Page</button>
+                </div>
+            </div>
+        </div>
+        <canvas id="world-gen-canvas" hidden></canvas>
+    </section>
+
     <script type="module">
-        import init from './pkg/world_gen.js';
-        init();
+        const body = document.body;
+        const canvas = document.getElementById("world-gen-canvas");
+        const statusRoot = document.getElementById("game-status");
+        const statusLabel = document.getElementById("status-label");
+        const statusHeading = document.getElementById("status-heading");
+        const statusCopy = document.getElementById("status-copy");
+        const errorBox = document.getElementById("error-box");
+        const retryButton = document.getElementById("retry-button");
+        const returnButton = document.getElementById("return-button");
+        const launchButtons = [
+            document.getElementById("launch-button"),
+            document.getElementById("launch-button-secondary"),
+        ].filter(Boolean);
+
+        const wasmEntryUrl = new URL("./pkg/world_gen.js", window.location.href);
+        wasmEntryUrl.searchParams.set("loader", "floraforge-launch");
+
+        let wasmModule = null;
+        let launchInFlight = false;
+        let launched = false;
+
+        function setStatus({ label, heading, copy, error = "", loading = true }) {
+            statusLabel.textContent = label;
+            statusHeading.textContent = heading;
+            statusCopy.textContent = copy;
+            errorBox.hidden = !error;
+            errorBox.textContent = error;
+            retryButton.hidden = loading || launched;
+            statusLabel.style.opacity = loading ? "1" : "0.72";
+        }
+
+        function setLandingMode() {
+            body.dataset.mode = "landing";
+            body.dataset.gameReady = "false";
+            canvas.hidden = true;
+            if (!launched) {
+                setStatus({
+                    label: "Preparing world",
+                    heading: "Loading FloraForge",
+                    copy: "The browser build is downloading its WebAssembly bundle and preparing the runtime. This can take a few seconds on the first launch.",
+                });
+            }
+        }
+
+        async function ensureWasmModule() {
+            if (wasmModule) {
+                return wasmModule;
+            }
+
+            const module = await import(wasmEntryUrl.href);
+            await module.default();
+            wasmModule = module;
+            return module;
+        }
+
+        async function launchGame() {
+            if (launchInFlight || launched) {
+                return;
+            }
+
+            launchInFlight = true;
+            body.dataset.mode = "play";
+            canvas.hidden = false;
+            setStatus({
+                label: "Preparing world",
+                heading: "Loading FloraForge",
+                copy: "The browser build is downloading its WebAssembly bundle and preparing the runtime. This can take a few seconds on the first launch.",
+            });
+
+            try {
+                const module = await ensureWasmModule();
+                setStatus({
+                    label: "Starting renderer",
+                    heading: "Entering FloraForge",
+                    copy: "Initializing the WebGPU renderer, world streaming, and in-browser runtime.",
+                });
+                await module.start_web_app();
+                launched = true;
+                body.dataset.gameReady = "true";
+                statusRoot.hidden = true;
+            } catch (error) {
+                body.dataset.gameReady = "false";
+                setStatus({
+                    label: "Launch failed",
+                    heading: "FloraForge could not start",
+                    copy: "The browser build failed to initialize. This is usually a WebGPU support issue, a blocked wasm download, or a transient startup error.",
+                    error: error instanceof Error ? error.message : String(error),
+                    loading: false,
+                });
+                retryButton.hidden = false;
+            } finally {
+                launchInFlight = false;
+            }
+        }
+
+        launchButtons.forEach((button) => {
+            button.addEventListener("click", () => {
+                void launchGame();
+            });
+        });
+
+        retryButton.addEventListener("click", () => {
+            void launchGame();
+        });
+
+        returnButton.addEventListener("click", () => {
+            if (launched) {
+                statusRoot.hidden = false;
+                setStatus({
+                    label: "Browser build active",
+                    heading: "FloraForge is running",
+                    copy: "Use this tab for the live browser build. Reload the page if you want to return to the full landing experience after playing.",
+                    loading: false,
+                });
+                return;
+            }
+            setLandingMode();
+        });
     </script>
 </body>
 </html>

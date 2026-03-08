@@ -4,7 +4,7 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug world-gen",
+      "name": "Debug FloraForge",
       "program": "${workspaceFolder}/target/debug/world-gen",
       "cwd": "${workspaceFolder}",
       "env": {
@@ -20,7 +20,7 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Run world-gen (release)",
+      "name": "Run FloraForge (release)",
       "program": "${workspaceFolder}/target/release/world-gen",
       "cwd": "${workspaceFolder}",
       "env": {

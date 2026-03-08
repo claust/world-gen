@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
 
     let window = Box::leak(Box::new(
         WindowBuilder::new()
-            .with_title("world-gen")
+            .with_title("FloraForge")
             .with_inner_size(PhysicalSize::new(1600, 900))
             .build(&event_loop)
             .context("failed to create window")?,

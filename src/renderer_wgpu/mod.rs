@@ -23,4 +23,5 @@ mod instanced_pass;
 mod minimap_colors;
 mod minimap_pass;
 mod terrain_pass;
+mod terrain_texture;
 mod water_pass;
