@@ -34,7 +34,7 @@ pub struct InstancedPass {
 
 struct ChunkPlantBuffers {
     revision: u64,
-    gpu: GpuInstanceChunk,
+    gpu: Option<GpuInstanceChunk>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -256,30 +256,25 @@ impl InstancedPass {
                 let per_species = build_plant_instances(&chunk.content.plants, &registry.species);
                 for (i, (mature_instances, lod_instances)) in per_species.into_iter().enumerate() {
                     let label = &self.species_names[i];
-                    self.plant_instances[i].remove(coord);
-                    self.plant_lod_instances[i].remove(coord);
+                    self.plant_instances[i].insert(
+                        *coord,
+                        ChunkPlantBuffers {
+                            revision: chunk.content.plants_revision,
+                            gpu: upload_instances(device, &mature_instances, label),
+                        },
+                    );
 
-                    if let Some(gpu) = upload_instances(device, &mature_instances, label) {
-                        self.plant_instances[i].insert(
-                            *coord,
-                            ChunkPlantBuffers {
-                                revision: chunk.content.plants_revision,
-                                gpu,
-                            },
-                        );
-                    }
-
-                    if let Some(gpu) =
-                        upload_instances(device, &lod_instances, &self.species_lod_names[i])
-                    {
-                        self.plant_lod_instances[i].insert(
-                            *coord,
-                            ChunkPlantBuffers {
-                                revision: chunk.content.plants_revision,
-                                gpu,
-                            },
-                        );
-                    }
+                    self.plant_lod_instances[i].insert(
+                        *coord,
+                        ChunkPlantBuffers {
+                            revision: chunk.content.plants_revision,
+                            gpu: upload_instances(
+                                device,
+                                &lod_instances,
+                                &self.species_lod_names[i],
+                            ),
+                        },
+                    );
                 }
             }
 
@@ -349,6 +344,7 @@ impl InstancedPass {
             let mut far: Vec<&GpuInstanceChunk> = Vec::new();
             let mut forced_lod: Vec<&GpuInstanceChunk> = Vec::new();
             for (coord, inst) in &self.plant_instances[i] {
+                let Some(gpu) = &inst.gpu else { continue };
                 if !frustum.is_chunk_visible(*coord) {
                     continue;
                 }
@@ -356,14 +352,16 @@ impl InstancedPass {
                 let dz = (coord.y as f32 + 0.5) * CHUNK_SIZE_METERS - camera_position.z;
                 let dist_sq = dx * dx + dz * dz;
                 if dist_sq < LOD_THRESHOLD_SQ {
-                    near.push(&inst.gpu);
+                    near.push(gpu);
                 } else {
-                    far.push(&inst.gpu);
+                    far.push(gpu);
                 }
             }
             for (coord, inst) in &self.plant_lod_instances[i] {
-                if frustum.is_chunk_visible(*coord) {
-                    forced_lod.push(&inst.gpu);
+                if let Some(gpu) = &inst.gpu {
+                    if frustum.is_chunk_visible(*coord) {
+                        forced_lod.push(gpu);
+                    }
                 }
             }
 
@@ -411,13 +409,15 @@ impl InstancedPass {
             .plant_instances
             .iter()
             .flat_map(|chunks| chunks.values())
-            .map(|entry| entry.gpu.instance_count as usize)
+            .filter_map(|entry| entry.gpu.as_ref())
+            .map(|gpu| gpu.instance_count as usize)
             .sum();
         let buffered_lod_plants = self
             .plant_lod_instances
             .iter()
             .flat_map(|chunks| chunks.values())
-            .map(|entry| entry.gpu.instance_count as usize)
+            .filter_map(|entry| entry.gpu.as_ref())
+            .map(|gpu| gpu.instance_count as usize)
             .sum();
         let buffered_house_instances = self
             .house_instances

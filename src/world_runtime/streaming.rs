@@ -526,7 +526,9 @@ fn tick_chunk_lifecycle(
                             .added_plants
                             .push(seedling);
                     }
-                    chunk_changed = true;
+                    if target_coord == coord {
+                        chunk_changed = true;
+                    }
                 }
             }
         }
@@ -565,12 +567,6 @@ fn sanitize_chunk_timestamps(coord: IVec2, total_hours: f64, delta: &mut ChunkDe
             plant.born_hour = total_hours;
         }
     }
-
-    debug_assert!(
-        delta.last_sim_hour <= total_hours,
-        "chunk {coord:?} last_sim_hour {} exceeds total_hours {total_hours}",
-        delta.last_sim_hour
-    );
 
     debug_assert!(
         delta.last_sim_hour <= total_hours,
