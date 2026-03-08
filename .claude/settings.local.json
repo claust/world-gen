@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rustc --version:*)",
+      "Bash(cargo --version:*)",
+      "Bash(cargo run:*)",
+      "Bash(where:*)",
+      "Bash(cmd.exe:*)",
+      "Read(//c/Program Files/Microsoft Visual Studio/2022/**)",
+      "Read(//c/Program Files \\(x86\\)/Microsoft Visual Studio/2022/**)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(PATH=\"$MSVC_BIN:$PATH\" cargo run:*)",
+      "Bash(export:*)",
+      "Bash(code:*)"
+    ]
+  }
+}
