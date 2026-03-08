@@ -137,7 +137,7 @@ Where:
 
 **Hour bucketing:** Spread is evaluated once per game-hour boundary (`floor(current_hour) > floor(last_sim_hour)`). The hour value is **not** an RNG input — it controls *when* the tick fires, not the hash output. This means a tick at hour 100.3 and one at hour 100.9 produce the same spread results for the same chunk state. The hour bucket implicitly serializes spread rounds: hour 100's seeds exist before hour 101's spread runs, so growth is ordered.
 
-**Catch-up ticks:** When `current_hour - last_sim_hour > 1`, the simulation loops over each missed hour boundary sequentially. Each round uses the same hash inputs (chunk, plant_index) but operates on updated state from the previous round (new delta plants from round N are mature-eligible in round N + seedling_hours + young_hours). This is deterministic because the loop order is fixed: hours ascending, chunks in HashMap iteration order (order doesn't matter — chunks don't interact within a single hour boundary, only via cross-chunk seed landing which is applied lazily).
+**Catch-up ticks:** When `current_hour - last_sim_hour > 1`, the simulation loops over each missed hour boundary sequentially. Each round uses the same hash inputs (chunk, plant_index) but operates on updated state from the previous round (new delta plants from round N are mature-eligible in round N + seedling_hours + young_hours). This is deterministic because the loop order is fixed: hours ascending, and the current runtime implementation also sorts loaded chunk coordinates before ticking.
 
 **What is NOT seeded by hash4:** Growth stage advancement is purely time-based (`age >= threshold`), not random. No RNG involved.
 
@@ -150,7 +150,7 @@ Where:
 5. Check minimum spacing from existing plants (both base and delta) — e.g. 3m for shrubs, 8m for trees.
 6. If all checks pass, insert a `DeltaPlant` with `stage: Seedling` into the target chunk's delta.
 
-Seeds that land in **unloaded chunks** still write to the `DeltaStore` — the delta for that chunk is created lazily. The terrain eligibility check is skipped for unloaded chunks (deferred to when the chunk loads, at which point invalid seedlings are pruned).
+Current status after phase 6: seeds can land in **loaded or unloaded chunks**. Loaded targets are validated immediately against sampled terrain, moisture, slope, biome, and spacing. Unloaded targets create lazy delta entries and defer terrain validation until the chunk loads, where the same landing/pruning rules are applied idempotently and persisted.
 
 ### PlacementConfig additions
 
@@ -175,14 +175,14 @@ In `WorldRuntime::update()`, after streaming update. Only ticks **loaded chunks*
 ```
 fn tick_chunk_lifecycle(
     coord: IVec2,
-    base_plants: &[PlantInstance],
-    delta: &mut ChunkDelta,
-    current_hour: f64,
+    loaded: &HashMap<IVec2, ChunkData>,
+    total_hours: f64,
+    world_seed: u32,
+    sea_level: f32,
+    biome_config: &BiomeConfig,
     registry: &PlantRegistry,
-    terrain: &ChunkTerrain,
-    biome_map: &BiomeMap,
-    delta_store: &mut DeltaStore,   // for cross-chunk seed spread
-    seed: u32,                      // world_seed — used as hash4 base, see RNG contract
+    delta_store: &mut DeltaStore,
+    changed_coords: &mut HashSet<IVec2>,
 )
 ```
 
@@ -192,9 +192,11 @@ Steps:
 
 2. **Fast-forward growth** (per round): For each `DeltaPlant`, compute `age = round_hour - born_hour`. Advance `stage` based on species thresholds (`seedling_hours`, `young_hours`). This is pure arithmetic, no RNG.
 
-3. **Spread seeds** (per round): For each mature plant (base + delta), roll `hash4(seed + 4001, chunk_x, chunk_z, plant_index)` for spread chance. On success, generate 1–2 seeds with landing positions derived from offsets 4101–4202. Insert new `DeltaPlant`s into the appropriate chunk's delta.
+3. **Spread seeds** (per round): For each mature plant (base + delta), roll `hash4(seed + 4001, chunk_x, chunk_z, plant_index)` for spread chance. On success, generate 1–2 seeds with landing positions derived from offsets 4101–4202. Loaded target chunks validate and insert immediately; unloaded target chunks store deferred seedlings in the target chunk delta and validate them when that chunk loads.
 
-4. **Update `last_sim_hour`** to `current_hour`.
+4. **Update `last_sim_hour`** to the most recent simulated hour boundary.
+
+Implementation note: the runtime currently sorts loaded chunk coordinates before ticking so catch-up ordering is stable across runs instead of depending on `HashMap` iteration order.
 
 ### Tick frequency
 
@@ -361,10 +363,10 @@ Each `ChunkDelta` is tiny when empty (not stored). A delta with 10 added plants 
 | `world_core/chunk.rs` | Add `growth_stage: GrowthStage` to `PlantInstance` (default `Mature`) |
 | `world_core/chunk.rs` | Split `ChunkContent.plants` into `base_plants` + assembled visible `plants`; add `content_revision` |
 | `world_core/herbarium.rs` | Add spread/growth fields to `PlacementConfig` with defaults |
-| `world_core/lifecycle.rs` | **NEW** — `GrowthStage`, `DeltaPlant`, `ChunkDelta`, `assemble_plants()`, `tick_chunk_lifecycle()` |
+| `world_core/lifecycle.rs` | **NEW** — `GrowthStage`, `DeltaPlant`, `ChunkDelta`, `assemble_plants()`, growth/catch-up helpers |
 | `world_runtime/delta_store.rs` | **NEW** — `DeltaStore` with save/load |
 | `world_runtime/runtime.rs` | Own a `DeltaStore`, call lifecycle tick in `update()`, expose assembled chunk content |
-| `world_runtime/streaming.rs` | After polling new chunks, apply deltas before handing to renderer |
+| `world_runtime/streaming.rs` | After polling new chunks, apply deltas before handing to renderer; host loaded-chunk lifecycle ticking and spread helpers |
 | `renderer_wgpu/instanced_pass.rs` | Use `growth_stage` to select mesh variant (full vs LOD) and apply scale multiplier |
 | `renderer_wgpu/instancing.rs` | `build_plant_instances()` reads `growth_stage` for scale factor |
 | `world_core/save.rs` | Add `total_hours` to `WorldSave` |
@@ -392,6 +394,18 @@ Each phase should be independently shippable and leave the codebase in a working
 
 Goal: introduce lifecycle types and clock semantics without changing gameplay behavior.
 
+Status: Complete
+
+Implemented in code:
+
+- Added `world_core::lifecycle` with `GrowthStage`, `DeltaPlant`, and `ChunkDelta`
+- Added `growth_stage` to `PlantInstance`; deterministic flora now sets `GrowthStage::Mature`
+- Added lifecycle tuning fields to `PlacementConfig` and defaulted all current preset species to the design values
+- Extended `WorldClock` to track wrapped `hour` plus monotonic `total_hours`
+- Added `total_hours` to `WorldSave`
+- Added backward-compatible save migration for older saves that only contain `hour`
+- Added regression tests covering save migration, total-hour persistence, clock semantics, herbarium compatibility, and deterministic flora maturity
+
 Deliverables:
 
 1. Add `GrowthStage` and `growth_stage` to `PlantInstance`; all deterministic flora defaults to `Mature`
@@ -412,9 +426,27 @@ Acceptance criteria:
 - Rendering is unchanged
 - No lifecycle simulation runs yet
 
+Notes:
+
+- This phase was implemented without changing chunk assembly, renderer behavior, or lifecycle ticking
+- The code now carries lifecycle metadata only; no gameplay behavior is attached yet
+
 ### Phase 2 — Delta Store + Chunk Assembly
 
 Goal: make runtime chunks lifecycle-ready by separating deterministic base flora from assembled visible flora.
+
+Status: Complete
+
+Implemented in code:
+
+- Split `ChunkContent` into deterministic `base_plants` plus assembled visible `plants`
+- Updated chunk/content generation so newly generated chunks start with `plants == base_plants`
+- Added `assemble_plants(base, delta)` in `world_core::lifecycle`
+- Added `ChunkDelta::prune_removed_base()` to sort, deduplicate, and discard stale base indices
+- Added `world_runtime::DeltaStore` with storage-backed load/save under key `"deltas"`
+- Updated `WorldRuntime` to load deltas from `Storage` on startup and save them alongside normal save data
+- Updated chunk streaming so deltas are applied when chunks enter the loaded set
+- Added regression tests for assembly behavior, delta persistence round-trip, and stale-index prune-on-load
 
 Deliverables:
 
@@ -432,9 +464,28 @@ Acceptance criteria:
 - Chunks can be deterministically re-assembled from base + delta
 - Delta persistence round-trips cleanly
 
+Notes:
+
+- The chunk assembly boundary is now in place: generation owns deterministic flora, runtime owns visible assembly.
+- The current implementation persists chunks whose delta has no added/removed plants but does have `last_sim_hour > 0.0`. That is useful for upcoming growth/spread catch-up semantics and should be treated as intentional unless phase 4 decides otherwise.
+- There is now a clear place to invalidate already-loaded chunks later: re-assemble `base_plants + delta` at runtime and let the renderer observe the chunk revision change.
+
 ### Phase 3 — Renderer Integration + Invalidation
 
 Goal: make lifecycle-visible changes render correctly and predictably.
+
+Status: Complete
+
+Implemented in code:
+
+- Added `plants_revision` to `ChunkContent` and a `set_plants()` helper that bumps revision only when assembled visible plants actually change
+- Updated chunk-load delta application to go through `set_plants()`, so initial lifecycle-visible changes produce a revision immediately
+- Added `WorldRuntime::reassemble_loaded_chunk()` / `StreamingWorld::reassemble_loaded_chunk()` as the runtime invalidation path for already-loaded chunks
+- Moved growth-stage scaling out of lifecycle assembly and into renderer instance generation, making `PlantInstance.height` the canonical mature height again
+- Split instance generation into mature vs forced-LOD buckets per species
+- Updated the instanced renderer cache to track per-chunk plant revisions and rebuild GPU buffers when the revision changes
+- Kept mature plants on the existing near/full and far/LOD path, while forcing seedlings and young plants onto LOD meshes regardless of distance
+- Added renderer-core test coverage for growth-stage scaling and forced-LOD partitioning
 
 Deliverables:
 
@@ -450,9 +501,32 @@ Acceptance criteria:
 - Seedlings and young plants render with the intended smaller LOD presentation
 - No stale GPU instance buffers remain after delta changes
 
+Notes:
+
+- `PlantInstance.height` is now the species-instance mature height everywhere. Stage size comes exclusively from `GrowthStage::scale_factor()` during instance generation.
+- `ChunkContent::set_plants()` is the revision boundary. Future lifecycle steps should avoid mutating `content.plants` directly.
+- `WorldRuntime::reassemble_loaded_chunk(coord)` is the intended hook after any delta mutation for a loaded chunk.
+- The renderer caches plant buffers per species and per chunk revision, so phase 4 only needs to reassemble changed chunks; no explicit renderer API work should be necessary.
+
 ### Phase 4 — Growth Advancement
 
 Goal: support time-based stage progression for delta plants before adding reproduction.
+
+Status: Complete
+
+Implemented in code:
+
+- Added pure lifecycle helpers in `world_core::lifecycle` for bounded catch-up and time-based stage advancement
+- Added a shared `MAX_CATCH_UP_HOURS` cap (500h) and warning logs when a loaded chunk exceeds it during catch-up
+- Updated loaded-chunk lifecycle ticking in runtime to operate on `DeltaStore` state only, leaving assembled `ChunkContent.plants` derived
+- Enforced phase-4 debug invariants at the runtime tick boundary:
+  - no future-born delta plants
+  - growth-stage monotonicity
+  - `last_sim_hour <= total_hours`
+  - catch-up bounded by the cap
+- Limited lifecycle simulation to game-hour boundary catch-up (`floor(total_hours)` changes), so chunks are not rewritten every frame
+- Re-assemble only the loaded chunks whose visible plant stages actually changed
+- Added regression tests for growth progression and catch-up clamping
 
 Deliverables:
 
@@ -471,17 +545,43 @@ Acceptance criteria:
 - Loading an older save catches up growth deterministically within the catch-up cap
 - No spreading occurs yet
 
+Implementation notes for next phase:
+
+- Phase 4 now operates on `DeltaStore` state, not on assembled `ChunkContent.plants`. Growth stage is authoritative on `DeltaPlant.stage`; visible chunk plants are derived.
+- Loaded-chunk lifecycle ticking already runs from `WorldRuntime::update()`. Phase 5 should extend the existing tick path with spread rather than introducing a second lifecycle entry point.
+- `last_sim_hour` is only advanced when an hour boundary is crossed (`floor(total_hours) > floor(last_sim_hour)`). That matches the design intent and avoids persisting fresh empty deltas every frame.
+- The current persisted `last_sim_hour` on otherwise-empty deltas is intentional and should be preserved. Observed saves currently contain many such entries and that is expected phase-4 state.
+- After mutating a loaded chunk's delta, call `WorldRuntime::reassemble_loaded_chunk(coord)` so `plants_revision` advances only when visible output changes.
+- Debug assertions live near the lifecycle tick/update boundary, where both `total_hours` and the mutated `ChunkDelta` are available. Phase 5 should keep spread-related invariants close to that same boundary.
+
 ### Phase 5 — Seed Spread In Loaded Chunks
 
 Goal: enable deterministic reproduction within the loaded simulation area.
 
+Status: Complete
+
+Implemented in code:
+
+- Extended the existing loaded-chunk lifecycle tick in `StreamingWorld::tick_loaded_chunk_growth()` instead of introducing a second simulation entry point
+- Added an internal `tick_chunk_lifecycle()` helper in `world_runtime::streaming` that performs hour-by-hour catch-up, growth advancement, and deterministic spread
+- Implemented the documented `hash4` offsets for spread chance, seed count, landing angle, distance, height, and rotation
+- Evaluated loaded-target seed landings against terrain height, biome classification, moisture, altitude, slope, and species-based min spacing
+- Inserted successful loaded-target landings as `DeltaPlant { stage: Seedling, born_hour: round_hour }`
+- Sorted loaded chunk coordinates before ticking so catch-up order is stable across runs
+- Added timestamp sanitization on tick entry so stale persisted `last_sim_hour` / `born_hour` values that are ahead of `total_hours` are clamped and logged instead of crashing startup
+- Added regression tests for deterministic loaded-chunk spread and stale-timestamp recovery
+
+Important scope boundary:
+
+- Phase 5 does **not** yet create lazy deltas for unloaded target chunks. Seeds whose landing chunk is not loaded are currently discarded.
+
 Deliverables:
 
 1. Implement `tick_chunk_lifecycle()`
-2. Run lifecycle ticks from `WorldRuntime::update()` on loaded chunks only
+2. Extend the existing loaded-chunk lifecycle tick from `WorldRuntime::update()` with deterministic spread
 3. Apply deterministic spread chance, seed count, landing angle/distance, height, and rotation using the documented `hash4` offsets
 4. Check eligibility against terrain, biome, moisture, altitude, slope, and min spacing
-5. Insert successful landings as `DeltaPlant { stage: Seedling, born_hour: total_hours }`
+5. Insert successful landings as `DeltaPlant { stage: Seedling, born_hour: round_hour }`
 
 Acceptance criteria:
 
@@ -489,9 +589,19 @@ Acceptance criteria:
 - Replaying from the same save state yields the same delta results
 - Growth + spread ordering remains stable during catch-up
 
+Implementation notes for next phase:
+
+- The loaded-target eligibility logic currently lives in `world_runtime::streaming`, not in `world_core`. Phase 6 should extract or centralize that logic before adding prune-on-load so landing and pruning cannot drift.
+- Runtime eligibility currently derives biome with `classify(height, moisture, biome_config)` instead of using a stored `BiomeMap`. That is fine for loaded chunks today because it matches how `BiomeLayer` classifies terrain, but phase 6 prune-on-load should reuse the exact same path.
+- The live startup regression showed that persisted deltas can contain future `last_sim_hour` values after code changes or old runs. Phase 6 should preserve the current sanitize-before-tick behavior when it starts mutating unloaded-target deltas.
+- Reassembly is still done after `WorldRuntime::update()` returns the changed chunk set. Keep that boundary: mutate deltas in the tick, then reassemble only the loaded chunks whose visible output may have changed.
+- Current loaded-target seed insertion validates sampled terrain height but does not yet rewrite `DeltaPlant.position.y` to that sampled landing height before insertion. That should be corrected or deliberately preserved when phase 6 centralizes placement/pruning rules, otherwise prune-on-load and loaded-target placement may disagree vertically.
+
 ### Phase 6 — Cross-Chunk Landing + Prune-On-Load
 
 Goal: finish the lazy cross-chunk behavior for unloaded targets.
+
+Status: implemented.
 
 Deliverables:
 
@@ -506,9 +616,25 @@ Acceptance criteria:
 - Loading the same chunk twice produces the same pruned result
 - Invalid deferred seedlings are removed from persisted deltas
 
+Implementation status:
+
+- Completed in `world_runtime::streaming` by centralizing landing validation, allowing lazy delta creation for unloaded targets, and pruning deferred seedlings during chunk load using the same rules as loaded-target insertion.
+- Accepted deferred seedlings have their sampled landing `y` rewritten during validation/prune so loaded and deferred landings agree vertically.
+- Covered by runtime tests for deferred cross-chunk landing and idempotent prune-on-load.
+- Manual visual verification is still partial: the game launches, enters the world, and accelerated time progression works, but phase 7 should add better observability for proving visible spread/growth without relying on screenshot comparison alone.
+
+Preparation notes:
+
+- The current phase-5 code already computes a `target_coord` for every seed. Phase 6 can replace the current `loaded.get(&target_coord)` early-return with lazy delta creation for missing chunks.
+- Prune-on-load should probably run in the same chunk-load path that already applies deltas and prunes stale `removed_base` indices. That keeps repair work localized to one runtime assembly boundary.
+- Because unloaded-target deltas will be persisted before terrain validation, phase 6 should define whether successful deferred landings store sampled `y` later during prune or store a provisional `y` and rewrite it on validation. The current code path effectively uses provisional `y` inherited from the source plant.
+- Add explicit tests for idempotent prune-on-load before wiring renderer-visible behavior. The risk is not rendering; it is repeated chunk loads mutating `added_plants` inconsistently.
+
 ### Phase 7 — Debugging, Validation, and Tuning
 
 Goal: make the system observable and safe to iterate on.
+
+Current status: completed.
 
 Deliverables:
 
@@ -523,10 +649,44 @@ Deliverables:
    - accelerate `day_speed`
    - observe stage transitions
    - confirm visible spread over time
+   - inspect `/api/state` or `bun tools/debug-cli/cli.ts state` for lifecycle counters:
+     `delta_chunks`, `loaded_delta_chunks`, `delta_plants`, `loaded_delta_plants`,
+     `seedlings`, `young`, `mature`
 4. Tune default spread and stage timings if needed
+
+Implementation status:
+
+- Completed test coverage for save migration, delta persistence, assembly, growth progression, and deterministic spread across `world_core::{save,lifecycle}` and `world_runtime::{delta_store,streaming}`.
+- Added runtime logging for catch-up clamps, future timestamp sanitization, stale `removed_base` pruning, and invalid deferred-seedling pruning.
+- Extended debug telemetry so `/api/state` and `bun tools/debug-cli/cli.ts state` expose lifecycle counters directly, making spread/growth validation practical without screenshot-only comparison.
+- No default spread/timing retune was required in this phase; the current defaults remain in place pending broader gameplay balancing.
 
 Acceptance criteria:
 
 - The lifecycle system has deterministic test coverage at the core logic layer
 - Long-idle saves do not hang the game
 - Visual verification loop is practical for iteration
+
+---
+
+## Implementation Learnings
+
+- `glam::Vec3` does not currently have serde support enabled in this project, so `DeltaPlant.position` needed field-level serde adapters instead of a plain derive-only approach.
+- Save migration is clearer and safer when handled through an explicit compatibility struct with `Option<f64>` for `total_hours`, rather than trying to infer “missing field” from a numeric default.
+- `total_hours` and wrapped `hour` should stay independently stored in `WorldClock`; deriving one from the other inside the clock would make migration and future resume behavior less explicit.
+- Phase 1 stayed low-risk because it avoided introducing `base_plants`/`plants` split early. Phase 2 confirmed that the separation is the right boundary: generation remains deterministic and runtime can re-assemble chunk flora without regenerating terrain/content.
+- Pruning `removed_base` on chunk load is the right place to absorb deterministic generation drift. It keeps base indexing stable for runtime logic while repairing stale persisted data before rendering or simulation touches it.
+- `DeltaStore` now lives at the runtime layer and uses the general `Storage` interface directly, so later lifecycle phases can remain save-format-light and persist independently of `SaveData`.
+- Phase 3 confirmed that chunk-local revision tracking is enough for renderer invalidation; we did not need a separate renderer-facing "dirty chunk" API.
+- Keeping `PlantInstance.height` as mature height and applying stage scaling only during GPU instance generation is the cleaner boundary. It keeps lifecycle assembly deterministic and avoids double-scaling risk.
+- Persisting `last_sim_hour` in otherwise-empty deltas is likely the least surprising model for phase 4 catch-up, because “this chunk has been simulated through hour N” is meaningful state even when no visible flora changed.
+- Phase 4 confirmed that lifecycle simulation should remain hour-boundary driven. Advancing `last_sim_hour` every frame would create noisy delta persistence and would not match the documented scheduling model.
+- The observed `deltas.json` content after phase 4 contains only `last_sim_hour` for touched chunks and no `added_plants` yet. That is the expected pre-spread steady state and is a useful sanity check when starting phase 5.
+- Phase 5 confirmed that the spread logic belongs in the existing loaded-chunk runtime tick, but the actual helper currently lives in `world_runtime::streaming` rather than `world_core::lifecycle`. That is acceptable for now because it depends on loaded chunk terrain/config state, but phase 6 should avoid duplicating placement rules in a second location.
+- Sorting loaded chunk coordinates before catch-up made spread ordering explicitly stable; relying on `HashMap` iteration would have been an unnecessary source of replay ambiguity.
+- Persisted lifecycle state can get ahead of the world clock in real saves. Clamping `last_sim_hour` and `born_hour` back to `total_hours` at tick entry fixed a startup panic and should remain part of the lifecycle boundary.
+- The current loaded-target spread path validates landing terrain against sampled height/moisture/slope and biome classification, but it still inserts seedlings with their provisional source-derived `position.y`. That mismatch should be resolved before phase 6 reuses the same rules for deferred landings and prune-on-load.
+- Phase 6 resolved the provisional-height mismatch by rewriting accepted seedling `position.y` from sampled landing terrain during validation, so loaded and deferred insertions now converge on the same vertical result.
+- Phase 7 showed that the most useful observability is aggregate lifecycle telemetry, not just screenshots. Exposing delta chunk counts and per-stage totals in the existing debug API made it much easier to confirm that spread and growth were progressing even when visual changes were still subtle.
+- The runtime already had the key warning paths for bad lifecycle state, but phase 7 exposed one missing repair log: stale `removed_base` pruning on load. Logging that path matters because deterministic generation drift is otherwise silent and hard to distinguish from renderer or simulation bugs.
+- The current telemetry shape is intentionally aggregate-only. That was enough to make iteration practical without adding a plant-specific debug command surface or increasing coupling between the runtime and debug API.

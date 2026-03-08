@@ -11,6 +11,7 @@ pub mod content;
 pub mod heightmap;
 pub mod herbarium;
 pub mod layer;
+pub mod lifecycle;
 pub mod plant_gen;
 pub mod save;
 pub mod storage;

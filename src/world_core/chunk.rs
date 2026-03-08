@@ -1,17 +1,20 @@
 use glam::{IVec2, Vec3};
 
+use crate::world_core::lifecycle::GrowthStage;
+
 pub const CHUNK_SIZE_METERS: f32 = 256.0;
 pub const CHUNK_GRID_RESOLUTION: usize = 129;
 
 /// Global water surface height. Any terrain below this level is submerged.
 pub const SEA_LEVEL: f32 = 40.0;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct PlantInstance {
     pub position: Vec3,
     pub rotation: f32,
     pub height: f32,
     pub species_index: usize,
+    pub growth_stage: GrowthStage,
 }
 
 #[derive(Clone)]
@@ -22,8 +25,22 @@ pub struct HouseInstance {
 
 #[derive(Clone, Default)]
 pub struct ChunkContent {
+    pub base_plants: Vec<PlantInstance>,
     pub plants: Vec<PlantInstance>,
+    pub plants_revision: u64,
     pub houses: Vec<HouseInstance>,
+}
+
+impl ChunkContent {
+    pub fn set_plants(&mut self, plants: Vec<PlantInstance>) -> bool {
+        if self.plants == plants {
+            return false;
+        }
+
+        self.plants = plants;
+        self.plants_revision = self.plants_revision.wrapping_add(1);
+        true
+    }
 }
 
 #[derive(Clone)]

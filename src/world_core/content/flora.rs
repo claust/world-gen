@@ -10,6 +10,7 @@ use crate::world_core::chunk::{
 };
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::layer::Layer;
+use crate::world_core::lifecycle::GrowthStage;
 
 use std::sync::Arc;
 
@@ -200,6 +201,7 @@ impl FloraLayer {
                     rotation,
                     height: plant_height,
                     species_index: selected_idx,
+                    growth_stage: GrowthStage::Mature,
                 });
             }
         }

@@ -25,9 +25,23 @@ pub struct InstancedPass {
     species_names: Vec<String>,
     /// species_lod_names[i] = LOD model key for species i
     species_lod_names: Vec<String>,
-    /// plant_instances[species_index] = per-chunk instance buffers
-    plant_instances: Vec<HashMap<IVec2, GpuInstanceChunk>>,
+    /// Mature plants; drawn full-res nearby and as LOD at distance.
+    plant_instances: Vec<HashMap<IVec2, ChunkPlantBuffers>>,
+    /// Seedlings and young plants; always drawn with LOD meshes.
+    plant_lod_instances: Vec<HashMap<IVec2, ChunkPlantBuffers>>,
     house_instances: HashMap<IVec2, GpuInstanceChunk>,
+}
+
+struct ChunkPlantBuffers {
+    revision: u64,
+    gpu: GpuInstanceChunk,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InstancedStats {
+    pub buffered_mature_plants: usize,
+    pub buffered_lod_plants: usize,
+    pub buffered_house_instances: usize,
 }
 
 impl InstancedPass {
@@ -149,6 +163,9 @@ impl InstancedPass {
             species_names,
             species_lod_names,
             plant_instances,
+            plant_lod_instances: (0..registry.species.len())
+                .map(|_| HashMap::new())
+                .collect(),
             house_instances: HashMap::new(),
         }
     }
@@ -159,6 +176,7 @@ impl InstancedPass {
         self.species_names.clear();
         self.species_lod_names.clear();
         self.plant_instances.clear();
+        self.plant_lod_instances.clear();
 
         for (i, species) in registry.species.iter().enumerate() {
             let key = format!("plant-{}", species.name);
@@ -196,6 +214,9 @@ impl InstancedPass {
         self.plant_instances = (0..registry.species.len())
             .map(|_| HashMap::new())
             .collect();
+        self.plant_lod_instances = (0..registry.species.len())
+            .map(|_| HashMap::new())
+            .collect();
     }
 
     /// Retains only chunks present in `world_chunks`, builds missing instance buffers.
@@ -209,21 +230,55 @@ impl InstancedPass {
         for per_species in &mut self.plant_instances {
             per_species.retain(|coord, _| world_chunks.contains_key(coord));
         }
+        for per_species in &mut self.plant_lod_instances {
+            per_species.retain(|coord, _| world_chunks.contains_key(coord));
+        }
         self.house_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
 
         for (coord, chunk) in world_chunks {
-            // Plants: check if any species is missing for this chunk
-            let any_missing = self.plant_instances.iter().any(|m| !m.contains_key(coord));
+            let needs_rebuild = self
+                .plant_instances
+                .iter()
+                .zip(self.plant_lod_instances.iter())
+                .any(|(mature, lod)| {
+                    mature
+                        .get(coord)
+                        .map(|entry| entry.revision != chunk.content.plants_revision)
+                        .unwrap_or(true)
+                        || lod
+                            .get(coord)
+                            .map(|entry| entry.revision != chunk.content.plants_revision)
+                            .unwrap_or(true)
+                });
 
-            if any_missing {
+            if needs_rebuild {
                 let per_species = build_plant_instances(&chunk.content.plants, &registry.species);
-                for (i, instances) in per_species.into_iter().enumerate() {
-                    if !self.plant_instances[i].contains_key(coord) {
-                        let label = &self.species_names[i];
-                        if let Some(gpu) = upload_instances(device, &instances, label) {
-                            self.plant_instances[i].insert(*coord, gpu);
-                        }
+                for (i, (mature_instances, lod_instances)) in per_species.into_iter().enumerate() {
+                    let label = &self.species_names[i];
+                    self.plant_instances[i].remove(coord);
+                    self.plant_lod_instances[i].remove(coord);
+
+                    if let Some(gpu) = upload_instances(device, &mature_instances, label) {
+                        self.plant_instances[i].insert(
+                            *coord,
+                            ChunkPlantBuffers {
+                                revision: chunk.content.plants_revision,
+                                gpu,
+                            },
+                        );
+                    }
+
+                    if let Some(gpu) =
+                        upload_instances(device, &lod_instances, &self.species_lod_names[i])
+                    {
+                        self.plant_lod_instances[i].insert(
+                            *coord,
+                            ChunkPlantBuffers {
+                                revision: chunk.content.plants_revision,
+                                gpu,
+                            },
+                        );
                     }
                 }
             }
@@ -292,6 +347,7 @@ impl InstancedPass {
             // Partition visible chunks into near (hi-res) and far (LOD)
             let mut near: Vec<&GpuInstanceChunk> = Vec::new();
             let mut far: Vec<&GpuInstanceChunk> = Vec::new();
+            let mut forced_lod: Vec<&GpuInstanceChunk> = Vec::new();
             for (coord, inst) in &self.plant_instances[i] {
                 if !frustum.is_chunk_visible(*coord) {
                     continue;
@@ -300,9 +356,14 @@ impl InstancedPass {
                 let dz = (coord.y as f32 + 0.5) * CHUNK_SIZE_METERS - camera_position.z;
                 let dist_sq = dx * dx + dz * dz;
                 if dist_sq < LOD_THRESHOLD_SQ {
-                    near.push(inst);
+                    near.push(&inst.gpu);
                 } else {
-                    far.push(inst);
+                    far.push(&inst.gpu);
+                }
+            }
+            for (coord, inst) in &self.plant_lod_instances[i] {
+                if frustum.is_chunk_visible(*coord) {
+                    forced_lod.push(&inst.gpu);
                 }
             }
 
@@ -324,6 +385,10 @@ impl InstancedPass {
                     pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
                     pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
                 }
+                for inst in &forced_lod {
+                    pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                    pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+                }
             }
         }
 
@@ -338,6 +403,32 @@ impl InstancedPass {
                 pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
                 pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
             }
+        }
+    }
+
+    pub fn stats(&self) -> InstancedStats {
+        let buffered_mature_plants = self
+            .plant_instances
+            .iter()
+            .flat_map(|chunks| chunks.values())
+            .map(|entry| entry.gpu.instance_count as usize)
+            .sum();
+        let buffered_lod_plants = self
+            .plant_lod_instances
+            .iter()
+            .flat_map(|chunks| chunks.values())
+            .map(|entry| entry.gpu.instance_count as usize)
+            .sum();
+        let buffered_house_instances = self
+            .house_instances
+            .values()
+            .map(|entry| entry.instance_count as usize)
+            .sum();
+
+        InstancedStats {
+            buffered_mature_plants,
+            buffered_lod_plants,
+            buffered_house_instances,
         }
     }
 }
