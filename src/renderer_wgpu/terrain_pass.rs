@@ -18,11 +18,19 @@ impl TerrainPass {
     pub fn new(
         device: &wgpu::Device,
         render_format: wgpu::TextureFormat,
-        pipeline_layout: &wgpu::PipelineLayout,
+        frame_layout: &wgpu::BindGroupLayout,
+        material_layout: &wgpu::BindGroupLayout,
+        texture_layout: &wgpu::BindGroupLayout,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/terrain.wgsl").into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("terrain-pipeline-layout"),
+            bind_group_layouts: &[frame_layout, material_layout, texture_layout],
+            push_constant_ranges: &[],
         });
 
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -50,7 +58,7 @@ impl TerrainPass {
         let pipeline = create_render_pipeline(
             device,
             render_format,
-            pipeline_layout,
+            &pipeline_layout,
             &shader,
             std::slice::from_ref(&vertex_layout),
             "terrain-pipeline",
@@ -98,8 +106,14 @@ impl TerrainPass {
         dispatched
     }
 
-    pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, frustum: &Frustum) {
+    pub fn render<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        frustum: &Frustum,
+        texture_bind_group: &'a wgpu::BindGroup,
+    ) {
         pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(2, texture_bind_group, &[]);
         pass.set_index_buffer(
             self.compute.shared_index_buffer.slice(..),
             wgpu::IndexFormat::Uint32,

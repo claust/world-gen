@@ -10,22 +10,101 @@ struct ChunkParams {
 @group(0) @binding(2) var<storage, read> moisture: array<f32>;
 @group(0) @binding(3) var<storage, read_write> output: array<f32>;
 
-fn biome_color(height: f32, moist: f32) -> vec3<f32> {
-    var base: vec3<f32>;
+// Biome IDs: 0=grass, 1=desert, 2=forest, 3=rock, 4=snow
+// Returns vec3(biome_a, biome_b, blend_factor) with canonical ordering (biome_a <= biome_b)
+fn biome_blend(height: f32, moist: f32) -> vec3<f32> {
+    // Determine primary biome
+    var primary: f32;
+    var secondary: f32;
+    var blend: f32 = 0.0;
+
     if (height > 165.0) {
-        base = vec3<f32>(0.90, 0.92, 0.95); // Snow
+        primary = 4.0; // Snow
+        // Blend with rock near boundary
+        let edge = smoothstep(155.0, 175.0, height);
+        secondary = 3.0; // Rock
+        blend = 1.0 - edge;
     } else if (height > 120.0) {
-        base = vec3<f32>(0.46, 0.48, 0.50); // Rock
+        primary = 3.0; // Rock
+        // Blend with snow above, with lowland biome below
+        let snow_edge = smoothstep(155.0, 175.0, height);
+        let low_edge = smoothstep(110.0, 130.0, height);
+        if (snow_edge > 0.01) {
+            secondary = 4.0; // Snow
+            blend = snow_edge;
+        } else if (low_edge < 0.99) {
+            // Blend with the lowland biome below
+            if (moist < 0.3) {
+                secondary = 1.0; // Desert
+            } else if (moist > 0.62) {
+                secondary = 2.0; // Forest
+            } else {
+                secondary = 0.0; // Grass
+            }
+            blend = 1.0 - low_edge;
+        } else {
+            secondary = 3.0;
+            blend = 0.0;
+        }
     } else if (moist < 0.3) {
-        base = vec3<f32>(0.70, 0.60, 0.36); // Desert
+        primary = 1.0; // Desert
+        // Blend with grass near moisture boundary
+        let edge = smoothstep(0.22, 0.38, moist);
+        secondary = 0.0; // Grass
+        blend = edge;
+        // Blend with rock near height boundary
+        let rock_edge = smoothstep(110.0, 130.0, height);
+        if (rock_edge > blend) {
+            secondary = 3.0;
+            blend = rock_edge;
+        }
     } else if (moist > 0.62) {
-        base = vec3<f32>(0.21, 0.43, 0.23); // Forest
+        primary = 2.0; // Forest
+        // Blend with grass near moisture boundary
+        let edge = smoothstep(0.54, 0.70, moist);
+        secondary = 0.0; // Grass
+        blend = 1.0 - edge;
+        // Blend with rock near height boundary
+        let rock_edge = smoothstep(110.0, 130.0, height);
+        if (rock_edge > blend) {
+            secondary = 3.0;
+            blend = rock_edge;
+        }
     } else {
-        base = vec3<f32>(0.34, 0.52, 0.24); // Grassland
+        primary = 0.0; // Grass
+        // Blend toward desert or forest near moisture boundaries
+        let desert_edge = smoothstep(0.22, 0.38, moist);
+        let forest_edge = smoothstep(0.54, 0.70, moist);
+        if (desert_edge < 0.99) {
+            secondary = 1.0; // Desert
+            blend = 1.0 - desert_edge;
+        } else if (forest_edge > 0.01) {
+            secondary = 2.0; // Forest
+            blend = forest_edge;
+        } else {
+            secondary = 0.0;
+            blend = 0.0;
+        }
+        // Blend with rock near height boundary
+        let rock_edge = smoothstep(110.0, 130.0, height);
+        if (rock_edge > blend) {
+            secondary = 3.0;
+            blend = rock_edge;
+        }
     }
 
-    let tint = clamp((height + 40.0) / 260.0, 0.0, 1.0);
-    return mix(base, vec3<f32>(0.75, 0.75, 0.75), tint * 0.08);
+    // Canonical pair ordering: biome_a <= biome_b
+    var a = primary;
+    var b = secondary;
+    var t = blend;
+    if (a > b) {
+        let tmp = a;
+        a = b;
+        b = tmp;
+        t = 1.0 - t;
+    }
+
+    return vec3<f32>(a, b, t);
 }
 
 @compute @workgroup_size(16, 16)
@@ -58,9 +137,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let normal = normalize(vec3<f32>(h_l - h_r, params.cell_size * 2.0, h_d - h_u));
 
-    let color = biome_color(h, m);
+    let biome = biome_blend(h, m);
 
-    // Write 9 floats per vertex (position, normal, color)
+    // Write 9 floats per vertex (position, normal, biome_data)
     let base = idx * 9u;
     output[base + 0u] = world_x;
     output[base + 1u] = h;
@@ -68,7 +147,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     output[base + 3u] = normal.x;
     output[base + 4u] = normal.y;
     output[base + 5u] = normal.z;
-    output[base + 6u] = color.x;
-    output[base + 7u] = color.y;
-    output[base + 8u] = color.z;
+    output[base + 6u] = biome.x;
+    output[base + 7u] = biome.y;
+    output[base + 8u] = biome.z;
 }
