@@ -761,7 +761,7 @@ impl AppState {
 
         let day_speed = self.world.as_ref().unwrap().day_speed();
         self.window.set_title(&format!(
-            "world-gen | {:.1}ms ({:.0}fps) | chunks: {}/{} | center: {},{} | hour: {:.1} | day_speed: {:.2}",
+            "FloraForge | {:.1}ms ({:.0}fps) | chunks: {}/{} | center: {},{} | hour: {:.1} | day_speed: {:.2}",
             self.frame_time_ms,
             1000.0 / self.frame_time_ms.max(0.01),
             stats.loaded_chunks,

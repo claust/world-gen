@@ -59,13 +59,13 @@ jobs:
         run: echo "tag=v$(date +%Y%m%d)-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Create release zip
-        run: cd web && zip -r ../world-gen-web.zip .
+        run: cd web && zip -r ../floraforge-web.zip .
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: world-gen-web-zip
-          path: world-gen-web.zip
+          name: floraforge-web-zip
+          path: floraforge-web.zip
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -84,11 +84,11 @@ jobs:
           - name: macOS (Apple Silicon)
             os: macos-latest
             target: aarch64-apple-darwin
-            artifact: world-gen-macos-aarch64
+            artifact: floraforge-macos-aarch64
           - name: Windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: world-gen-windows-x86_64
+            artifact: floraforge-windows-x86_64
 
     steps:
       - name: Checkout
@@ -112,7 +112,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir staging
-          cp target/${{ matrix.target }}/release/world-gen staging/
+          cp target/${{ matrix.target }}/release/world-gen staging/floraforge
           cd staging && zip -r ../${{ matrix.artifact }}.zip .
 
       - name: Package (Windows)
@@ -120,7 +120,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path staging
-          Copy-Item "target/${{ matrix.target }}/release/world-gen.exe" staging/
+          Copy-Item "target/${{ matrix.target }}/release/world-gen.exe" staging/floraforge.exe
           Compress-Archive -Path staging/* -DestinationPath "${{ matrix.artifact }}.zip"
 
       - name: Upload artifact
@@ -163,6 +163,6 @@ jobs:
           gh release create "${{ needs.build-wasm.outputs.tag }}" \
             --generate-notes \
             --title "${{ needs.build-wasm.outputs.tag }}" \
-            artifacts/world-gen-web-zip/world-gen-web.zip \
-            artifacts/world-gen-macos-aarch64/world-gen-macos-aarch64.zip \
-            artifacts/world-gen-windows-x86_64/world-gen-windows-x86_64.zip
+            artifacts/floraforge-web-zip/floraforge-web.zip \
+            artifacts/floraforge-macos-aarch64/floraforge-macos-aarch64.zip \
+            artifacts/floraforge-windows-x86_64/floraforge-windows-x86_64.zip

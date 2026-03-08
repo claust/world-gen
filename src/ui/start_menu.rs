@@ -43,7 +43,7 @@ impl StartMenu {
                 ui.vertical_centered(|ui| {
                     ui.add_space(ui.available_height() * 0.3);
 
-                    ui.label(theme::title("World Gen", 48.0));
+                    ui.label(theme::title("FloraForge", 48.0));
                     ui.add_space(40.0);
 
                     let button_size = egui::vec2(200.0, 50.0);
