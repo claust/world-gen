@@ -35,12 +35,16 @@ impl ContentLayer {
 
 impl<'a> Layer<ContentInput<'a>, ChunkContent> for ContentLayer {
     fn generate(&self, input: ContentInput<'a>) -> ChunkContent {
+        let base_plants = self.flora.generate(FloraInput {
+            coord: input.coord,
+            terrain: input.terrain,
+            biome_map: input.biome_map,
+        });
+
         ChunkContent {
-            plants: self.flora.generate(FloraInput {
-                coord: input.coord,
-                terrain: input.terrain,
-                biome_map: input.biome_map,
-            }),
+            plants: base_plants.clone(),
+            base_plants,
+            plants_revision: 0,
             houses: self.houses.generate(HousesInput {
                 coord: input.coord,
                 terrain: input.terrain,

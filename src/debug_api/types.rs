@@ -40,7 +40,32 @@ pub struct TelemetrySnapshot {
     pub day_speed: f32,
     pub camera: CameraSnapshot,
     pub chunks: ChunkSnapshot,
+    pub lifecycle: LifecycleSnapshot,
+    pub renderer: RendererSnapshot,
     pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LifecycleSnapshot {
+    pub delta_chunks: usize,
+    pub loaded_delta_chunks: usize,
+    pub delta_plants: usize,
+    pub loaded_delta_plants: usize,
+    pub seedlings: usize,
+    pub young: usize,
+    pub mature: usize,
+    pub loaded_base_plants: usize,
+    pub loaded_visible_plants: usize,
+    pub loaded_visible_seedlings: usize,
+    pub loaded_visible_young: usize,
+    pub loaded_visible_mature: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RendererSnapshot {
+    pub buffered_mature_plants: usize,
+    pub buffered_lod_plants: usize,
+    pub buffered_house_instances: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

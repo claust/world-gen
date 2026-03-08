@@ -4,7 +4,7 @@ use glam::{IVec2, Mat4, Vec3};
 
 use super::frustum::Frustum;
 use super::hud_pass::HudPass;
-use super::instanced_pass::InstancedPass;
+use super::instanced_pass::{InstancedPass, InstancedStats};
 use super::instancing::{GpuInstanceChunk, PrototypeMesh};
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
 use super::minimap_pass::MinimapPass;
@@ -34,6 +34,13 @@ pub struct WorldRenderer {
     registry: PlantRegistry,
     view_proj: Mat4,
     camera_position: Vec3,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RendererStats {
+    pub buffered_mature_plants: usize,
+    pub buffered_lod_plants: usize,
+    pub buffered_house_instances: usize,
 }
 
 impl WorldRenderer {
@@ -280,5 +287,19 @@ impl WorldRenderer {
 
     pub fn depth_view(&self) -> &wgpu::TextureView {
         &self.depth.view
+    }
+
+    pub fn stats(&self) -> RendererStats {
+        let InstancedStats {
+            buffered_mature_plants,
+            buffered_lod_plants,
+            buffered_house_instances,
+        } = self.instanced.stats();
+
+        RendererStats {
+            buffered_mature_plants,
+            buffered_lod_plants,
+            buffered_house_instances,
+        }
     }
 }

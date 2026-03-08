@@ -2,8 +2,8 @@ use glam::Vec3;
 use std::time::{Duration, Instant};
 
 use crate::debug_api::{
-    CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind, MoveKey, ObjectKind,
-    PressableKey, TelemetrySnapshot,
+    CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind, LifecycleSnapshot, MoveKey,
+    ObjectKind, PressableKey, RendererSnapshot, TelemetrySnapshot,
 };
 use crate::renderer_wgpu::camera::MoveDirection;
 use crate::world_runtime::RuntimeStats;
@@ -324,6 +324,7 @@ impl AppState {
             return;
         }
 
+        let renderer = self.world_renderer.stats();
         let telemetry = TelemetrySnapshot {
             frame: self.frame_index,
             frame_time_ms: self.frame_time_ms,
@@ -341,6 +342,25 @@ impl AppState {
                 loaded: stats.loaded_chunks,
                 pending: stats.pending_chunks,
                 center: [stats.center_chunk.x, stats.center_chunk.y],
+            },
+            lifecycle: LifecycleSnapshot {
+                delta_chunks: stats.lifecycle.total_chunks,
+                loaded_delta_chunks: stats.lifecycle.loaded_chunks,
+                delta_plants: stats.lifecycle.total_plants,
+                loaded_delta_plants: stats.lifecycle.loaded_plants,
+                seedlings: stats.lifecycle.seedlings,
+                young: stats.lifecycle.young,
+                mature: stats.lifecycle.mature,
+                loaded_base_plants: stats.loaded_base_plants,
+                loaded_visible_plants: stats.loaded_visible_plants,
+                loaded_visible_seedlings: stats.loaded_visible_seedlings,
+                loaded_visible_young: stats.loaded_visible_young,
+                loaded_visible_mature: stats.loaded_visible_mature,
+            },
+            renderer: RendererSnapshot {
+                buffered_mature_plants: renderer.buffered_mature_plants,
+                buffered_lod_plants: renderer.buffered_lod_plants,
+                buffered_house_instances: renderer.buffered_house_instances,
             },
             timestamp_ms: now_timestamp_ms(),
         };
