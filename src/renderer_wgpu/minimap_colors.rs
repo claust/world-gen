@@ -1,7 +1,8 @@
 use crate::world_core::chunk::SEA_LEVEL;
 
-/// CPU port of terrain texture representative colors for the minimap.
-/// Returns an RGBA color for the given height and moisture values.
+/// Approximate biome colors for the minimap display.
+/// Uses hard thresholds (not the smooth blending from `biome_blend()` in the terrain shader)
+/// since the minimap doesn't need per-texel accuracy.
 pub fn biome_color_rgba(height: f32, moisture: f32) -> [u8; 4] {
     let base: [f32; 3] = if height < SEA_LEVEL {
         [0.15, 0.30, 0.55] // Water — darker blue

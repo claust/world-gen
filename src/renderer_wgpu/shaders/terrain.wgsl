@@ -22,7 +22,8 @@ struct MaterialUniform {
 
 const TEXTURE_SCALE: f32 = 0.1;
 const TILE_COUNT: f32 = 5.0;
-const HALF_TEXEL: f32 = 0.5 / 128.0;
+const TILE_SIZE: f32 = 128.0;
+const HALF_TEXEL: f32 = 0.5 / TILE_SIZE;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -33,8 +34,9 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
-    @location(1) biome_data: vec3<f32>,
-    @location(2) world_position: vec3<f32>,
+    @location(1) @interpolate(flat) biome_ids: vec2<f32>,
+    @location(2) blend_factor: f32,
+    @location(3) world_position: vec3<f32>,
 };
 
 @vertex
@@ -42,7 +44,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = frame.view_proj * vec4<f32>(input.position, 1.0);
     out.world_normal = input.normal;
-    out.biome_data = input.biome_data;
+    out.biome_ids = input.biome_data.xy;
+    out.blend_factor = input.biome_data.z;
     out.world_position = input.position;
     return out;
 }
@@ -61,9 +64,9 @@ fn sample_biome(biome_id: f32, world_pos: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let biome_a = input.biome_data.x;
-    let biome_b = input.biome_data.y;
-    let blend_factor = input.biome_data.z;
+    let biome_a = input.biome_ids.x;
+    let biome_b = input.biome_ids.y;
+    let blend_factor = input.blend_factor;
 
     let color_a = sample_biome(biome_a, input.world_position);
     let color_b = sample_biome(biome_b, input.world_position);
