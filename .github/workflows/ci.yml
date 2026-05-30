@@ -4,13 +4,23 @@ on:
   push:
     branches: [dev]
   pull_request:
-    branches: [dev]
+    branches: [dev, master]
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Compile/link the actual Windows + macOS desktop binaries on every PR, using
+  # the same matrix the Release workflow ships from (see native-build.yml). This
+  # catches platform-specific breakage (e.g. MSVC linker issues) before merge
+  # instead of at release time.
+  native-build:
+    name: Native build
+    uses: ./.github/workflows/native-build.yml
+    with:
+      release: false
+
   lint-and-build:
     name: Lint and Build
     runs-on: ubuntu-latest

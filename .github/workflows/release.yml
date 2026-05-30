@@ -75,59 +75,13 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
 
+  # Same matrix the PR CI validates (native-build.yml), here with release=true to
+  # produce optimized, packaged binaries. Single source of truth → no drift.
   build-native:
-    name: Build ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - name: macOS (Apple Silicon)
-            os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: floraforge-macos-aarch64
-          - name: Windows
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: floraforge-windows-x86_64
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.93.1
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build executable (release)
-        run: cargo build --release --target ${{ matrix.target }} --bin world-gen
-
-      - name: Package (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          mkdir staging
-          cp target/${{ matrix.target }}/release/world-gen staging/floraforge
-          cd staging && zip -r ../${{ matrix.artifact }}.zip .
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path staging
-          Copy-Item "target/${{ matrix.target }}/release/world-gen.exe" staging/floraforge.exe
-          Compress-Archive -Path staging/* -DestinationPath "${{ matrix.artifact }}.zip"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.zip
+    name: Build native
+    uses: ./.github/workflows/native-build.yml
+    with:
+      release: true
 
   deploy-pages:
     name: Deploy to GitHub Pages
