@@ -1,8 +1,10 @@
 struct FrameUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
+    light_view_proj: mat4x4<f32>,
     camera_position: vec4<f32>,
     time: vec4<f32>,
+    shadow_params: vec4<f32>,
 };
 
 struct MaterialUniform {
@@ -17,6 +19,27 @@ struct MaterialUniform {
 
 @group(0) @binding(0) var<uniform> frame: FrameUniform;
 @group(1) @binding(0) var<uniform> material: MaterialUniform;
+@group(2) @binding(0) var shadow_map: texture_depth_2d;
+@group(2) @binding(1) var shadow_sampler: sampler_comparison;
+
+fn sample_shadow(world_pos: vec3<f32>, n_dot_l: f32) -> f32 {
+    if (frame.shadow_params.w < 0.5) { return 1.0; }
+    let lp = frame.light_view_proj * vec4<f32>(world_pos, 1.0);
+    let proj = lp.xyz / lp.w;
+    let uv = vec2<f32>(proj.x * 0.5 + 0.5, proj.y * -0.5 + 0.5);
+    let outside = uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z > 1.0 || proj.z < 0.0;
+    let bias = max(frame.shadow_params.y * (1.0 - n_dot_l), frame.shadow_params.y * 0.2);
+    let texel = frame.shadow_params.x;
+    let cuv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    var sum = 0.0;
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let off = vec2<f32>(f32(dx), f32(dy)) * texel;
+            sum = sum + textureSampleCompare(shadow_map, shadow_sampler, cuv + off, proj.z - bias);
+        }
+    }
+    return select(sum / 9.0, 1.0, outside);
+}
 
 struct VertexInput {
     // Per-vertex (slot 0)
@@ -72,7 +95,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(input.world_normal);
     let l = normalize(material.light_direction.xyz);
     let direct = max(dot(n, l), 0.0);
-    let color = input.albedo * hemisphere_ambient(n) + input.albedo * direct * 0.82 * material.sun_color.rgb;
+    let shadow = sample_shadow(input.world_position, direct);
+    let color = input.albedo * hemisphere_ambient(n)
+        + input.albedo * direct * shadow * 0.82 * material.sun_color.rgb;
 
     let dist = distance(input.world_position, frame.camera_position.xyz);
     let fog_start = material.fog_params.x;

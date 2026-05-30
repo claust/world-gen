@@ -1,8 +1,10 @@
 struct FrameUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
+    light_view_proj: mat4x4<f32>,
     camera_position: vec4<f32>,
     time: vec4<f32>,
+    shadow_params: vec4<f32>,
 };
 
 struct MaterialUniform {

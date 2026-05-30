@@ -4,12 +4,13 @@ use glam::IVec2;
 
 use super::frustum::Frustum;
 use super::geometry::Vertex;
-use super::pipeline::create_render_pipeline;
+use super::pipeline::{create_render_pipeline, create_shadow_pipeline};
 use super::terrain_compute::{GpuTerrainChunk, TerrainComputePipeline};
 use crate::world_core::chunk::{ChunkData, CHUNK_GRID_RESOLUTION};
 
 pub struct TerrainPass {
     pipeline: wgpu::RenderPipeline,
+    shadow_pipeline: wgpu::RenderPipeline,
     compute: TerrainComputePipeline,
     chunks: HashMap<IVec2, GpuTerrainChunk>,
 }
@@ -21,6 +22,7 @@ impl TerrainPass {
         frame_layout: &wgpu::BindGroupLayout,
         material_layout: &wgpu::BindGroupLayout,
         texture_layout: &wgpu::BindGroupLayout,
+        shadow_layout: &wgpu::BindGroupLayout,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain-shader"),
@@ -35,7 +37,7 @@ impl TerrainPass {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("terrain-pipeline-layout"),
-            bind_group_layouts: &[frame_layout, material_layout, texture_layout],
+            bind_group_layouts: &[frame_layout, material_layout, texture_layout, shadow_layout],
             push_constant_ranges: &[],
         });
 
@@ -70,8 +72,29 @@ impl TerrainPass {
             "terrain-pipeline",
         );
 
+        // Depth-only shadow pipeline (group 0 / frame only).
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("terrain-shadow-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shadows.wgsl").into()),
+        });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("terrain-shadow-pipeline-layout"),
+                bind_group_layouts: &[frame_layout],
+                push_constant_ranges: &[],
+            });
+        let shadow_pipeline = create_shadow_pipeline(
+            device,
+            &shadow_pipeline_layout,
+            &shadow_shader,
+            "vs_terrain",
+            std::slice::from_ref(&vertex_layout),
+            "terrain-shadow-pipeline",
+        );
+
         Self {
             pipeline,
+            shadow_pipeline,
             compute: TerrainComputePipeline::new(device),
             chunks: HashMap::new(),
         }
@@ -117,9 +140,11 @@ impl TerrainPass {
         pass: &mut wgpu::RenderPass<'a>,
         frustum: &Frustum,
         texture_bind_group: &'a wgpu::BindGroup,
+        shadow_bind_group: &'a wgpu::BindGroup,
     ) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(2, texture_bind_group, &[]);
+        pass.set_bind_group(3, shadow_bind_group, &[]);
         pass.set_index_buffer(
             self.compute.shared_index_buffer.slice(..),
             wgpu::IndexFormat::Uint32,
@@ -128,6 +153,21 @@ impl TerrainPass {
             if !frustum.is_chunk_visible(*coord) {
                 continue;
             }
+            pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
+            pass.draw_indexed(0..self.compute.shared_index_count, 0, 0..1);
+        }
+    }
+
+    /// Depth-only pass: re-draw every loaded chunk from the light's point of
+    /// view. No frustum culling so off-screen terrain still casts shadows.
+    /// Assumes the caller has bound group 0 (frame uniforms).
+    pub fn render_depth<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        pass.set_pipeline(&self.shadow_pipeline);
+        pass.set_index_buffer(
+            self.compute.shared_index_buffer.slice(..),
+            wgpu::IndexFormat::Uint32,
+        );
+        for chunk in self.chunks.values() {
             pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
             pass.draw_indexed(0..self.compute.shared_index_count, 0, 0..1);
         }

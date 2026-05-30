@@ -10,7 +10,7 @@ use super::instancing::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
-use super::pipeline::{create_billboard_pipeline, create_render_pipeline};
+use super::pipeline::{create_billboard_pipeline, create_render_pipeline, create_shadow_pipeline};
 use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::plant_gen;
@@ -22,6 +22,8 @@ pub struct InstancedPass {
     pipeline: wgpu::RenderPipeline,
     /// Alpha-tested, double-sided pipeline for shrub billboards.
     billboard_pipeline: wgpu::RenderPipeline,
+    /// Depth-only pipeline for rendering instances into the shadow map.
+    shadow_pipeline: wgpu::RenderPipeline,
     models: ModelRegistry,
     /// species_names[i] = model key in ModelRegistry for species i
     species_names: Vec<String>,
@@ -52,7 +54,9 @@ impl InstancedPass {
     pub fn new(
         device: &wgpu::Device,
         render_format: wgpu::TextureFormat,
-        pipeline_layout: &wgpu::PipelineLayout,
+        frame_layout: &wgpu::BindGroupLayout,
+        material_layout: &wgpu::BindGroupLayout,
+        shadow_layout: &wgpu::BindGroupLayout,
         registry: &PlantRegistry,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -64,6 +68,13 @@ impl InstancedPass {
                 )
                 .into(),
             ),
+        });
+
+        // Lit pipelines sample the shadow map at group 2.
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("instanced-pipeline-layout"),
+            bind_group_layouts: &[frame_layout, material_layout, shadow_layout],
+            push_constant_ranges: &[],
         });
 
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -118,7 +129,7 @@ impl InstancedPass {
         let pipeline = create_render_pipeline(
             device,
             render_format,
-            pipeline_layout,
+            &pipeline_layout,
             &shader,
             &[vertex_layout.clone(), instance_layout.clone()],
             "instanced-pipeline",
@@ -131,10 +142,32 @@ impl InstancedPass {
         let billboard_pipeline = create_billboard_pipeline(
             device,
             render_format,
-            pipeline_layout,
+            &pipeline_layout,
             &billboard_shader,
-            &[vertex_layout, instance_layout],
+            &[vertex_layout.clone(), instance_layout.clone()],
             "shrub-billboard-pipeline",
+        );
+
+        // Depth-only shadow pipeline (group 0 / frame only). Reuses the same
+        // vertex + instance layouts but only reads position and the per-instance
+        // transform.
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("instanced-shadow-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shadows.wgsl").into()),
+        });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("instanced-shadow-pipeline-layout"),
+                bind_group_layouts: &[frame_layout],
+                push_constant_ranges: &[],
+            });
+        let shadow_pipeline = create_shadow_pipeline(
+            device,
+            &shadow_pipeline_layout,
+            &shadow_shader,
+            "vs_instanced",
+            &[vertex_layout, instance_layout],
+            "instanced-shadow-pipeline",
         );
 
         let mut models = ModelRegistry::new(device);
@@ -148,6 +181,7 @@ impl InstancedPass {
         Self {
             pipeline,
             billboard_pipeline,
+            shadow_pipeline,
             models,
             species_names,
             species_lod_names,
@@ -360,8 +394,10 @@ impl InstancedPass {
         pass: &mut wgpu::RenderPass<'a>,
         frustum: &Frustum,
         camera_position: Vec3,
+        shadow_bind_group: &'a wgpu::BindGroup,
     ) {
         pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(2, shadow_bind_group, &[]);
         let mut on_billboard = false;
 
         // Draw each species, batching by LOD level to minimise state changes
@@ -462,6 +498,56 @@ impl InstancedPass {
                 if !frustum.is_chunk_visible(*coord) {
                     continue;
                 }
+                pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+            }
+        }
+    }
+
+    /// Depth-only pass: render shadow casters from the light's point of view.
+    /// No frustum culling so off-screen objects still cast shadows. Shrub
+    /// billboards are skipped (alpha-tested cards would cast rectangular
+    /// shadows); trees (full-res + LOD meshes) and houses cast shadows.
+    /// Assumes the caller has bound group 0 (frame uniforms).
+    pub fn render_depth<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        pass.set_pipeline(&self.shadow_pipeline);
+
+        for (i, key) in self.species_names.iter().enumerate() {
+            if self.species_is_shrub[i] {
+                continue;
+            }
+
+            // Full-res mature instances.
+            if let Some(mesh) = self.models.get(key) {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for inst in self.plant_instances[i].values() {
+                    if let Some(gpu) = &inst.gpu {
+                        pass.set_vertex_buffer(1, gpu.instance_buffer.slice(..));
+                        pass.draw_indexed(0..mesh.index_count, 0, 0..gpu.instance_count);
+                    }
+                }
+            }
+
+            // Forced-LOD instances (seedlings / young).
+            let lod_key = &self.species_lod_names[i];
+            if let Some(mesh) = self.models.get(lod_key) {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for inst in self.plant_lod_instances[i].values() {
+                    if let Some(gpu) = &inst.gpu {
+                        pass.set_vertex_buffer(1, gpu.instance_buffer.slice(..));
+                        pass.draw_indexed(0..mesh.index_count, 0, 0..gpu.instance_count);
+                    }
+                }
+            }
+        }
+
+        // Houses.
+        if let Some(mesh) = self.models.get("house") {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for inst in self.house_instances.values() {
                 pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
                 pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
             }

@@ -7,17 +7,53 @@ use wgpu::util::DeviceExt;
 pub struct FrameUniform {
     pub view_proj: [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],
+    pub light_view_proj: [[f32; 4]; 4],
     pub camera_position: [f32; 4],
     pub time: [f32; 4],
+    /// Shadow controls: x = 1/shadow_map_size (texel), y = depth bias,
+    /// z = shadow strength, w = enabled (1.0 = on, 0.0 = off).
+    pub shadow_params: [f32; 4],
 }
 
+/// Shader depth bias applied when sampling the shadow map (in NDC depth units).
+pub const SHADOW_DEPTH_BIAS: f32 = 0.0015;
+
 impl FrameUniform {
+    /// Build frame uniforms with shadows disabled (identity light matrix).
+    /// Used by offscreen/thumbnail rendering that doesn't run a shadow pass.
     pub fn new(view_proj: Mat4, camera_position: Vec3, elapsed: f32, hour: f32) -> Self {
+        Self::with_shadow(
+            view_proj,
+            camera_position,
+            elapsed,
+            hour,
+            Mat4::IDENTITY,
+            0.0,
+        )
+    }
+
+    /// Build frame uniforms including the sun's light view-projection matrix.
+    /// `shadow_enabled` is 1.0 during the day and 0.0 at night.
+    pub fn with_shadow(
+        view_proj: Mat4,
+        camera_position: Vec3,
+        elapsed: f32,
+        hour: f32,
+        light_view_proj: Mat4,
+        shadow_enabled: f32,
+    ) -> Self {
         Self {
             view_proj: view_proj.to_cols_array_2d(),
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
+            light_view_proj: light_view_proj.to_cols_array_2d(),
             camera_position: [camera_position.x, camera_position.y, camera_position.z, 0.0],
             time: [elapsed, hour, 0.0, 0.0],
+            shadow_params: [
+                1.0 / super::pipeline::SHADOW_SIZE as f32,
+                SHADOW_DEPTH_BIAS,
+                1.0,
+                shadow_enabled,
+            ],
         }
     }
 }

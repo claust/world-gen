@@ -13,7 +13,7 @@ use super::sky_pass::SkyPass;
 use super::terrain_pass::TerrainPass;
 use super::terrain_texture::TerrainTexture;
 use super::water_pass::WaterPass;
-use crate::renderer_wgpu::pipeline::DepthTexture;
+use crate::renderer_wgpu::pipeline::{DepthTexture, ShadowMap};
 use crate::world_core::chunk::ChunkData;
 use crate::world_core::herbarium::PlantRegistry;
 
@@ -22,6 +22,7 @@ pub struct WorldRenderer {
     terrain_material: MaterialBindGroup,
     terrain_texture: TerrainTexture,
     depth: DepthTexture,
+    shadow_map: ShadowMap,
     sky: SkyPass,
     terrain: TerrainPass,
     water: WaterPass,
@@ -34,6 +35,10 @@ pub struct WorldRenderer {
     registry: PlantRegistry,
     view_proj: Mat4,
     camera_position: Vec3,
+    /// Sun light view-projection matrix for the current frame (single cascade).
+    light_view_proj: Mat4,
+    /// 1.0 when shadows are active (daytime), 0.0 at night.
+    shadow_enabled: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -56,25 +61,41 @@ impl WorldRenderer {
         let frame_bg = FrameBindGroup::new(device);
         let terrain_material = MaterialBindGroup::new_terrain(device);
         let terrain_texture = TerrainTexture::new(device, queue);
+        let shadow_map = ShadowMap::new(device);
 
-        // Shared 2-group layout for sky/water/instanced passes
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("shared-pipeline-layout"),
+        // Shared 2-group layout for the sky pass (no shadow sampling).
+        let sky_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sky-pipeline-layout"),
             bind_group_layouts: &[&frame_bg.layout, &terrain_material.layout],
             push_constant_ranges: &[],
         });
 
-        let sky = SkyPass::new(device, render_format, &pipeline_layout);
-        // Terrain gets its own 3-group layout with the texture atlas
+        let sky = SkyPass::new(device, render_format, &sky_layout);
+        // Terrain gets its own 4-group layout: frame, material, texture, shadow.
         let terrain = TerrainPass::new(
             device,
             render_format,
             &frame_bg.layout,
             &terrain_material.layout,
             &terrain_texture.bind_group_layout,
+            &shadow_map.layout,
         );
-        let water = WaterPass::new(device, render_format, &pipeline_layout, sea_level);
-        let instanced = InstancedPass::new(device, render_format, &pipeline_layout, &registry);
+        let water = WaterPass::new(
+            device,
+            render_format,
+            &frame_bg.layout,
+            &terrain_material.layout,
+            &shadow_map.layout,
+            sea_level,
+        );
+        let instanced = InstancedPass::new(
+            device,
+            render_format,
+            &frame_bg.layout,
+            &terrain_material.layout,
+            &shadow_map.layout,
+            &registry,
+        );
         let hud = HudPass::new(device, queue, render_format);
         let minimap = MinimapPass::new(device, queue, render_format);
 
@@ -88,6 +109,7 @@ impl WorldRenderer {
             terrain_material,
             terrain_texture,
             depth: DepthTexture::new(device, config, "terrain-depth"),
+            shadow_map,
             sky,
             terrain,
             water,
@@ -100,6 +122,8 @@ impl WorldRenderer {
             registry,
             view_proj: Mat4::IDENTITY,
             camera_position: Vec3::ZERO,
+            light_view_proj: Mat4::IDENTITY,
+            shadow_enabled: 0.0,
         }
     }
 
@@ -130,13 +154,91 @@ impl WorldRenderer {
         camera_position: Vec3,
         elapsed: f32,
         hour: f32,
+        sun_direction: Vec3,
     ) {
         self.view_proj = view_proj;
         self.camera_position = camera_position;
+
+        let (light_view_proj, shadow_enabled) =
+            Self::build_light_view_proj(camera_position, sun_direction);
+        self.light_view_proj = light_view_proj;
+        self.shadow_enabled = shadow_enabled;
+
         self.frame_bg.update(
             queue,
-            &FrameUniform::new(view_proj, camera_position, elapsed, hour),
+            &FrameUniform::with_shadow(
+                view_proj,
+                camera_position,
+                elapsed,
+                hour,
+                light_view_proj,
+                shadow_enabled,
+            ),
         );
+    }
+
+    /// Build the single-cascade light view-projection matrix centered on the
+    /// camera. `sun_direction` is the direction *toward* the sun (as produced by
+    /// `WorldClock::sun_direction`); the light therefore travels along
+    /// `-sun_direction`. Returns the matrix and a shadow-enabled flag that is
+    /// 0.0 when the sun is at or below the horizon (night).
+    fn build_light_view_proj(camera_position: Vec3, sun_direction: Vec3) -> (Mat4, f32) {
+        // Direction the sunlight travels (points from sun toward the scene).
+        let light_dir = (-sun_direction).normalize_or_zero();
+
+        // Sun above the horizon (sun_direction.y > 0) means it is daytime.
+        let shadow_enabled = if sun_direction.y > 0.02 { 1.0 } else { 0.0 };
+
+        let center = camera_position;
+        let dist = 400.0_f32;
+        let light_pos = center - light_dir * dist;
+
+        // Stable up vector: avoid degeneracy when the light is near-vertical.
+        let up = if light_dir.x.abs() < 1e-3 && light_dir.z.abs() < 1e-3 {
+            Vec3::Z
+        } else {
+            Vec3::Y
+        };
+        let light_view = Mat4::look_at_rh(light_pos, center, up);
+
+        // Match the camera's right-handed convention (perspective_rh/look_at_rh).
+        let half = 350.0_f32;
+        let near = 1.0_f32;
+        let far = dist + 800.0_f32;
+        let light_proj = Mat4::orthographic_rh(-half, half, -half, half, near, far);
+
+        (light_proj * light_view, shadow_enabled)
+    }
+
+    /// Render the scene into the shadow map from the sun's point of view.
+    /// Depth-only; must run after `sync_chunks` and after `update_frame` (so the
+    /// light matrix is uploaded), but before the main color pass. Skipped at
+    /// night to avoid an empty/garbage shadow map being sampled (the shader also
+    /// disables sampling via `shadow_params.w`).
+    pub fn render_shadows(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shadow-pass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.shadow_map.view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        if self.shadow_enabled < 0.5 {
+            // Still clear the map (above) so a stale frame isn't sampled.
+            return;
+        }
+
+        pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
+        self.terrain.render_depth(&mut pass);
+        self.instanced.render_depth(&mut pass);
     }
 
     pub fn update_material(
@@ -247,6 +349,7 @@ impl WorldRenderer {
     ) {
         pass.set_bind_group(0, &self.frame_bg.bind_group, &[]);
         pass.set_bind_group(1, &self.terrain_material.bind_group, &[]);
+        pass.set_bind_group(2, &self.shadow_map.bind_group, &[]);
         self.sky.render(pass);
         self.instanced.render_custom(pass, meshes);
     }
@@ -271,10 +374,20 @@ impl WorldRenderer {
 
         let frustum = Frustum::from_view_proj(self.view_proj);
         self.sky.render(pass);
-        self.terrain
-            .render(pass, &frustum, &self.terrain_texture.bind_group);
-        self.instanced.render(pass, &frustum, self.camera_position);
-        self.water.render(pass, &frustum);
+        self.terrain.render(
+            pass,
+            &frustum,
+            &self.terrain_texture.bind_group,
+            &self.shadow_map.bind_group,
+        );
+        self.instanced.render(
+            pass,
+            &frustum,
+            self.camera_position,
+            &self.shadow_map.bind_group,
+        );
+        self.water
+            .render(pass, &frustum, &self.shadow_map.bind_group);
     }
 
     pub fn clear_color(&self) -> wgpu::Color {

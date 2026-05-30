@@ -782,6 +782,7 @@ impl AppState {
             self.camera.position,
             self.elapsed_seconds,
             stats.hour,
+            lighting.sun_direction,
         );
         self.world_renderer.update_material(
             &self.gpu.queue,
@@ -869,6 +870,7 @@ impl AppState {
             self.camera.position,
             self.elapsed_seconds,
             hour,
+            light_dir,
         );
         self.world_renderer
             .update_material(&self.gpu.queue, light_dir, ambient, &palette);
@@ -1118,6 +1120,7 @@ impl AppState {
             self.camera.position,
             self.elapsed_seconds,
             menu_hour,
+            light_dir,
         );
         self.world_renderer
             .update_material(&self.gpu.queue, light_dir, ambient, &palette);
@@ -1148,6 +1151,15 @@ impl AppState {
         let is_loading = self.is_loading();
         let is_herbarium = self.is_on_herbarium();
         let is_editor = self.is_on_editor();
+
+        // Shadow depth pass: render the scene from the sun's point of view into
+        // the shadow map before the main color pass. Only needed when the 3D
+        // world (not the sky-only menu/loading/herbarium screens) is drawn.
+        let renders_world =
+            is_editor || self.blur_capture_pending || !(is_menu || is_loading || is_herbarium);
+        if renders_world {
+            self.world_renderer.render_shadows(&mut encoder);
+        }
 
         // When we have a blurred background ready, blit it directly (no depth needed).
         // Otherwise, run the normal 3D render pass.

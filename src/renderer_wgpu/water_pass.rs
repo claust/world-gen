@@ -24,7 +24,9 @@ impl WaterPass {
     pub fn new(
         device: &wgpu::Device,
         render_format: wgpu::TextureFormat,
-        pipeline_layout: &wgpu::PipelineLayout,
+        frame_layout: &wgpu::BindGroupLayout,
+        material_layout: &wgpu::BindGroupLayout,
+        shadow_layout: &wgpu::BindGroupLayout,
         sea_level: f32,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -36,6 +38,13 @@ impl WaterPass {
                 )
                 .into(),
             ),
+        });
+
+        // Water samples the shadow map at group 2.
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("water-pipeline-layout"),
+            bind_group_layouts: &[frame_layout, material_layout, shadow_layout],
+            push_constant_ranges: &[],
         });
 
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -63,7 +72,7 @@ impl WaterPass {
         let pipeline = create_water_pipeline(
             device,
             render_format,
-            pipeline_layout,
+            &pipeline_layout,
             &shader,
             std::slice::from_ref(&vertex_layout),
             "water-pipeline",
@@ -150,11 +159,17 @@ impl WaterPass {
         }
     }
 
-    pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, frustum: &Frustum) {
+    pub fn render<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        frustum: &Frustum,
+        shadow_bind_group: &'a wgpu::BindGroup,
+    ) {
         if self.chunks.is_empty() {
             return;
         }
         pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(2, shadow_bind_group, &[]);
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         for (coord, chunk) in &self.chunks {
             if !frustum.is_chunk_visible(*coord) {
