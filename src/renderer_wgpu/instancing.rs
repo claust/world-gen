@@ -98,6 +98,56 @@ pub fn upload_prototype(
     }
 }
 
+/// Unit-ish crossed-quad billboard for shrubs: two vertical quads at 90° plus a
+/// horizontal top cap, sized to `height` (natural world height) and `half_width`.
+///
+/// - Normals are up-biased outward (as if the shrub were a hemisphere) so the
+///   day/night lighting rounds the silhouette instead of reading as flat cards.
+/// - The per-vertex UV is packed into the colour attribute's xy channel; the
+///   billboard shader reads it there to build the procedural blob mask.
+///
+/// ~12 verts / 6 tris replaces the 3.5–5.3K-vert procedural shrub mesh.
+pub fn shrub_billboard_mesh(height: f32, half_width: f32) -> (Vec<Vertex>, Vec<u32>) {
+    let mut verts: Vec<Vertex> = Vec::with_capacity(12);
+    let mut indices: Vec<u32> = Vec::with_capacity(18);
+    let center = [0.0, height * 0.5, 0.0];
+    let up_bias = 0.55 * height;
+
+    let r = half_width;
+    let h = height;
+    let yc = h * 0.68; // top-cap height — biased up so it reads as a crown from above
+
+    // Two vertical quads (XY plane and ZY plane) crossed at 90°, plus a
+    // horizontal cap for top-down readability.
+    let quads: [[[f32; 3]; 4]; 3] = [
+        [[-r, 0.0, 0.0], [r, 0.0, 0.0], [r, h, 0.0], [-r, h, 0.0]],
+        [[0.0, 0.0, -r], [0.0, 0.0, r], [0.0, h, r], [0.0, h, -r]],
+        [[-r, yc, -r], [r, yc, -r], [r, yc, r], [-r, yc, r]],
+    ];
+
+    let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    for corners in &quads {
+        let base = verts.len() as u32;
+        for (corner, uv) in corners.iter().zip(uvs.iter()) {
+            let mut n = [
+                corner[0] - center[0],
+                corner[1] - center[1] + up_bias,
+                corner[2] - center[2],
+            ];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-5);
+            n = [n[0] / len, n[1] / len, n[2] / len];
+            verts.push(Vertex {
+                position: *corner,
+                normal: n,
+                color: [uv[0], uv[1], 0.0],
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    (verts, indices)
+}
+
 /// Build per-species instance data from plant instances.
 /// Returns a Vec where index i = (mature instances, forced-LOD instances) for species i.
 pub fn build_plant_instances(
@@ -116,12 +166,21 @@ pub fn build_plant_instances(
         let ref_height = (species[idx].height_range[0] + species[idx].height_range[1]) * 0.5;
         let scale = (p.height / ref_height.max(0.01)) * p.growth_stage.scale_factor();
 
+        // Procedural meshes bake their colours in (white tint). Billboards are a
+        // flat untextured card, so they carry the species leaf colour as a tint.
+        let color = if species[idx].kind == "shrub" {
+            let c = species[idx].leaf_color;
+            [c[0], c[1], c[2], 1.0]
+        } else {
+            [1.0, 1.0, 1.0, 1.0]
+        };
+
         let instance = InstanceData {
             position: [p.position.x, p.position.y, p.position.z],
             rotation_y: p.rotation,
             scale: [scale, scale, scale],
             _pad: 0.0,
-            color: [1.0, 1.0, 1.0, 1.0], // colors baked in procedural mesh
+            color,
         };
 
         match p.growth_stage {

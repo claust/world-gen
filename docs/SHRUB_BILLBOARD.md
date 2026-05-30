@@ -1,7 +1,11 @@
 # Shrub Billboard Prototype — Implementation Plan
 
-> **Status: PLAN ONLY — not yet implemented.**
-> Drafted 2026-05-30. Companion to [PERFORMANCE.md](PERFORMANCE.md).
+> **Status: IMPLEMENTED (first pass) — 2026-05-30.**
+> Shrubs now render as crossed-quad billboards (route a: procedural alpha,
+> up-biased normals). Benchmark: avg FPS 30.9 → 100.0 (+223%), 1% low 15.9 →
+> 83.3 (+423%) — at the "vegetation off" ceiling. Deferred items
+> (texture atlas, hybrid near-field, dedicated billboard editor) remain as
+> described below. Companion to [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Motivation
 

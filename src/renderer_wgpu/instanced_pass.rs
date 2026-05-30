@@ -5,12 +5,12 @@ use glam::{IVec2, Vec3};
 use super::frustum::Frustum;
 use super::geometry::Vertex;
 use super::instancing::{
-    build_house_instances, build_plant_instances, upload_instances, upload_prototype,
-    GpuInstanceChunk, InstanceData, ModelRegistry, PrototypeMesh,
+    build_house_instances, build_plant_instances, shrub_billboard_mesh, upload_instances,
+    upload_prototype, GpuInstanceChunk, InstanceData, ModelRegistry, PrototypeMesh,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
-use super::pipeline::create_render_pipeline;
+use super::pipeline::{create_billboard_pipeline, create_render_pipeline};
 use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::plant_gen;
@@ -20,11 +20,15 @@ const LOD_THRESHOLD_SQ: f32 = 512.0 * 512.0;
 
 pub struct InstancedPass {
     pipeline: wgpu::RenderPipeline,
+    /// Alpha-tested, double-sided pipeline for shrub billboards.
+    billboard_pipeline: wgpu::RenderPipeline,
     models: ModelRegistry,
     /// species_names[i] = model key in ModelRegistry for species i
     species_names: Vec<String>,
     /// species_lod_names[i] = LOD model key for species i
     species_lod_names: Vec<String>,
+    /// species_is_shrub[i] = true when species i renders as a billboard
+    species_is_shrub: Vec<bool>,
     /// Mature plants; drawn full-res nearby and as LOD at distance.
     plant_instances: Vec<HashMap<IVec2, ChunkPlantBuffers>>,
     /// Seedlings and young plants; always drawn with LOD meshes.
@@ -110,16 +114,76 @@ impl InstancedPass {
             render_format,
             pipeline_layout,
             &shader,
-            &[vertex_layout, instance_layout],
+            &[vertex_layout.clone(), instance_layout.clone()],
             "instanced-pipeline",
         );
 
-        let mut models = ModelRegistry::new(device);
-        let mut species_names = Vec::new();
-        let mut species_lod_names = Vec::new();
+        let billboard_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shrub-billboard-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shrub_billboard.wgsl").into()),
+        });
+        let billboard_pipeline = create_billboard_pipeline(
+            device,
+            render_format,
+            pipeline_layout,
+            &billboard_shader,
+            &[vertex_layout, instance_layout],
+            "shrub-billboard-pipeline",
+        );
 
-        // Generate procedural meshes for each species using the full plant_gen system
+        let mut models = ModelRegistry::new(device);
+        let (species_names, species_lod_names, species_is_shrub) =
+            Self::build_species_meshes(device, &mut models, registry);
+
+        let plant_instances = (0..registry.species.len())
+            .map(|_| HashMap::new())
+            .collect();
+
+        Self {
+            pipeline,
+            billboard_pipeline,
+            models,
+            species_names,
+            species_lod_names,
+            species_is_shrub,
+            plant_instances,
+            plant_lod_instances: (0..registry.species.len())
+                .map(|_| HashMap::new())
+                .collect(),
+            house_instances: HashMap::new(),
+        }
+    }
+
+    /// Build (or rebuild) the per-species prototype meshes into `models`.
+    ///
+    /// `kind == "shrub"` species route to a single hardcoded crossed-quad
+    /// billboard (same mesh for near and far — no separate LOD); all other
+    /// species get the full procedural mesh plus a simplified LOD mesh.
+    /// Returns `(species_names, species_lod_names, species_is_shrub)`.
+    fn build_species_meshes(
+        device: &wgpu::Device,
+        models: &mut ModelRegistry,
+        registry: &PlantRegistry,
+    ) -> (Vec<String>, Vec<String>, Vec<bool>) {
+        let mut species_names = Vec::with_capacity(registry.species.len());
+        let mut species_lod_names = Vec::with_capacity(registry.species.len());
+        let mut species_is_shrub = Vec::with_capacity(registry.species.len());
+
         for (i, species) in registry.species.iter().enumerate() {
+            if species.kind == "shrub" {
+                // Hardcoded billboard, sized to the species' natural height.
+                let key = format!("shrub-billboard-{}", species.name);
+                let ref_height = (species.height_range[0] + species.height_range[1]) * 0.5;
+                let (verts, indices) = shrub_billboard_mesh(ref_height, ref_height * 0.5);
+                let mesh = upload_prototype(device, &verts, &indices, &key);
+                models.models.insert(key.clone(), mesh);
+                // Near and far both use the same minimal billboard.
+                species_names.push(key.clone());
+                species_lod_names.push(key);
+                species_is_shrub.push(true);
+                continue;
+            }
+
             let key = format!("plant-{}", species.name);
             let plant_mesh = plant_gen::generate_plant_mesh(&species.species_config, i as u32);
             let verts: Vec<Vertex> = plant_mesh
@@ -151,65 +215,23 @@ impl InstancedPass {
             let lod_mesh = upload_prototype(device, &lod_verts, &lod_plant_mesh.indices, &lod_key);
             models.models.insert(lod_key.clone(), lod_mesh);
             species_lod_names.push(lod_key);
+            species_is_shrub.push(false);
         }
 
-        let plant_instances = (0..registry.species.len())
-            .map(|_| HashMap::new())
-            .collect();
-
-        Self {
-            pipeline,
-            models,
-            species_names,
-            species_lod_names,
-            plant_instances,
-            plant_lod_instances: (0..registry.species.len())
-                .map(|_| HashMap::new())
-                .collect(),
-            house_instances: HashMap::new(),
-        }
+        (species_names, species_lod_names, species_is_shrub)
     }
 
     /// Rebuild species prototype meshes from an updated registry.
     /// Clears all plant instance buffers so `sync_chunks` rebuilds them.
     pub fn rebuild_species(&mut self, device: &wgpu::Device, registry: &PlantRegistry) {
-        self.species_names.clear();
-        self.species_lod_names.clear();
         self.plant_instances.clear();
         self.plant_lod_instances.clear();
 
-        for (i, species) in registry.species.iter().enumerate() {
-            let key = format!("plant-{}", species.name);
-            let plant_mesh = plant_gen::generate_plant_mesh(&species.species_config, i as u32);
-            let verts: Vec<Vertex> = plant_mesh
-                .vertices
-                .iter()
-                .map(|v| Vertex {
-                    position: v.position,
-                    normal: v.normal,
-                    color: v.color,
-                })
-                .collect();
-            let mesh = upload_prototype(device, &verts, &plant_mesh.indices, &key);
-            self.models.models.insert(key.clone(), mesh);
-            self.species_names.push(key);
-
-            let lod_key = format!("plant-{}-lod", species.name);
-            let lod_config = species.species_config.simplify_for_lod();
-            let lod_plant_mesh = plant_gen::generate_plant_mesh(&lod_config, i as u32);
-            let lod_verts: Vec<Vertex> = lod_plant_mesh
-                .vertices
-                .iter()
-                .map(|v| Vertex {
-                    position: v.position,
-                    normal: v.normal,
-                    color: v.color,
-                })
-                .collect();
-            let lod_mesh = upload_prototype(device, &lod_verts, &lod_plant_mesh.indices, &lod_key);
-            self.models.models.insert(lod_key.clone(), lod_mesh);
-            self.species_lod_names.push(lod_key);
-        }
+        let (species_names, species_lod_names, species_is_shrub) =
+            Self::build_species_meshes(device, &mut self.models, registry);
+        self.species_names = species_names;
+        self.species_lod_names = species_lod_names;
+        self.species_is_shrub = species_is_shrub;
 
         self.plant_instances = (0..registry.species.len())
             .map(|_| HashMap::new())
@@ -334,10 +356,41 @@ impl InstancedPass {
         camera_position: Vec3,
     ) {
         pass.set_pipeline(&self.pipeline);
+        let mut on_billboard = false;
 
         // Draw each species, batching by LOD level to minimise state changes
         for (i, key) in self.species_names.iter().enumerate() {
             let lod_key = &self.species_lod_names[i];
+
+            // Shrubs render as a single minimal billboard (no LOD split): one
+            // mesh, the alpha-tested pipeline, all visible instances.
+            if self.species_is_shrub[i] {
+                if !on_billboard {
+                    pass.set_pipeline(&self.billboard_pipeline);
+                    on_billboard = true;
+                }
+                let Some(mesh) = self.models.get(key) else {
+                    continue;
+                };
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for chunks in [&self.plant_instances[i], &self.plant_lod_instances[i]] {
+                    for (coord, inst) in chunks {
+                        let Some(gpu) = &inst.gpu else { continue };
+                        if !frustum.is_chunk_visible(*coord) {
+                            continue;
+                        }
+                        pass.set_vertex_buffer(1, gpu.instance_buffer.slice(..));
+                        pass.draw_indexed(0..mesh.index_count, 0, 0..gpu.instance_count);
+                    }
+                }
+                continue;
+            }
+
+            if on_billboard {
+                pass.set_pipeline(&self.pipeline);
+                on_billboard = false;
+            }
 
             // Partition visible chunks into near (hi-res) and far (LOD)
             let mut near: Vec<&GpuInstanceChunk> = Vec::new();
@@ -388,6 +441,11 @@ impl InstancedPass {
                     pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
                 }
             }
+        }
+
+        // Houses (and anything after) use the opaque pipeline.
+        if on_billboard {
+            pass.set_pipeline(&self.pipeline);
         }
 
         // Draw houses
