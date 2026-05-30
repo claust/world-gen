@@ -90,7 +90,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // A couple of harmonics give the rim some raggedness without textures.
     let wobble = 0.10 * sin(angle * 6.0) + 0.06 * sin(angle * 13.0 + 1.7);
     let threshold = 0.92 + wobble;
-    let mask = smoothstep(threshold, threshold - 0.12, r);
+    // smoothstep requires edge0 < edge1; invert so the mask is 1 inside the
+    // radius and 0 outside (edge0 > edge1 is unspecified in WGSL).
+    let mask = 1.0 - smoothstep(threshold - 0.12, threshold, r);
     if (mask < 0.5) {
         discard;
     }

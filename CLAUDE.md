@@ -54,8 +54,10 @@ Deterministic FPS benchmark mode. The camera replays a scripted flythrough on a
 fixed timestep so the rendered workload is identical across runs; the surface is
 switched to a non-vsync present mode to measure true throughput. Results are
 written to `benchmarks/latest.json` (avg/min/max/1%-low FPS, mean/p50/p95/p99
-frame times) and diffed against `benchmarks/baseline.json` (CI gating fails on a
->5% FPS drop).
+frame times) and diffed against `benchmarks/baseline.json`. The `bun tools/bench.ts`
+wrapper exits non-zero on a >5% FPS drop, so it can gate CI — but the current CI
+workflow (`.github/workflows/ci.yml`) runs only fmt/clippy/build and does not yet
+invoke the benchmark; run it locally.
 
 ```bash
 bun tools/bench.ts                       # build + run default flythrough

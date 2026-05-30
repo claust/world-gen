@@ -56,9 +56,11 @@ billboard path.
   billboard is just a new tiny `PrototypeMesh`.
   See [instancing.rs:22](../src/renderer_wgpu/instancing.rs:22),
   [instanced_pass.rs](../src/renderer_wgpu/instanced_pass.rs).
-- **Alpha pipeline:** an alpha-blending pipeline variant with back-face culling
-  disabled already exists ([pipeline.rs:52-77](../src/renderer_wgpu/pipeline.rs:52))
-  — exactly what double-sided foliage cards need.
+- **Alpha pipeline:** a no-back-face-cull pipeline variant already existed as
+  precedent (`create_water_pipeline`, [pipeline.rs:107](../src/renderer_wgpu/pipeline.rs:107)).
+  The implemented billboard path adds its own `create_billboard_pipeline`
+  ([pipeline.rs:56](../src/renderer_wgpu/pipeline.rs:56)) — also double-sided, but
+  alpha-*tested* (`REPLACE` blend + depth-write) rather than alpha-blended.
 - **LOD split precedent:** `plant_lod_instances` is already a separate
   always-LOD instance buffer ([instanced_pass.rs:31](../src/renderer_wgpu/instanced_pass.rs:31)),
   so routing shrubs to a distinct path has prior art.

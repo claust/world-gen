@@ -112,7 +112,7 @@ Shrub 6 m + LOD@256 m → **65 FPS** (vs 30 baseline), i.e. the levers stack.
 | Shrub spacing | "—" (TODO) | Implemented at 4 m; **this is the lever to turn**, not a missing feature |
 | Simplified world meshes | "—" | ❌ Not done — editor and world share the same full-detail config |
 | Terrain LOD | "Done (2-level)" in table | ❌ Not done — **and not worth doing** (measured <2%) |
-| Billboards | "—" | ❌ Not done |
+| Billboards | "—" | ✅ Done for shrubs — crossed-quad billboards (avg FPS 30.9 → 100.0); see [SHRUB_BILLBOARD.md](SHRUB_BILLBOARD.md) |
 
 ---
 
@@ -124,15 +124,16 @@ Shrub 6 m + LOD@256 m → **65 FPS** (vs 30 baseline), i.e. the levers stack.
 | 2 | Make the LOD shrub mesh genuinely cheap (aggressive `max_depth`/foliage cut) **and** pull LOD distance to ~256 m | `config.rs:97`, `instanced_pass.rs:19` | Low | Stacks to ~65 FPS with #1 | Current LOD mesh is barely cheaper than full. |
 | 3 | Distance-cull shrubs entirely past ~200–300 m (separate band for shrub species) | `instanced_pass.rs` | Low | High | Shrubs are invisible from altitude; preserves near-field look better than a uniform spacing increase. Alternative to / combine with #1. |
 | 4 | Cheaper *base* shrub mesh for world rendering (decouple from editor full-detail) | `plant_gen` + registry | Medium | High | Attacks per-instance cost instead of count; keeps density. |
-| 5 | Billboards/impostors for distant shrubs | new render path | Major | High at scale | Only if #1–#4 aren't enough. Industry-standard for vegetation. |
+| ~~5~~ | ~~Billboards/impostors for distant shrubs~~ | new render path | Major | High at scale | ✅ **Done** — all shrubs now render as crossed-quad billboards (avg FPS 30.9 → 100.0, the vegetation-off ceiling). This superseded #1–#4: shrub vertex throughput is no longer the bottleneck. See [SHRUB_BILLBOARD.md](SHRUB_BILLBOARD.md). |
 | ~~—~~ | ~~Terrain LOD~~ | — | — | **~0** | Measured <2% of frame. Do not pursue. |
 | ~~—~~ | ~~Water optimization~~ | — | — | **~0** | Measured <1% of frame. Do not pursue. |
 
 ### Bottom line
 
-Start with **#1 (shrub spacing 4 m → 6 m)** — one constant, ~+86% FPS, zero risk.
-If undergrowth density matters visually, reach for **#3 (distance-cull shrubs)**
-or **#4 (cheaper world shrub mesh)** to keep near-field density while killing the
-far-field cost. Re-run `bun tools/bench.ts` after each change to confirm against
-the baseline; the gating method above (temporary env vars on the passes /
-parameters) is the way to re-attribute cost as the mix shifts.
+**Resolved by #5 (shrub billboards).** Routing all shrubs to crossed-quad
+billboards took avg FPS 30.9 → 100.0 (the vegetation-off ceiling) and moved the
+renderer off being GPU-bound — so #1–#4 (shrub spacing / cheaper LOD / distance
+cull / cheaper base mesh) are no longer needed to attack shrub cost. The next
+bottleneck is elsewhere; re-run `bun tools/bench.ts` and re-attribute with the
+gating method above (temporary env vars on the passes / parameters) before
+chasing further wins.
