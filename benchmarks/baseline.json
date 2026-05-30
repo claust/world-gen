@@ -1,0 +1,14 @@
+{
+  "name": "default-flythrough",
+  "fixed_dt": 0.0166667,
+  "warmup_frames": 90,
+  "frames": 1200,
+  "avg_fps": 30.779147010294157,
+  "min_fps": 14.023664720231249,
+  "max_fps": 488.7884553597993,
+  "one_percent_low_fps": 15.879319016944981,
+  "mean_frame_ms": 32.48952934483687,
+  "p50_frame_ms": 30.20920753479004,
+  "p95_frame_ms": 51.545291900634766,
+  "p99_frame_ms": 61.32791519165039
+}

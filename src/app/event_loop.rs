@@ -147,6 +147,12 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             }
                         }
 
+                        // Benchmark run complete: report written, exit the app.
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if app.benchmark_finished() {
+                            target.exit();
+                        }
+
                         // Process menu actions (needs access to `target` for Exit)
                         if let Some(action) = app.pending_menu_action.take() {
                             use crate::ui::MenuAction;
