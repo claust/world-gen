@@ -86,7 +86,11 @@ jobs:
             target: aarch64-apple-darwin
             artifact: floraforge-macos-aarch64
           - name: Windows
-            os: windows-latest
+            # Pinned to windows-2022 (last known-good MSVC image). windows-latest
+            # is mid-migration to windows-2025-vs2026, where rustc's MSVC linker
+            # autodetection resolves a toolset version whose link.exe is absent,
+            # breaking all msvc-target builds.
+            os: windows-2022
             target: x86_64-pc-windows-msvc
             artifact: floraforge-windows-x86_64
 
