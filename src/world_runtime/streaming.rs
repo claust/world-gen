@@ -3,19 +3,14 @@ use std::sync::Arc;
 
 use glam::{IVec2, Vec3};
 
+use super::chunk_loader::{ChunkLoader, PlatformLoader};
 use super::delta_store::DeltaStore;
-use crate::world_core::biome::{classify, Biome};
-use crate::world_core::chunk::{ChunkData, PlantInstance, CHUNK_SIZE_METERS};
-use crate::world_core::chunk_generator::ChunkGenerator;
+use super::lifecycle_sim::{tick_chunk_lifecycle, LifecycleTickContext};
+use super::plant_landing::{prune_chunk_delta_on_load, PlantLandingRules};
+use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::config::GameConfig;
-use crate::world_core::content::sampling::{
-    estimate_slope, hash4, hash_to_unit_float, sample_field_bilinear,
-};
 use crate::world_core::herbarium::PlantRegistry;
-use crate::world_core::lifecycle::{
-    advance_delta_plant_growth, assemble_plants, ChunkDelta, DeltaPlant, GrowthStage,
-    MAX_CATCH_UP_HOURS,
-};
+use crate::world_core::lifecycle::assemble_plants;
 
 pub struct StreamingStats {
     pub loaded_chunks: usize,
@@ -23,189 +18,9 @@ pub struct StreamingStats {
     pub center_chunk: IVec2,
 }
 
-struct PlantLandingRules<'a> {
-    registry: &'a PlantRegistry,
-    biome_config: &'a crate::world_core::config::BiomeConfig,
-    sea_level: f32,
-}
-
-struct LifecycleTickContext<'a> {
-    loaded: &'a HashMap<IVec2, ChunkData>,
-    total_hours: f64,
-    world_seed: u32,
-    landing_rules: PlantLandingRules<'a>,
-}
-
-struct SeedlingSpawnRequest {
-    coord: IVec2,
-    plant_index: u32,
-    seed_i: u32,
-    source_position: Vec3,
-    species_index: usize,
-    round_hour: f64,
-}
-
-// ---------------------------------------------------------------------------
-// ChunkLoader trait — abstracts platform-specific chunk generation strategy
-// ---------------------------------------------------------------------------
-
-trait ChunkLoader {
-    fn new_loader(
-        seed: u32,
-        threads: usize,
-        config: Arc<GameConfig>,
-        registry: Arc<PlantRegistry>,
-    ) -> anyhow::Result<Self>
-    where
-        Self: Sized;
-    fn dispatch(&mut self, coord: IVec2, seed: u32);
-    fn poll(&mut self) -> Vec<ChunkData>;
-    fn pending_count(&self) -> usize;
-    fn cancel_outside(&mut self, required: &HashSet<IVec2>);
-}
-
-// ---------------------------------------------------------------------------
-// Native: threaded chunk generation via rayon
-// ---------------------------------------------------------------------------
-
-#[cfg(not(target_arch = "wasm32"))]
-mod threaded {
-    use super::*;
-    use std::sync::mpsc::{self, Receiver, Sender};
-
-    use rayon::{ThreadPool, ThreadPoolBuilder};
-
-    pub struct ThreadedLoader {
-        pool: ThreadPool,
-        sender: Sender<ChunkData>,
-        receiver: Receiver<ChunkData>,
-        pending: HashSet<IVec2>,
-        config: Arc<GameConfig>,
-        registry: Arc<PlantRegistry>,
-    }
-
-    impl ChunkLoader for ThreadedLoader {
-        fn new_loader(
-            seed: u32,
-            threads: usize,
-            config: Arc<GameConfig>,
-            registry: Arc<PlantRegistry>,
-        ) -> anyhow::Result<Self> {
-            let _ = seed; // seed is passed per-dispatch, not stored
-            let pool = ThreadPoolBuilder::new()
-                .num_threads(threads.max(1))
-                .thread_name(|i| format!("chunk-gen-{i}"))
-                .build()?;
-            let (sender, receiver) = mpsc::channel();
-            Ok(Self {
-                pool,
-                sender,
-                receiver,
-                pending: HashSet::new(),
-                config,
-                registry,
-            })
-        }
-
-        fn dispatch(&mut self, coord: IVec2, seed: u32) {
-            if self.pending.contains(&coord) {
-                return;
-            }
-            self.pending.insert(coord);
-            let tx = self.sender.clone();
-            let config = Arc::clone(&self.config);
-            let registry = Arc::clone(&self.registry);
-            self.pool.spawn(move || {
-                let generator = ChunkGenerator::new(seed, &config, registry);
-                let chunk = generator.generate_chunk(coord);
-                let _ = tx.send(chunk);
-            });
-        }
-
-        fn poll(&mut self) -> Vec<ChunkData> {
-            let mut completed = Vec::new();
-            while let Ok(chunk) = self.receiver.try_recv() {
-                self.pending.remove(&chunk.coord);
-                completed.push(chunk);
-            }
-            completed
-        }
-
-        fn pending_count(&self) -> usize {
-            self.pending.len()
-        }
-
-        fn cancel_outside(&mut self, required: &HashSet<IVec2>) {
-            self.pending.retain(|coord| required.contains(coord));
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Wasm: synchronous chunk generation, throttled per frame
-// ---------------------------------------------------------------------------
-
-#[cfg(target_arch = "wasm32")]
-mod sync {
-    use super::*;
-
-    pub struct SyncLoader {
-        seed: u32,
-        queue: Vec<IVec2>,
-        config: Arc<GameConfig>,
-        registry: Arc<PlantRegistry>,
-    }
-
-    impl ChunkLoader for SyncLoader {
-        fn new_loader(
-            seed: u32,
-            _threads: usize,
-            config: Arc<GameConfig>,
-            registry: Arc<PlantRegistry>,
-        ) -> anyhow::Result<Self> {
-            Ok(Self {
-                seed,
-                queue: Vec::new(),
-                config,
-                registry,
-            })
-        }
-
-        fn dispatch(&mut self, coord: IVec2, _seed: u32) {
-            if !self.queue.contains(&coord) {
-                self.queue.push(coord);
-            }
-        }
-
-        fn poll(&mut self) -> Vec<ChunkData> {
-            let generator =
-                ChunkGenerator::new(self.seed, &self.config, Arc::clone(&self.registry));
-            let count = self.queue.len().min(2);
-            let coords: Vec<IVec2> = self.queue.drain(..count).collect();
-            coords
-                .into_iter()
-                .map(|coord| generator.generate_chunk(coord))
-                .collect()
-        }
-
-        fn pending_count(&self) -> usize {
-            self.queue.len()
-        }
-
-        fn cancel_outside(&mut self, required: &HashSet<IVec2>) {
-            self.queue.retain(|coord| required.contains(coord));
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // StreamingWorld — unified orchestration, delegates loading to PlatformLoader
 // ---------------------------------------------------------------------------
-
-#[cfg(not(target_arch = "wasm32"))]
-type PlatformLoader = threaded::ThreadedLoader;
-#[cfg(target_arch = "wasm32")]
-type PlatformLoader = sync::SyncLoader;
 
 pub struct StreamingWorld {
     seed: u32,
@@ -385,412 +200,7 @@ fn apply_chunk_delta(
     chunk
 }
 
-fn tick_chunk_lifecycle(
-    coord: IVec2,
-    context: &LifecycleTickContext<'_>,
-    delta_store: &mut DeltaStore,
-    changed_coords: &mut HashSet<IVec2>,
-) {
-    let Some(chunk) = context.loaded.get(&coord) else {
-        return;
-    };
-
-    let last_sim_hour = {
-        let delta = delta_store.get_or_create(coord);
-        sanitize_chunk_timestamps(coord, context.total_hours, delta)
-    };
-
-    let current_hour = context.total_hours.max(last_sim_hour);
-    let target_hour = current_hour.min(last_sim_hour + MAX_CATCH_UP_HOURS);
-    let missed_boundaries =
-        (target_hour.floor() as i64 - last_sim_hour.floor() as i64).max(0) as u64;
-    if missed_boundaries == 0 {
-        return;
-    }
-
-    if target_hour < current_hour {
-        log::warn!(
-            "clamped lifecycle catch-up for chunk {coord:?} from {:.2}h to {:.2}h (cap {:.2}h)",
-            context.total_hours - last_sim_hour,
-            target_hour - last_sim_hour,
-            MAX_CATCH_UP_HOURS
-        );
-    }
-
-    for boundary in 1..=missed_boundaries {
-        let round_hour = last_sim_hour.floor() + boundary as f64;
-        let mut chunk_changed = false;
-        {
-            let delta = delta_store.get_or_create(coord);
-            let previous_stages: Vec<_> =
-                delta.added_plants.iter().map(|plant| plant.stage).collect();
-
-            for plant in &delta.added_plants {
-                debug_assert!(
-                    plant.born_hour <= context.total_hours,
-                    "chunk {coord:?} has plant born in the future: {} > {}",
-                    plant.born_hour,
-                    context.total_hours,
-                );
-            }
-
-            for plant in &mut delta.added_plants {
-                if advance_delta_plant_growth(plant, round_hour, context.landing_rules.registry) {
-                    chunk_changed = true;
-                }
-            }
-
-            debug_assert!(
-                delta
-                    .added_plants
-                    .iter()
-                    .zip(previous_stages.iter())
-                    .all(|(plant, previous)| plant.stage >= *previous),
-                "chunk {coord:?} contained a regressed growth stage"
-            );
-
-            if delta.last_sim_hour != round_hour {
-                delta.last_sim_hour = round_hour;
-            }
-        }
-
-        if is_spread_hour(round_hour) {
-            let source_delta = delta_store.get(&coord).cloned().unwrap_or_default();
-            let source_plants = assemble_plants(&chunk.content.base_plants, &source_delta);
-
-            for (plant_index, plant) in source_plants.iter().enumerate() {
-                if plant.growth_stage != GrowthStage::Mature {
-                    continue;
-                }
-
-                let Some(species) = context
-                    .landing_rules
-                    .registry
-                    .species
-                    .get(plant.species_index)
-                else {
-                    debug_assert!(
-                        false,
-                        "plant in chunk {coord:?} references invalid species index {}",
-                        plant.species_index
-                    );
-                    continue;
-                };
-
-                if spread_roll(context.world_seed, coord, plant_index as u32)
-                    >= species.placement.spread_chance.clamp(0.0, 1.0)
-                {
-                    continue;
-                }
-
-                let seed_count = spread_seed_count(context.world_seed, coord, plant_index as u32);
-                for seed_i in 0..seed_count {
-                    let request = SeedlingSpawnRequest {
-                        coord,
-                        plant_index: plant_index as u32,
-                        seed_i,
-                        source_position: plant.position,
-                        species_index: plant.species_index,
-                        round_hour,
-                    };
-                    let Some(seedling) = spawn_seedling(
-                        context.world_seed,
-                        &request,
-                        context.landing_rules.registry,
-                    ) else {
-                        continue;
-                    };
-
-                    let target_coord = world_to_chunk(seedling.position);
-                    if let Some(target_chunk) = context.loaded.get(&target_coord) {
-                        let existing =
-                            existing_plants_for_chunk(target_chunk, delta_store.get(&target_coord));
-                        let Some(seedling) = validate_seedling_landing(
-                            &seedling,
-                            target_coord,
-                            target_chunk,
-                            &existing,
-                            &context.landing_rules,
-                        ) else {
-                            continue;
-                        };
-
-                        delta_store
-                            .get_or_create(target_coord)
-                            .added_plants
-                            .push(seedling);
-                        changed_coords.insert(target_coord);
-                    } else {
-                        delta_store
-                            .get_or_create(target_coord)
-                            .added_plants
-                            .push(seedling);
-                    }
-                    if target_coord == coord {
-                        chunk_changed = true;
-                    }
-                }
-            }
-        }
-
-        if chunk_changed {
-            changed_coords.insert(coord);
-        }
-    }
-
-    let final_delta = delta_store.get_or_create(coord);
-    debug_assert!(
-        final_delta.last_sim_hour <= context.total_hours,
-        "chunk {coord:?} last_sim_hour {} exceeds total_hours {}",
-        final_delta.last_sim_hour,
-        context.total_hours
-    );
-}
-
-fn sanitize_chunk_timestamps(coord: IVec2, total_hours: f64, delta: &mut ChunkDelta) -> f64 {
-    if delta.last_sim_hour > total_hours {
-        log::warn!(
-            "clamping chunk {coord:?} last_sim_hour from {:.3}h down to current total_hours {:.3}h",
-            delta.last_sim_hour,
-            total_hours
-        );
-        delta.last_sim_hour = total_hours;
-    }
-
-    for plant in &mut delta.added_plants {
-        if plant.born_hour > total_hours {
-            log::warn!(
-                "clamping future-born plant in chunk {coord:?} from {:.3}h down to current total_hours {:.3}h",
-                plant.born_hour,
-                total_hours
-            );
-            plant.born_hour = total_hours;
-        }
-    }
-
-    debug_assert!(
-        delta.last_sim_hour <= total_hours,
-        "chunk {coord:?} last_sim_hour {} exceeds total_hours {total_hours}",
-        delta.last_sim_hour
-    );
-    debug_assert!(
-        delta
-            .added_plants
-            .iter()
-            .all(|plant| plant.born_hour <= total_hours),
-        "chunk {coord:?} contains plants born after total_hours {total_hours}"
-    );
-
-    delta.last_sim_hour
-}
-
-fn is_spread_hour(hour: f64) -> bool {
-    (hour.floor() as i64).rem_euclid(24) == 0
-}
-
-fn spread_roll(seed: u32, coord: IVec2, plant_index: u32) -> f32 {
-    hash_to_unit_float(hash4(
-        seed.wrapping_add(4001),
-        coord.x as u32,
-        coord.y as u32,
-        plant_index,
-    ))
-}
-
-fn spread_seed_count(seed: u32, coord: IVec2, plant_index: u32) -> u32 {
-    1 + (hash_to_unit_float(hash4(
-        seed.wrapping_add(4002),
-        coord.x as u32,
-        coord.y as u32,
-        plant_index,
-    )) * 2.0)
-        .floor() as u32
-}
-
-fn spawn_seedling(
-    seed: u32,
-    request: &SeedlingSpawnRequest,
-    registry: &PlantRegistry,
-) -> Option<DeltaPlant> {
-    let species = registry.species.get(request.species_index)?;
-    let sub_id = request
-        .plant_index
-        .wrapping_mul(31)
-        .wrapping_add(request.seed_i);
-    let angle = hash_to_unit_float(hash4(
-        seed.wrapping_add(4101),
-        request.coord.x as u32,
-        request.coord.y as u32,
-        sub_id,
-    )) * std::f32::consts::TAU;
-    let distance = hash_to_unit_float(hash4(
-        seed.wrapping_add(4102),
-        request.coord.x as u32,
-        request.coord.y as u32,
-        sub_id,
-    ))
-    .sqrt()
-        * species.placement.spread_radius.max(0.0);
-    let height = species.height_range[0]
-        + hash_to_unit_float(hash4(
-            seed.wrapping_add(4201),
-            request.coord.x as u32,
-            request.coord.y as u32,
-            sub_id,
-        )) * (species.height_range[1] - species.height_range[0]);
-    let rotation = hash_to_unit_float(hash4(
-        seed.wrapping_add(4202),
-        request.coord.x as u32,
-        request.coord.y as u32,
-        sub_id,
-    )) * std::f32::consts::TAU;
-
-    Some(DeltaPlant {
-        position: Vec3::new(
-            request.source_position.x + angle.cos() * distance,
-            request.source_position.y,
-            request.source_position.z + angle.sin() * distance,
-        ),
-        rotation,
-        height,
-        species_index: request.species_index,
-        stage: GrowthStage::Seedling,
-        born_hour: request.round_hour,
-    })
-}
-
-fn prune_chunk_delta_on_load(
-    coord: IVec2,
-    chunk: &ChunkData,
-    delta: &mut ChunkDelta,
-    landing_rules: &PlantLandingRules<'_>,
-) -> bool {
-    let original_removed_len = delta.removed_base.len();
-    let mut changed = delta.prune_removed_base(chunk.content.base_plants.len());
-    if changed && delta.removed_base.len() != original_removed_len {
-        log::info!(
-            "pruned {} stale removed_base indices from chunk {coord:?} on load",
-            original_removed_len - delta.removed_base.len()
-        );
-    }
-    let mut retained = Vec::with_capacity(delta.added_plants.len());
-    let mut existing = chunk.content.base_plants.clone();
-    let original_added = std::mem::take(&mut delta.added_plants);
-    let original_snapshot = original_added.clone();
-    let original_len = original_added.len();
-
-    for plant in original_added {
-        if let Some(validated) =
-            validate_seedling_landing(&plant, coord, chunk, &existing, landing_rules)
-        {
-            existing.push(crate::world_core::chunk::PlantInstance {
-                position: validated.position,
-                rotation: validated.rotation,
-                height: validated.height,
-                species_index: validated.species_index,
-                growth_stage: validated.stage,
-            });
-            retained.push(validated);
-        }
-    }
-
-    if retained != original_snapshot {
-        changed = true;
-    }
-
-    if retained.len() != original_len {
-        log::info!(
-            "pruned {} invalid deferred seedlings from chunk {coord:?} on load",
-            original_len - retained.len()
-        );
-    }
-
-    delta.added_plants = retained;
-    changed
-}
-
-fn validate_seedling_landing(
-    seedling: &DeltaPlant,
-    target_coord: IVec2,
-    target_chunk: &ChunkData,
-    existing: &[crate::world_core::chunk::PlantInstance],
-    landing_rules: &PlantLandingRules<'_>,
-) -> Option<DeltaPlant> {
-    let Some(species) = landing_rules.registry.species.get(seedling.species_index) else {
-        debug_assert!(
-            false,
-            "seedling references invalid species index {}",
-            seedling.species_index
-        );
-        return None;
-    };
-
-    if target_chunk.terrain.heights.is_empty() || target_chunk.terrain.moisture.is_empty() {
-        return None;
-    }
-
-    let local_x = seedling.position.x - target_coord.x as f32 * CHUNK_SIZE_METERS;
-    let local_z = seedling.position.z - target_coord.y as f32 * CHUNK_SIZE_METERS;
-    let terrain = &target_chunk.terrain;
-    let height = sample_field_bilinear(&terrain.heights, local_x, local_z);
-    let moisture = sample_field_bilinear(&terrain.moisture, local_x, local_z);
-    let slope = estimate_slope(&terrain.heights, local_x, local_z);
-    let biome = classify(height, moisture, landing_rules.biome_config);
-
-    if height < landing_rules.sea_level
-        || moisture < species.placement.min_moisture
-        || moisture > species.placement.max_moisture
-        || height < species.placement.min_altitude
-        || height > species.placement.max_altitude
-        || slope > species.placement.max_slope
-        || !species
-            .placement
-            .biomes
-            .iter()
-            .any(|candidate| candidate == biome_name(biome))
-    {
-        return None;
-    }
-
-    let spacing = min_spacing_for_species(&species.kind);
-    let mut landed = seedling.clone();
-    landed.position.y = height;
-
-    if existing
-        .iter()
-        .any(|plant| plant.position.distance(landed.position) < spacing)
-    {
-        return None;
-    }
-
-    Some(landed)
-}
-
-fn existing_plants_for_chunk(chunk: &ChunkData, delta: Option<&ChunkDelta>) -> Vec<PlantInstance> {
-    delta
-        .map(|delta| assemble_plants(&chunk.content.base_plants, delta))
-        .unwrap_or_else(|| chunk.content.base_plants.clone())
-}
-
-fn min_spacing_for_species(kind: &str) -> f32 {
-    if kind == "shrub" {
-        3.0
-    } else {
-        8.0
-    }
-}
-
-fn biome_name(biome: Biome) -> &'static str {
-    match biome {
-        Biome::Forest => "Forest",
-        Biome::Grassland => "Grassland",
-        Biome::Desert => "Desert",
-        Biome::Rock => "Rock",
-        Biome::Snow => "Snow",
-    }
-}
-
-fn world_to_chunk(position: Vec3) -> IVec2 {
+pub(super) fn world_to_chunk(position: Vec3) -> IVec2 {
     IVec2::new(
         (position.x / CHUNK_SIZE_METERS).floor() as i32,
         (position.z / CHUNK_SIZE_METERS).floor() as i32,
@@ -816,7 +226,7 @@ mod tests {
 
     use glam::{IVec2, Vec3};
 
-    use super::{apply_chunk_delta, PlantLandingRules, StreamingWorld};
+    use super::{apply_chunk_delta, StreamingWorld};
     use crate::world_core::chunk::{
         ChunkContent, ChunkData, ChunkTerrain, PlantInstance, CHUNK_GRID_RESOLUTION,
         CHUNK_SIZE_METERS,
@@ -826,6 +236,8 @@ mod tests {
         config::GameConfig,
         herbarium::{Herbarium, PlantRegistry},
     };
+    use crate::world_runtime::lifecycle_sim::{spawn_seedling, spread_roll, SeedlingSpawnRequest};
+    use crate::world_runtime::plant_landing::PlantLandingRules;
     use crate::world_runtime::DeltaStore;
 
     fn test_registry() -> Arc<PlantRegistry> {
@@ -1117,7 +529,7 @@ mod tests {
 
         let coord = (-4..=4)
             .flat_map(|z| (-4..=4).map(move |x| IVec2::new(x, z)))
-            .find(|coord| super::spread_roll(42, *coord, 0) < 0.3)
+            .find(|coord| spread_roll(42, *coord, 0) < 0.3)
             .expect("expected a coord with a successful spread roll");
         let base_plant = PlantInstance {
             position: Vec3::new(
@@ -1181,7 +593,7 @@ mod tests {
         let (coord, seedling) = (-6..=6)
             .flat_map(|z| (-6..=6).map(move |x| IVec2::new(x, z)))
             .find_map(|coord| {
-                if super::spread_roll(42, coord, 0) >= 0.3 {
+                if spread_roll(42, coord, 0) >= 0.3 {
                     return None;
                 }
 
@@ -1192,7 +604,7 @@ mod tests {
                 );
 
                 (0..2).find_map(|seed_i| {
-                    let request = super::SeedlingSpawnRequest {
+                    let request = SeedlingSpawnRequest {
                         coord,
                         plant_index: 0,
                         seed_i,
@@ -1200,7 +612,7 @@ mod tests {
                         species_index: 0,
                         round_hour: 24.0,
                     };
-                    let seedling = super::spawn_seedling(42, &request, registry.as_ref())?;
+                    let seedling = spawn_seedling(42, &request, registry.as_ref())?;
                     (super::world_to_chunk(seedling.position) != coord).then_some((coord, seedling))
                 })
             })
