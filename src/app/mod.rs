@@ -737,6 +737,7 @@ impl AppState {
             self.camera.position,
             self.camera.yaw,
             stats.hour,
+            1000.0 / self.frame_time_ms.max(0.01),
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );

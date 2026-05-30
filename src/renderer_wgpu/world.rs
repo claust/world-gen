@@ -164,11 +164,12 @@ impl WorldRenderer {
         camera_pos: Vec3,
         camera_yaw: f32,
         hour: f32,
+        fps: f32,
         screen_w: f32,
         screen_h: f32,
     ) {
         self.hud.update(
-            queue, device, camera_pos, camera_yaw, hour, screen_w, screen_h,
+            queue, device, camera_pos, camera_yaw, hour, fps, screen_w, screen_h,
         );
     }
 
