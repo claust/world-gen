@@ -57,7 +57,13 @@ impl InstancedPass {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("instanced-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/instanced.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/lighting.wgsl"),
+                    include_str!("shaders/instanced.wgsl")
+                )
+                .into(),
+            ),
         });
 
         let vertex_layout = wgpu::VertexBufferLayout {

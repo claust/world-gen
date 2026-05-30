@@ -24,7 +24,13 @@ impl TerrainPass {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/terrain.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/lighting.wgsl"),
+                    include_str!("shaders/terrain.wgsl")
+                )
+                .into(),
+            ),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

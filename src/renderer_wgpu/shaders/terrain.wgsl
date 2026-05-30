@@ -62,27 +62,6 @@ fn sample_biome(biome_id: f32, world_pos: vec3<f32>) -> vec3<f32> {
     return textureSample(terrain_atlas, terrain_sampler, vec2<f32>(atlas_u, atlas_v)).rgb;
 }
 
-// Reduce a sky color to a gentle hue (max channel == 1), then blend back
-// toward white so the ambient tint is subtle rather than a strong color cast.
-fn hemisphere_tint(c: vec3<f32>) -> vec3<f32> {
-    let m = max(max(c.r, c.g), max(c.b, 1e-3));
-    let hue = c / m;
-    // Scale tint strength by source brightness so very dark but saturated
-    // night-sky colors stay near-neutral instead of casting a strong blue tint.
-    let strength = 0.6 * clamp(m, 0.0, 1.0);
-    return mix(vec3<f32>(1.0), hue, strength);
-}
-
-// Hemisphere (sky/ground) ambient: up-facing surfaces pick up the zenith sky
-// color, down-facing surfaces a dimmer horizon-tinted bounce. material.ambient.x
-// keeps controlling overall day/night intensity.
-fn hemisphere_ambient(normal: vec3<f32>) -> vec3<f32> {
-    let up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
-    let sky = hemisphere_tint(material.sky_zenith.rgb);
-    let ground = hemisphere_tint(material.sky_horizon.rgb) * 0.6;
-    return material.ambient.x * mix(ground, sky, up);
-}
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let biome_a = input.biome_ids.x;
