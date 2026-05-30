@@ -67,12 +67,30 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     return out;
 }
 
+// Reduce a sky color to a gentle hue (max channel == 1), then blend back
+// toward white so the ambient tint is subtle rather than a strong color cast.
+fn hemisphere_tint(c: vec3<f32>) -> vec3<f32> {
+    let m = max(max(c.r, c.g), max(c.b, 1e-3));
+    let hue = c / m;
+    return mix(vec3<f32>(1.0), hue, 0.6);
+}
+
+// Hemisphere (sky/ground) ambient: up-facing surfaces pick up the zenith sky
+// color, down-facing surfaces a dimmer horizon-tinted bounce. material.ambient.x
+// keeps controlling overall day/night intensity.
+fn hemisphere_ambient(normal: vec3<f32>) -> vec3<f32> {
+    let up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
+    let sky = hemisphere_tint(material.sky_zenith.rgb);
+    let ground = hemisphere_tint(material.sky_horizon.rgb) * 0.6;
+    return material.ambient.x * mix(ground, sky, up);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(input.world_normal);
     let l = normalize(material.light_direction.xyz);
     let direct = max(dot(n, l), 0.0);
-    let color = input.albedo * material.ambient.x + input.albedo * direct * 0.82 * material.sun_color.rgb;
+    let color = input.albedo * hemisphere_ambient(n) + input.albedo * direct * 0.82 * material.sun_color.rgb;
 
     let dist = distance(input.world_position, frame.camera_position.xyz);
     let fog_start = material.fog_params.x;
