@@ -29,11 +29,6 @@ struct MaterialUniform {
 @group(3) @binding(0) var shadow_map: texture_depth_2d;
 @group(3) @binding(1) var shadow_sampler: sampler_comparison;
 
-const TEXTURE_SCALE: f32 = 0.1;
-const TILE_COUNT: f32 = 5.0;
-const TILE_SIZE: f32 = 128.0;
-const HALF_TEXEL: f32 = 0.5 / TILE_SIZE;
-
 // 3x3 PCF shadow lookup. Returns 1.0 (fully lit) when outside the shadow
 // frustum or when shadows are disabled (night).
 fn sample_shadow(world_pos: vec3<f32>, n_dot_l: f32) -> f32 {
@@ -81,6 +76,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 }
 
 fn sample_biome(biome_id: f32, world_pos: vec3<f32>) -> vec3<f32> {
+    // Atlas-sampling constants are scoped to this function so they are not
+    // emitted as module-global constants into the vertex stage (which never
+    // samples the atlas) — that triggers unused-constant warnings in the
+    // generated Metal shader. TILE_SIZE is the atlas tile size in texels.
+    const TEXTURE_SCALE: f32 = 0.1;
+    const TILE_COUNT: f32 = 5.0;
+    const TILE_SIZE: f32 = 128.0;
+    const HALF_TEXEL: f32 = 0.5 / TILE_SIZE;
+
     let tile = round(biome_id);
     let uv_local = fract(world_pos.xz * TEXTURE_SCALE);
 
