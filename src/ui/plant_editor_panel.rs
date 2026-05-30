@@ -313,6 +313,22 @@ impl PlantEditorPanel {
                 ui.add_space(4.0);
                 ui.separator();
 
+                // Shrub-kind species render in-world as a hardcoded billboard
+                // (see docs/SHRUB_BILLBOARD.md), so the procedural-mesh controls
+                // below don't affect what's drawn in the world — only the leaf
+                // colour (carried as a billboard tint) and placement still apply.
+                if self.params.body_kind == "shrub" {
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 180, 90),
+                        "⚠ Rendered as a billboard in-world — procedural controls \
+                         below only affect this preview. Leaf colour still tints \
+                         the billboard.",
+                    );
+                    ui.add_space(4.0);
+                    ui.separator();
+                }
+
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // --- Body Plan ---
                     egui::CollapsingHeader::new(theme::section_header("Body Plan"))

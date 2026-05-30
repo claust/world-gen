@@ -35,6 +35,8 @@ fn main() -> anyhow::Result<()> {
         debug_api.bind_addr
     );
 
+    let benchmark_path = parse_benchmark_arg();
+
     let event_loop = EventLoop::new()?;
 
     #[cfg(target_os = "macos")]
@@ -49,9 +51,26 @@ fn main() -> anyhow::Result<()> {
     ));
 
     // Don't capture cursor at startup — start screen needs a free cursor
-    let app = pollster::block_on(AppState::new(window, debug_api, false))?;
+    let app = pollster::block_on(AppState::new(window, debug_api, false, benchmark_path))?;
 
     app::run_event_loop(app, event_loop)
+}
+
+/// Parses `--benchmark [path]`. The path is optional and defaults to
+/// `benchmarks/flythrough.json`. Returns `None` when the flag is absent.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_benchmark_arg() -> Option<std::path::PathBuf> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--benchmark" {
+            let path = args
+                .next()
+                .filter(|s| !s.starts_with("--"))
+                .unwrap_or_else(|| "benchmarks/flythrough.json".to_string());
+            return Some(std::path::PathBuf::from(path));
+        }
+    }
+    None
 }
 
 #[cfg(target_arch = "wasm32")]

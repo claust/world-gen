@@ -1,69 +1,139 @@
 # Performance Improvement Plan
 
-## The Problem
+> **Updated 2026-05-30** after building the deterministic FPS benchmark
+> (`tools/bench.ts`, `src/app/benchmark.rs`) and a baseline. This revision
+> replaces the earlier *estimated* priorities with **measured** ones. Every
+> number below comes from the `flythrough.json` benchmark on the dev machine
+> (Apple Silicon), attributing cost by gating individual passes / tuning
+> parameters via temporary env vars and re-running the benchmark.
 
-After switching from simple geometric primitives to full procedural `plant_gen` meshes for instanced world rendering, performance dropped significantly. The detailed branching and foliage meshes are too complex for the thousands of instances rendered each frame.
+## Baseline (current state)
 
-### Key Numbers (load_radius=3, 49 chunks)
+`benchmarks/baseline.json`, default flythrough, 1200 frames:
 
-- Trees (Oak, Birch, Willow): ~2,000-4,200 verts, ~9K-22K indices each
-- Shrubs: ~3,500-5,300 verts, ~19K-29K indices each (7 stems, each with full branch tree + dense foliage)
-- Shrub instances: ~1,500/chunk at 4m spacing = ~73K total
-- Tree instances: ~200/chunk in forest = ~10K total
-- Per-frame: shrubs alone = ~365M vertex shader invocations, trees ~30M
-- Draw calls: up to 343 plant + ~49 house = ~400 total
+| Metric | Value |
+|---|---|
+| avg FPS | ~30 |
+| 1% low FPS | ~16 |
+| mean frame time | 32 ms |
+| p95 / p99 frame time | 51 / 60 ms |
+| **gpu_bound_ratio** | **0.98** |
+| mean CPU-active time | **0.49 ms** |
+| mean GPU-wait time | 31 ms |
 
-### Complexity Drivers (ordered by impact)
+### The single most important fact: we are ~98% GPU-bound
 
-1. `max_depth` — each level multiplies branches exponentially
-2. `branches_per_node` — direct multiplier on branch count
-3. `crown.density` + `foliage.cluster_strategy` — `dense_mass` = 4x density blobs per endpoint
-4. `stem_count` — shrubs have 3-7 stems, each a full branch tree
-
----
-
-## Optimizations
-
-### 1. Frustum Culling — DONE
-
-Skip draw calls for chunks outside the camera's view frustum. Extracts 6 clip planes from the view-projection matrix and tests each chunk's AABB before issuing draw calls. Applied to terrain, instanced, and water passes.
-
-**Impact:** ~50% reduction in draw calls (chunks behind camera are skipped).
-
-### 2. Simplified World Meshes (HIGH impact, LOW effort)
-
-Generate meshes with reduced `SpeciesConfig` parameters for instanced world rendering. Clone each species config and reduce:
-- `max_depth` (reduces exponential branching)
-- `branches_per_node`
-- `crown.density` (sparser foliage)
-
-The plant editor keeps full-detail meshes; the world uses lightweight versions. Could cut vertex counts 3-5x.
-
-### 3. Reduce Shrub Density (MEDIUM impact, TRIVIAL effort)
-
-Shrubs are placed on a 4m spacing grid (4,096 candidates/chunk). Increasing to 6-8m spacing cuts shrub instances 2-4x. Since shrubs are the biggest GPU cost driver, this alone would provide significant relief.
-
-### 4. Foliage Blob Cap (MEDIUM impact, LOW effort)
-
-Each foliage cluster uses an icosahedron (12 verts, 20 tris). Dense species generate hundreds of blobs per mesh. Cap total foliage blobs per mesh (e.g., 50) or merge nearby blobs to reduce vertex counts for the densest species.
-
-### 5. Distance-Based LOD (HIGH impact, HIGH effort)
-
-Generate 2-3 detail levels per species. Near chunks get the detailed mesh; far chunks get a simplified version. Requires per-chunk distance checks, multiple prototype meshes per species, and LOD selection logic during rendering.
-
-### 6. Billboards for Distant Plants (HIGH impact, MAJOR effort)
-
-Replace far-away instances with camera-facing textured quads. Requires texture baking (rendering each species to an atlas), a separate billboard render path, and camera-facing orientation updates. Industry-standard solution for large-scale vegetation.
+CPU-side work is **0.49 ms/frame** against **31 ms** of GPU wait. This
+invalidates the framing of the original plan, which reasoned about *draw calls*
+and *CPU submission*. Those don't matter — we could halve draw-call count and
+gain nothing. **Only the GPU's vertex+fragment workload moves the frame rate.**
+Frustum culling helped not because it cut CPU submission but because it cut GPU
+geometry.
 
 ---
 
-## Recommended Priority
+## Cost attribution (measured)
 
-| # | Optimization | Impact | Effort | Status |
-|---|---|---|---|---|
-| 1 | Frustum culling | ~50% draw calls | Medium | Done |
-| 2 | Simplified world meshes | 3-5x vertex reduction | Low | — |
-| 3 | Reduce shrub density | 2-4x fewer instances | Trivial | — |
-| 4 | Foliage blob cap | Medium vert reduction | Low | — |
-| 5 | Distance-based LOD | High for far chunks | High | Done (2-level) |
-| 6 | Billboards | Best for scale | Major | — |
+Each pass was gated off and the benchmark re-run:
+
+| Config | avg FPS | mean GPU ms | Interpretation |
+|---|---|---|---|
+| All on (baseline) | 30 | 30 | — |
+| **Vegetation off** | **100** | **9** | veg ≈ **70%** of GPU frame time (~21 ms) |
+| Water off | 30 | 30 | water is negligible at the margin (~0.3 ms) |
+| Terrain off | 31 | 30 | terrain is negligible at the margin (~0.5 ms) |
+
+Then, within vegetation (trees use 11 m spacing, shrubs 4 m):
+
+| Config | avg FPS | mean GPU ms |
+|---|---|---|
+| Shrubs off (trees only) | **100** | 8 |
+
+**Shrubs are essentially the entire vegetation cost.** Trees-only ≈ no-vegetation
+(~100 FPS both). The ~73K shrub instances/scene (dense 3.5–5.3K-vert meshes)
+dominate everything else combined.
+
+### Consequences
+
+- **Terrain LOD is not worth doing.** Terrain is <2% of frame time even with no
+  LOD and full 129×129 resolution on every chunk. Skip it.
+- **Water optimization is not worth doing.** Same.
+- **All future effort should target shrub vertex throughput.** Nothing else moves
+  the needle until shrubs are cheaper.
+
+---
+
+## Lever sweeps (measured)
+
+### Shrub spacing — the big lever (TRIVIAL effort)
+
+Changing one constant in `src/world_core/content/flora.rs:57`:
+
+| Shrub spacing | avg FPS | Δ vs baseline | ~instances |
+|---|---|---|---|
+| 4 m (current) | 30 | — | 100% |
+| 5 m | 42 | **+38%** | ~64% |
+| 6 m | 57 | **+86%** | ~44% |
+| 8 m | 77 | **+154%** | ~25% |
+
+Instance count scales with spacing⁻², so 4 m→6 m removes ~56% of shrubs and
+nearly doubles FPS. The only cost is visual undergrowth density. This is the
+highest value-to-effort change available, full stop.
+
+### LOD distance threshold — weak as currently built (LOW effort)
+
+Pulling `LOD_THRESHOLD_SQ` (`instanced_pass.rs:19`) inward:
+
+| LOD distance | avg FPS |
+|---|---|
+| 512 m (current) | 30 |
+| 256 m | 33 |
+| 0 m (everything LOD) | 35 |
+
+Even forcing *every* shrub to the LOD mesh only reaches 35 FPS. **The LOD mesh
+isn't cheap enough** — `simplify_for_lod()` (`plant_gen/config.rs:97`) only does
+`max_depth−1`, `branches≤2`, `density×0.4`, `stems≤3`, leaving the "cheap" mesh
+~80% as expensive as full detail. The LOD *system* works; the LOD *target* is too
+timid.
+
+### Combined
+
+Shrub 6 m + LOD@256 m → **65 FPS** (vs 30 baseline), i.e. the levers stack.
+
+---
+
+## What's actually implemented (audit, corrects the old table)
+
+| Optimization | Old doc said | Reality |
+|---|---|---|
+| Frustum culling | Done | ✅ Done — terrain/instanced/water passes |
+| Distance-based LOD | "—" / "Done (2-level)" (contradicted itself) | ✅ Done, 2-level @ 512 m — but cheap tier too timid (see above) |
+| Foliage blob cap | "—" | ✅ Done — `tree.rs:38`, cap 500 + O(n²) enclosure cull |
+| Shrub spacing | "—" (TODO) | Implemented at 4 m; **this is the lever to turn**, not a missing feature |
+| Simplified world meshes | "—" | ❌ Not done — editor and world share the same full-detail config |
+| Terrain LOD | "Done (2-level)" in table | ❌ Not done — **and not worth doing** (measured <2%) |
+| Billboards | "—" | ✅ Done for shrubs — crossed-quad billboards (avg FPS 30.9 → 100.0); see [SHRUB_BILLBOARD.md](SHRUB_BILLBOARD.md) |
+
+---
+
+## Recommended priority (re-derived from data)
+
+| # | Action | Where | Effort | Expected | Notes |
+|---|---|---|---|---|---|
+| **1** | **Increase shrub spacing 4 m → 6 m** | `flora.rs:57` | **Trivial** | **+86% FPS (30→57)** | Do this first. Pure visual-density tradeoff; one constant. |
+| 2 | Make the LOD shrub mesh genuinely cheap (aggressive `max_depth`/foliage cut) **and** pull LOD distance to ~256 m | `config.rs:97`, `instanced_pass.rs:19` | Low | Stacks to ~65 FPS with #1 | Current LOD mesh is barely cheaper than full. |
+| 3 | Distance-cull shrubs entirely past ~200–300 m (separate band for shrub species) | `instanced_pass.rs` | Low | High | Shrubs are invisible from altitude; preserves near-field look better than a uniform spacing increase. Alternative to / combine with #1. |
+| 4 | Cheaper *base* shrub mesh for world rendering (decouple from editor full-detail) | `plant_gen` + registry | Medium | High | Attacks per-instance cost instead of count; keeps density. |
+| ~~5~~ | ~~Billboards/impostors for distant shrubs~~ | new render path | Major | High at scale | ✅ **Done** — all shrubs now render as crossed-quad billboards (avg FPS 30.9 → 100.0, the vegetation-off ceiling). This superseded #1–#4: shrub vertex throughput is no longer the bottleneck. See [SHRUB_BILLBOARD.md](SHRUB_BILLBOARD.md). |
+| ~~—~~ | ~~Terrain LOD~~ | — | — | **~0** | Measured <2% of frame. Do not pursue. |
+| ~~—~~ | ~~Water optimization~~ | — | — | **~0** | Measured <1% of frame. Do not pursue. |
+
+### Bottom line
+
+**Resolved by #5 (shrub billboards).** Routing all shrubs to crossed-quad
+billboards took avg FPS 30.9 → 100.0 (the vegetation-off ceiling) and moved the
+renderer off being GPU-bound — so #1–#4 (shrub spacing / cheaper LOD / distance
+cull / cheaper base mesh) are no longer needed to attack shrub cost. The next
+bottleneck is elsewhere; re-run `bun tools/bench.ts` and re-attribute with the
+gating method above (temporary env vars on the passes / parameters) before
+chasing further wins.

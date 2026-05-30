@@ -33,6 +33,8 @@ use std::time::Instant;
 use web_time::Instant;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod benchmark;
+#[cfg(not(target_arch = "wasm32"))]
 mod debug_commands;
 mod event_loop;
 pub(crate) mod plant_editor;
@@ -112,6 +114,12 @@ pub struct AppState {
     thumbnail_renderer: Option<ThumbnailRenderer>,
     blur_pass: BlurPass,
     blur_capture_pending: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    benchmark: Option<benchmark::Benchmark>,
+    /// CPU duration (ms) of the most recent `update()`, recorded by the event
+    /// loop so `render()` can attribute total CPU-active time for benchmark mode.
+    #[cfg(not(target_arch = "wasm32"))]
+    update_cpu_ms: f32,
 }
 
 impl AppState {
@@ -120,12 +128,13 @@ impl AppState {
         window: &'static Window,
         debug_api_config: DebugApiConfig,
         _cursor_captured: bool,
+        benchmark_path: Option<std::path::PathBuf>,
     ) -> Result<Self> {
         let storage = create_storage();
         let config = GameConfig::load(&*storage);
         let save = SaveData::load(&*storage);
 
-        let gpu = GpuContext::new(window).await?;
+        let mut gpu = GpuContext::new(window).await?;
 
         let herbarium = Herbarium::load(&*storage);
         let registry = crate::world_core::herbarium::PlantRegistry::from_herbarium(&herbarium);
@@ -143,6 +152,16 @@ impl AppState {
         // Menu camera — fixed position looking at the sky
         let camera = FlyCamera::new(Vec3::new(96.0, 150.0, 16.0));
         let camera_controller = CameraController::new(180.0, 0.0022);
+
+        // Benchmark mode: load the scripted flythrough and switch the surface to a
+        // non-vsync present mode so we measure true render throughput, not refresh rate.
+        let benchmark = match &benchmark_path {
+            Some(path) => {
+                gpu.enable_no_vsync();
+                Some(benchmark::Benchmark::load(path)?)
+            }
+            None => None,
+        };
 
         // World is deferred until the player clicks Start/Resume
         let save_exists = save.is_some();
@@ -166,7 +185,7 @@ impl AppState {
             gpu.config.height,
         );
 
-        Ok(Self {
+        let mut app = Self {
             window,
             gpu,
             world_renderer,
@@ -183,6 +202,8 @@ impl AppState {
             frame_index: 0,
             screenshot_pending: None,
             asset_watcher,
+            benchmark,
+            update_cpu_ms: 0.0,
             egui_bridge,
             egui_pass,
             config_panel,
@@ -203,7 +224,15 @@ impl AppState {
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
-        })
+        };
+
+        // In benchmark mode, skip the menu and start loading the world immediately.
+        #[cfg(not(target_arch = "wasm32"))]
+        if app.benchmark.is_some() {
+            app.begin_loading(false);
+        }
+
+        Ok(app)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -637,7 +666,13 @@ impl AppState {
             }
             LoadingPhase::Done => {
                 self.screen = Screen::Playing;
-                self.capture_cursor();
+                #[cfg(not(target_arch = "wasm32"))]
+                let skip_capture = self.benchmark.is_some();
+                #[cfg(target_arch = "wasm32")]
+                let skip_capture = false;
+                if !skip_capture {
+                    self.capture_cursor();
+                }
                 self.loading_state = None;
             }
         }
@@ -655,6 +690,14 @@ impl AppState {
             self.gpu.config.width,
             self.gpu.config.height,
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn benchmark_finished(&self) -> bool {
+        self.benchmark
+            .as_ref()
+            .map(|b| b.is_finished())
+            .unwrap_or(false)
     }
 
     fn update(&mut self) {
@@ -699,8 +742,23 @@ impl AppState {
             }
         }
 
+        // In benchmark mode, drive the camera from the script on a fixed timestep
+        // so the simulated workload is identical across runs; the real wall-clock
+        // `dt` is what we record. Otherwise sim_dt == dt and behavior is unchanged.
+        #[cfg(not(target_arch = "wasm32"))]
+        let sim_dt = if let Some(mut bench) = self.benchmark.take() {
+            bench.tick(dt * 1000.0, &mut self.camera, &mut self.camera_controller);
+            let fixed = bench.fixed_dt();
+            self.benchmark = Some(bench);
+            fixed
+        } else {
+            dt
+        };
+        #[cfg(target_arch = "wasm32")]
+        let sim_dt = dt;
+
         self.camera_controller.update_camera(
-            dt,
+            sim_dt,
             &mut self.camera,
             self.focused && self.cursor_captured,
         );
@@ -709,7 +767,7 @@ impl AppState {
 
         clamp_camera_to_terrain(&mut self.camera, world.chunks());
 
-        world.update(dt, self.camera.position);
+        world.update(sim_dt, self.camera.position);
         self.world_renderer
             .sync_chunks(&self.gpu.device, &self.gpu.queue, world.chunks());
 
@@ -744,7 +802,7 @@ impl AppState {
         self.world_renderer.update_minimap(
             &self.gpu.queue,
             &self.gpu.device,
-            dt,
+            sim_dt,
             self.camera.position,
             self.camera.yaw,
             self.camera.fov_y_radians,
@@ -1066,7 +1124,14 @@ impl AppState {
     }
 
     fn render(&mut self) -> Result<(), SurfaceError> {
+        // Benchmark timing: the acquire call blocks while the GPU catches up, so
+        // its duration is the per-frame GPU-bound wait; the span from here to
+        // submit is the render-thread CPU cost.
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_acquire = Instant::now();
         let output = self.gpu.surface.get_current_texture()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (gpu_wait_ms, t_encode) = (t_acquire.elapsed().as_secs_f32() * 1000.0, Instant::now());
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.gpu.render_format),
             ..Default::default()
@@ -1262,6 +1327,16 @@ impl AppState {
         }
 
         self.gpu.queue.submit(Some(encoder.finish()));
+
+        // Record the frame's GPU-wait and CPU-active times (CPU = update + encode).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cpu_ms = self.update_cpu_ms + t_encode.elapsed().as_secs_f32() * 1000.0;
+            if let Some(bench) = &mut self.benchmark {
+                bench.record_frame_timing(gpu_wait_ms, cpu_ms);
+            }
+        }
+
         output.present();
         Ok(())
     }

@@ -9,6 +9,9 @@ pub struct GpuContext {
     pub config: wgpu::SurfaceConfiguration,
     pub render_format: wgpu::TextureFormat,
     pub size: PhysicalSize<u32>,
+    /// Best available non-vsync present mode, used by benchmark mode to measure
+    /// true render throughput instead of being capped at the refresh rate.
+    no_vsync_present_mode: wgpu::PresentMode,
 }
 
 impl GpuContext {
@@ -106,6 +109,22 @@ impl GpuContext {
             capabilities.present_modes[0]
         };
 
+        // Prefer an uncapped present mode for benchmarking. Immediate has no
+        // sync at all; Mailbox is the next best (triple-buffered, uncapped).
+        let no_vsync_present_mode = if capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::Immediate)
+        {
+            wgpu::PresentMode::Immediate
+        } else if capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::Mailbox)
+        {
+            wgpu::PresentMode::Mailbox
+        } else {
+            present_mode
+        };
+
         let config = wgpu::SurfaceConfiguration {
             usage: if cfg!(target_arch = "wasm32") {
                 wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -129,7 +148,17 @@ impl GpuContext {
             config,
             render_format,
             size,
+            no_vsync_present_mode,
         })
+    }
+
+    /// Switches the surface to the best uncapped present mode (benchmark mode).
+    pub fn enable_no_vsync(&mut self) {
+        if self.config.present_mode != self.no_vsync_present_mode {
+            self.config.present_mode = self.no_vsync_present_mode;
+            self.surface.configure(&self.device, &self.config);
+        }
+        log::info!("benchmark present mode: {:?}", self.config.present_mode);
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {

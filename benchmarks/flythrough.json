@@ -1,0 +1,14 @@
+{
+  "name": "default-flythrough",
+  "fixed_dt": 0.0166667,
+  "warmup_frames": 90,
+  "start": { "x": 158.0, "y": 85.0, "z": -51.0, "yaw": 4.0, "pitch": -0.2 },
+  "segments": [
+    { "keys": ["w"], "frames": 300 },
+    { "keys": ["w"], "yaw_rate": 0.5, "frames": 180 },
+    { "keys": ["w", "d"], "frames": 240 },
+    { "keys": ["w"], "yaw_rate": -0.5, "frames": 180 },
+    { "keys": ["s"], "frames": 240 },
+    { "keys": [], "frames": 60 }
+  ]
+}

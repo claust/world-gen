@@ -91,7 +91,11 @@
         "min_altitude": 0.0,
         "max_altitude": 120.0,
         "near_water_boost": 0.0,
-        "max_slope": 1.0
+        "max_slope": 1.0,
+        "spread_radius": 25.0,
+        "spread_chance": 0.3,
+        "seedling_hours": 48.0,
+        "young_hours": 96.0
       }
     },
     {
@@ -184,7 +188,11 @@
         "min_altitude": 0.0,
         "max_altitude": 120.0,
         "near_water_boost": 0.0,
-        "max_slope": 1.0
+        "max_slope": 1.0,
+        "spread_radius": 25.0,
+        "spread_chance": 0.3,
+        "seedling_hours": 48.0,
+        "young_hours": 96.0
       }
     },
     {
@@ -278,7 +286,11 @@
         "min_altitude": 0.0,
         "max_altitude": 100.0,
         "near_water_boost": 0.0,
-        "max_slope": 1.0
+        "max_slope": 1.0,
+        "spread_radius": 25.0,
+        "spread_chance": 0.3,
+        "seedling_hours": 48.0,
+        "young_hours": 96.0
       }
     },
     {
@@ -372,7 +384,11 @@
         "min_altitude": 0.0,
         "max_altitude": 60.0,
         "near_water_boost": 0.5,
-        "max_slope": 1.0
+        "max_slope": 1.0,
+        "spread_radius": 25.0,
+        "spread_chance": 0.3,
+        "seedling_hours": 48.0,
+        "young_hours": 96.0
       }
     },
     {
@@ -466,7 +482,11 @@
         "min_altitude": 0.0,
         "max_altitude": 120.0,
         "near_water_boost": 0.0,
-        "max_slope": 0.8
+        "max_slope": 0.8,
+        "spread_radius": 25.0,
+        "spread_chance": 0.3,
+        "seedling_hours": 48.0,
+        "young_hours": 96.0
       }
     },
     {
@@ -559,7 +579,11 @@
         "min_altitude": 60.0,
         "max_altitude": 160.0,
         "near_water_boost": 0.0,
-        "max_slope": 1.0
+        "max_slope": 1.0,
+        "spread_radius": 25.0,
+        "spread_chance": 0.3,
+        "seedling_hours": 48.0,
+        "young_hours": 96.0
       }
     },
     {
@@ -653,7 +677,11 @@
         "min_altitude": 0.0,
         "max_altitude": 80.0,
         "near_water_boost": 0.7,
-        "max_slope": 1.0
+        "max_slope": 1.0,
+        "spread_radius": 25.0,
+        "spread_chance": 0.3,
+        "seedling_hours": 48.0,
+        "young_hours": 96.0
       }
     }
   ]

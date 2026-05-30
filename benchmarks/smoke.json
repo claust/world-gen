@@ -1,0 +1,10 @@
+{
+  "name": "smoke-test",
+  "fixed_dt": 0.0166667,
+  "warmup_frames": 30,
+  "start": { "x": 158.0, "y": 85.0, "z": -51.0, "yaw": 4.0, "pitch": -0.2 },
+  "segments": [
+    { "keys": ["w"], "frames": 120 },
+    { "keys": ["w"], "yaw_rate": 0.5, "frames": 60 }
+  ]
+}
