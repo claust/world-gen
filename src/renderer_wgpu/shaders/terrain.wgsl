@@ -67,7 +67,10 @@ fn sample_biome(biome_id: f32, world_pos: vec3<f32>) -> vec3<f32> {
 fn hemisphere_tint(c: vec3<f32>) -> vec3<f32> {
     let m = max(max(c.r, c.g), max(c.b, 1e-3));
     let hue = c / m;
-    return mix(vec3<f32>(1.0), hue, 0.6);
+    // Scale tint strength by source brightness so very dark but saturated
+    // night-sky colors stay near-neutral instead of casting a strong blue tint.
+    let strength = 0.6 * clamp(m, 0.0, 1.0);
+    return mix(vec3<f32>(1.0), hue, strength);
 }
 
 // Hemisphere (sky/ground) ambient: up-facing surfaces pick up the zenith sky
