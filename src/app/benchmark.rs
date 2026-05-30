@@ -97,6 +97,28 @@ fn default_name() -> String {
 
 // --- Report (output) --------------------------------------------------------
 
+/// CPU-vs-GPU bound breakdown, derived from CPU-side timers (works on every
+/// backend, including Apple Metal where GPU timestamp queries do not bracket
+/// fragment work). `null` in the JSON when no samples were collected.
+///
+/// Per frame we measure:
+/// - `gpu_wait_ms`: time the CPU blocks acquiring the next swapchain image, i.e.
+///   waiting for the GPU to finish earlier frames. When GPU-bound this closely
+///   tracks the GPU's per-frame time.
+/// - `cpu_ms`: CPU-active work for the frame (simulation/streaming in `update`
+///   plus command encoding in `render`), excluding the GPU wait.
+#[derive(Debug, Clone, Serialize)]
+pub struct BoundTimings {
+    pub samples: usize,
+    pub mean_gpu_wait_ms: f64,
+    pub p95_gpu_wait_ms: f64,
+    pub mean_cpu_ms: f64,
+    pub p95_cpu_ms: f64,
+    /// `mean_gpu_wait / (mean_gpu_wait + mean_cpu)`. ~1.0 ⇒ GPU-bound (CPU idle,
+    /// waiting on the GPU); near 0 ⇒ CPU-bound.
+    pub gpu_bound_ratio: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkReport {
     pub name: String,
@@ -111,10 +133,37 @@ pub struct BenchmarkReport {
     pub p50_frame_ms: f64,
     pub p95_frame_ms: f64,
     pub p99_frame_ms: f64,
+    /// CPU-vs-GPU bound breakdown, or `null` when no samples were collected.
+    pub bound: Option<BoundTimings>,
 }
 
-/// Computes summary statistics from per-frame durations (milliseconds).
-fn summarize(name: &str, fixed_dt: f32, warmup_frames: u32, samples: &[f32]) -> BenchmarkReport {
+/// Mean and p50/p95/p99 percentiles of a millisecond sample set. Returns zeros
+/// for an empty set. `percentile` indexes into the ascending-sorted samples.
+fn ms_stats(samples: &[f32]) -> (f64, f64, f64, f64) {
+    if samples.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let mut sorted: Vec<f64> = samples.iter().map(|&ms| ms as f64).collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    let mean = sorted.iter().sum::<f64>() / n as f64;
+    let percentile = |p: f64| -> f64 {
+        let idx = ((p / 100.0) * (n as f64 - 1.0)).round() as usize;
+        sorted[idx.min(n - 1)]
+    };
+    (mean, percentile(50.0), percentile(95.0), percentile(99.0))
+}
+
+/// Computes summary statistics from per-frame CPU durations (milliseconds) and,
+/// when available, the CPU-vs-GPU bound breakdown.
+fn summarize(
+    name: &str,
+    fixed_dt: f32,
+    warmup_frames: u32,
+    samples: &[f32],
+    gpu_wait_samples: &[f32],
+    cpu_samples: &[f32],
+) -> BenchmarkReport {
     if samples.is_empty() {
         return BenchmarkReport {
             name: name.to_string(),
@@ -129,6 +178,7 @@ fn summarize(name: &str, fixed_dt: f32, warmup_frames: u32, samples: &[f32]) -> 
             p50_frame_ms: 0.0,
             p95_frame_ms: 0.0,
             p99_frame_ms: 0.0,
+            bound: None,
         };
     }
 
@@ -152,6 +202,27 @@ fn summarize(name: &str, fixed_dt: f32, warmup_frames: u32, samples: &[f32]) -> 
 
     let fps = |ms: f64| if ms > 0.0 { 1000.0 / ms } else { 0.0 };
 
+    // Bound breakdown is optional: present only when frame timings were recorded.
+    let bound = if gpu_wait_samples.is_empty() {
+        None
+    } else {
+        let (gpu_wait_mean, _, gpu_wait_p95, _) = ms_stats(gpu_wait_samples);
+        let (cpu_mean, _, cpu_p95, _) = ms_stats(cpu_samples);
+        let denom = gpu_wait_mean + cpu_mean;
+        Some(BoundTimings {
+            samples: gpu_wait_samples.len(),
+            mean_gpu_wait_ms: gpu_wait_mean,
+            p95_gpu_wait_ms: gpu_wait_p95,
+            mean_cpu_ms: cpu_mean,
+            p95_cpu_ms: cpu_p95,
+            gpu_bound_ratio: if denom > 0.0 {
+                gpu_wait_mean / denom
+            } else {
+                0.0
+            },
+        })
+    };
+
     BenchmarkReport {
         name: name.to_string(),
         fixed_dt,
@@ -165,6 +236,7 @@ fn summarize(name: &str, fixed_dt: f32, warmup_frames: u32, samples: &[f32]) -> 
         p50_frame_ms: percentile(50.0),
         p95_frame_ms: percentile(95.0),
         p99_frame_ms: percentile(99.0),
+        bound,
     }
 }
 
@@ -190,6 +262,10 @@ pub struct Benchmark {
     script: BenchmarkScript,
     phase: Phase,
     samples: Vec<f32>,
+    /// Per-frame GPU-wait (swapchain acquire stall) durations, ms, while Running.
+    gpu_wait_samples: Vec<f32>,
+    /// Per-frame CPU-active durations, ms, while Running.
+    cpu_samples: Vec<f32>,
     output_path: PathBuf,
 }
 
@@ -217,6 +293,8 @@ impl Benchmark {
             script,
             phase: Phase::WaitWorld,
             samples: Vec::new(),
+            gpu_wait_samples: Vec::new(),
+            cpu_samples: Vec::new(),
             output_path,
         })
     }
@@ -227,6 +305,16 @@ impl Benchmark {
 
     pub fn is_finished(&self) -> bool {
         self.phase == Phase::Done
+    }
+
+    /// Records a frame's GPU-wait (swapchain acquire stall) and CPU-active
+    /// durations (ms). Only retained while actively recording, so warmup/load-time
+    /// work is excluded — matching the CPU frame samples.
+    pub fn record_frame_timing(&mut self, gpu_wait_ms: f32, cpu_ms: f32) {
+        if matches!(self.phase, Phase::Running { .. }) {
+            self.gpu_wait_samples.push(gpu_wait_ms);
+            self.cpu_samples.push(cpu_ms);
+        }
     }
 
     /// Picks the phase that follows warmup: the first non-empty segment, or Done.
@@ -352,6 +440,8 @@ impl Benchmark {
             self.script.fixed_dt,
             self.script.warmup_frames,
             &self.samples,
+            &self.gpu_wait_samples,
+            &self.cpu_samples,
         );
 
         if let Some(parent) = self.output_path.parent() {
@@ -376,8 +466,7 @@ impl Benchmark {
              1% low FPS       : {:.1}\n\
              min / max FPS    : {:.1} / {:.1}\n\
              mean frame time  : {:.3} ms\n\
-             p50 / p95 / p99  : {:.3} / {:.3} / {:.3} ms\n\
-             ======================\n",
+             p50 / p95 / p99  : {:.3} / {:.3} / {:.3} ms",
             report.name,
             report.frames,
             report.avg_fps,
@@ -389,6 +478,23 @@ impl Benchmark {
             report.p95_frame_ms,
             report.p99_frame_ms,
         );
+        match &report.bound {
+            Some(b) => println!(
+                "GPU wait (mean)  : {:.3} ms (p95 {:.3})\n\
+                 CPU work (mean)  : {:.3} ms (p95 {:.3})\n\
+                 GPU-bound ratio  : {:.3}\n\
+                 ======================\n",
+                b.mean_gpu_wait_ms,
+                b.p95_gpu_wait_ms,
+                b.mean_cpu_ms,
+                b.p95_cpu_ms,
+                b.gpu_bound_ratio,
+            ),
+            None => println!(
+                "bound breakdown  : unavailable (no samples)\n\
+                 ======================\n"
+            ),
+        }
     }
 }
 
@@ -406,15 +512,16 @@ mod tests {
 
     #[test]
     fn summarize_empty_is_zeroed() {
-        let r = summarize("x", 0.016, 10, &[]);
+        let r = summarize("x", 0.016, 10, &[], &[], &[]);
         assert_eq!(r.frames, 0);
         assert_eq!(r.avg_fps, 0.0);
+        assert!(r.bound.is_none());
     }
 
     #[test]
     fn summarize_constant_16ms_is_about_60fps() {
         let samples = vec![16.0_f32; 200];
-        let r = summarize("x", 0.016, 0, &samples);
+        let r = summarize("x", 0.016, 0, &samples, &[], &[]);
         assert_eq!(r.frames, 200);
         assert!((r.avg_fps - 62.5).abs() < 0.01);
         assert!((r.min_fps - 62.5).abs() < 0.01);
@@ -427,10 +534,52 @@ mod tests {
         // 99 fast frames (10ms) and 1 slow frame (100ms): 1% low = the slow one.
         let mut samples = vec![10.0_f32; 99];
         samples.push(100.0);
-        let r = summarize("x", 0.016, 0, &samples);
+        let r = summarize("x", 0.016, 0, &samples, &[], &[]);
         assert!(r.avg_fps > r.one_percent_low_fps);
         assert!((r.one_percent_low_fps - 10.0).abs() < 0.5); // 1000/100 = 10 fps
         assert!((r.min_fps - 10.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn bound_timings_present_with_samples() {
+        // 45ms GPU wait, 5ms CPU → gpu_bound_ratio = 45/50 = 0.9.
+        let frame = vec![50.0_f32; 100];
+        let gpu_wait = vec![45.0_f32; 100];
+        let cpu = vec![5.0_f32; 100];
+        let r = summarize("x", 0.016, 0, &frame, &gpu_wait, &cpu);
+        let b = r.bound.expect("bound timings should be present");
+        assert_eq!(b.samples, 100);
+        assert!((b.mean_gpu_wait_ms - 45.0).abs() < 0.01);
+        assert!((b.mean_cpu_ms - 5.0).abs() < 0.01);
+        assert!((b.gpu_bound_ratio - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn record_frame_timing_only_while_running() {
+        let raw = r#"{
+            "start": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "segments": [{"keys": ["w"], "frames": 5}]
+        }"#;
+        let script: BenchmarkScript = serde_json::from_str(raw).unwrap();
+        let mut bench = Benchmark {
+            script,
+            phase: Phase::Warmup { remaining: 3 },
+            samples: Vec::new(),
+            gpu_wait_samples: Vec::new(),
+            cpu_samples: Vec::new(),
+            output_path: PathBuf::from("/dev/null"),
+        };
+        // Ignored during warmup.
+        bench.record_frame_timing(45.0, 5.0);
+        assert!(bench.gpu_wait_samples.is_empty());
+        // Retained while running.
+        bench.phase = Phase::Running {
+            segment: 0,
+            remaining: 5,
+        };
+        bench.record_frame_timing(45.0, 5.0);
+        assert_eq!(bench.gpu_wait_samples.len(), 1);
+        assert_eq!(bench.cpu_samples.len(), 1);
     }
 
     #[test]

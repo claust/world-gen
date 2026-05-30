@@ -136,7 +136,13 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     }
                     WindowEvent::Resized(size) => app.resize(size),
                     WindowEvent::RedrawRequested => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let t_update = std::time::Instant::now();
                         app.update();
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            app.update_cpu_ms = t_update.elapsed().as_secs_f32() * 1000.0;
+                        }
                         match app.render() {
                             Ok(()) => {}
                             Err(SurfaceError::Lost) => app.resize(app.gpu.size),

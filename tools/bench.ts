@@ -69,6 +69,21 @@ console.log(
   `frame ms (mean/p95/p99) : ${report.mean_frame_ms.toFixed(2)} / ${report.p95_frame_ms.toFixed(2)} / ${report.p99_frame_ms.toFixed(2)}`,
 );
 
+if (report.bound) {
+  const b = report.bound;
+  console.log(
+    `GPU wait ms (mean/p95)  : ${b.mean_gpu_wait_ms.toFixed(2)} / ${b.p95_gpu_wait_ms.toFixed(2)}`,
+  );
+  console.log(
+    `CPU work ms (mean/p95)  : ${b.mean_cpu_ms.toFixed(2)} / ${b.p95_cpu_ms.toFixed(2)}`,
+  );
+  console.log(
+    `GPU-bound ratio         : ${b.gpu_bound_ratio.toFixed(3)} (${b.gpu_bound_ratio >= 0.6 ? "GPU-bound" : "CPU-bound"})`,
+  );
+} else {
+  console.log("bound breakdown         : unavailable (no samples)");
+}
+
 let exitCode = 0;
 
 if (existsSync(baselinePath) && !saveBaseline) {
