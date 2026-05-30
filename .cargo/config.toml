@@ -1,5 +1,6 @@
 [target.wasm32-unknown-unknown]
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 
-[target.x86_64-pc-windows-msvc]
-linker = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\link.exe"
+# NOTE: do not hardcode a Windows MSVC `linker` here. rustc autodetects the
+# correct link.exe from the local VS install; an absolute path is machine-
+# specific and breaks every other box (it broke CI — see native-build.yml).

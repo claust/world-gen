@@ -27,10 +27,10 @@ jobs:
             target: aarch64-apple-darwin
             artifact: floraforge-macos-aarch64
           - name: Windows
-            # Pinned to windows-2022 (last known-good MSVC image). windows-latest
-            # is mid-migration to windows-2025-vs2026, where rustc's MSVC linker
-            # autodetection resolves a VS toolset version whose link.exe is
-            # absent, breaking every msvc-target build before any crate compiles.
+            # Pinned to windows-2022 for a deterministic MSVC toolchain (avoids
+            # the in-flight windows-latest -> windows-2025 image migration). NB:
+            # the linker break that motivated this gate was actually a hardcoded
+            # absolute link.exe path in .cargo/config.toml, not the image.
             os: windows-2022
             target: x86_64-pc-windows-msvc
             artifact: floraforge-windows-x86_64
