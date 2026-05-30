@@ -5,6 +5,6 @@ mod types;
 pub use config::DebugApiConfig;
 pub use server::{start_debug_api, DebugApiHandle};
 pub use types::{
-    CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind, MoveKey, ObjectKind,
-    PressableKey, TelemetrySnapshot,
+    CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind, LifecycleSnapshot, MoveKey,
+    ObjectKind, PressableKey, RendererSnapshot, TelemetrySnapshot,
 };

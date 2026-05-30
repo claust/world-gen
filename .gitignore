@@ -20,3 +20,4 @@ thumbnails/
 /pkg/
 /web/pkg
 save.json
+deltas.json

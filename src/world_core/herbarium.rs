@@ -14,6 +14,50 @@ pub struct PlacementConfig {
     pub max_altitude: f32,
     pub near_water_boost: f32,
     pub max_slope: f32,
+    pub spread_radius: f32,
+    pub spread_chance: f32,
+    pub seedling_hours: f32,
+    pub young_hours: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Herbarium, PlacementConfig};
+
+    #[test]
+    fn placement_config_deserializes_missing_lifecycle_fields_with_defaults() {
+        let config: PlacementConfig = serde_json::from_str(
+            r#"{
+                "biomes": ["Forest"],
+                "weight": 1.0,
+                "min_moisture": 0.2,
+                "max_moisture": 0.9,
+                "min_altitude": 0.0,
+                "max_altitude": 100.0,
+                "near_water_boost": 0.1,
+                "max_slope": 0.5
+            }"#,
+        )
+        .expect("placement config should deserialize");
+
+        assert_eq!(config.spread_radius, 25.0);
+        assert_eq!(config.spread_chance, 0.3);
+        assert_eq!(config.seedling_hours, 48.0);
+        assert_eq!(config.young_hours, 96.0);
+    }
+
+    #[test]
+    fn default_seeded_herbarium_sets_lifecycle_defaults_for_all_species() {
+        let herbarium = Herbarium::default_seeded();
+        assert!(!herbarium.plants.is_empty());
+
+        for entry in herbarium.plants {
+            assert_eq!(entry.placement.spread_radius, 25.0);
+            assert_eq!(entry.placement.spread_chance, 0.3);
+            assert_eq!(entry.placement.seedling_hours, 48.0);
+            assert_eq!(entry.placement.young_hours, 96.0);
+        }
+    }
 }
 
 impl Default for PlacementConfig {
@@ -27,6 +71,10 @@ impl Default for PlacementConfig {
             max_altitude: 200.0,
             near_water_boost: 0.0,
             max_slope: 1.0,
+            spread_radius: 25.0,
+            spread_chance: 0.3,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
         }
     }
 }
@@ -133,6 +181,10 @@ fn default_placement(name: &str) -> PlacementConfig {
             max_altitude: 120.0,
             near_water_boost: 0.0,
             max_slope: 1.0,
+            spread_radius: 25.0,
+            spread_chance: 0.3,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
         },
         "Birch" => PlacementConfig {
             biomes: vec!["Forest".into()],
@@ -143,6 +195,10 @@ fn default_placement(name: &str) -> PlacementConfig {
             max_altitude: 120.0,
             near_water_boost: 0.0,
             max_slope: 1.0,
+            spread_radius: 25.0,
+            spread_chance: 0.3,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
         },
         "Acacia" => PlacementConfig {
             biomes: vec!["Desert".into(), "Grassland".into()],
@@ -153,6 +209,10 @@ fn default_placement(name: &str) -> PlacementConfig {
             max_altitude: 100.0,
             near_water_boost: 0.0,
             max_slope: 1.0,
+            spread_radius: 25.0,
+            spread_chance: 0.3,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
         },
         "Palm" => PlacementConfig {
             biomes: vec!["Grassland".into(), "Forest".into()],
@@ -163,6 +223,10 @@ fn default_placement(name: &str) -> PlacementConfig {
             max_altitude: 60.0,
             near_water_boost: 0.5,
             max_slope: 1.0,
+            spread_radius: 25.0,
+            spread_chance: 0.3,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
         },
         "Shrub" => PlacementConfig {
             biomes: vec!["Forest".into(), "Grassland".into()],
@@ -173,6 +237,10 @@ fn default_placement(name: &str) -> PlacementConfig {
             max_altitude: 120.0,
             near_water_boost: 0.0,
             max_slope: 0.8,
+            spread_radius: 25.0,
+            spread_chance: 0.3,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
         },
         "Spruce" => PlacementConfig {
             biomes: vec!["Forest".into()],
@@ -183,6 +251,10 @@ fn default_placement(name: &str) -> PlacementConfig {
             max_altitude: 160.0,
             near_water_boost: 0.0,
             max_slope: 1.0,
+            spread_radius: 25.0,
+            spread_chance: 0.3,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
         },
         "Willow" => PlacementConfig {
             biomes: vec!["Forest".into(), "Grassland".into()],
@@ -193,6 +265,10 @@ fn default_placement(name: &str) -> PlacementConfig {
             max_altitude: 80.0,
             near_water_boost: 0.7,
             max_slope: 1.0,
+            spread_radius: 25.0,
+            spread_chance: 0.3,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
         },
         _ => PlacementConfig::default(),
     }

@@ -216,6 +216,7 @@ impl HudPass {
         camera_pos: Vec3,
         camera_yaw: f32,
         hour: f32,
+        fps: f32,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -240,6 +241,7 @@ impl HudPass {
         let line_x = format!("X: {:.1}m", camera_pos.x);
         let line_y = format!("Y: {:.1}m", camera_pos.y);
         let line_z = format!("Z: {:.1}m", camera_pos.z);
+        let line_fps = format!("FPS: {:.0}", fps);
 
         hud_font::build_text_quads(&line_x, pad, pad, scale, text_color, &mut verts);
         hud_font::build_text_quads(&line_y, pad, pad + line_h, scale, text_color, &mut verts);
@@ -247,6 +249,14 @@ impl HudPass {
             &line_z,
             pad,
             pad + line_h * 2.0,
+            scale,
+            text_color,
+            &mut verts,
+        );
+        hud_font::build_text_quads(
+            &line_fps,
+            pad,
+            pad + line_h * 3.0,
             scale,
             text_color,
             &mut verts,

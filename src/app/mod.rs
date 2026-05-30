@@ -535,7 +535,13 @@ impl AppState {
                         ),
                     )
                 });
-                match WorldRuntime::new(&self.config, save_ref, threads, arc_registry) {
+                match WorldRuntime::new(
+                    &self.config,
+                    save_ref,
+                    threads,
+                    arc_registry,
+                    &*self.storage,
+                ) {
                     Ok(world) => {
                         self.world = Some(world);
                     }
@@ -731,6 +737,7 @@ impl AppState {
             self.camera.position,
             self.camera.yaw,
             stats.hour,
+            1000.0 / self.frame_time_ms.max(0.01),
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );
@@ -1265,6 +1272,9 @@ impl AppState {
         if let Err(e) = save.save(&*self.storage) {
             log::warn!("failed to save game state: {e}");
         }
+        if let Err(e) = world.save_deltas(&*self.storage) {
+            log::warn!("failed to save lifecycle deltas: {e}");
+        }
     }
 
     /// Save to storage and update the in-memory save (for mid-session resume).
@@ -1274,6 +1284,11 @@ impl AppState {
         match save.save(&*self.storage) {
             Ok(()) => {
                 self.save = Some(save);
+                if let Some(world) = &self.world {
+                    if let Err(e) = world.save_deltas(&*self.storage) {
+                        log::warn!("failed to save lifecycle deltas: {e}");
+                    }
+                }
             }
             Err(e) => {
                 log::warn!("failed to save game state: {e}");
@@ -1292,6 +1307,7 @@ impl AppState {
                 seed: world.seed(),
                 hour: world.hour(),
                 day_speed: world.day_speed(),
+                total_hours: world.total_hours(),
             },
         }
     }

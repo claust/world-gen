@@ -49,6 +49,7 @@ mod tests {
     use super::ChunkGenerator;
     use crate::world_core::config::GameConfig;
     use crate::world_core::herbarium::{Herbarium, PlantRegistry};
+    use crate::world_core::lifecycle::GrowthStage;
     use glam::IVec2;
     use std::sync::Arc;
 
@@ -61,11 +62,20 @@ mod tests {
         let a = ChunkGenerator::new(42, &config, reg_a).generate_chunk(IVec2::new(3, -2));
         let b = ChunkGenerator::new(42, &config, reg_b).generate_chunk(IVec2::new(3, -2));
 
-        assert_eq!(a.content.plants.len(), b.content.plants.len());
-        for (pa, pb) in a.content.plants.iter().zip(b.content.plants.iter()) {
+        assert_eq!(a.content.base_plants.len(), b.content.base_plants.len());
+        assert_eq!(a.content.base_plants.len(), a.content.plants.len());
+        assert_eq!(b.content.base_plants.len(), b.content.plants.len());
+        for (pa, pb) in a
+            .content
+            .base_plants
+            .iter()
+            .zip(b.content.base_plants.iter())
+        {
             assert!((pa.position - pb.position).length() < 1e-5);
             assert!((pa.height - pb.height).abs() < 1e-5);
             assert_eq!(pa.species_index, pb.species_index);
+            assert_eq!(pa.growth_stage, GrowthStage::Mature);
+            assert_eq!(pb.growth_stage, GrowthStage::Mature);
         }
     }
 }
