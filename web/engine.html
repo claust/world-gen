@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inside the Engine | FloraForge</title>
+    <meta
+        name="description"
+        content="A guided tour of the FloraForge engine: the frame loop, what update() and render() do, the screen state machine, and the three-layer architecture."
+    >
+    <meta property="og:title" content="Inside the FloraForge Engine">
+    <meta
+        property="og:description"
+        content="How the FloraForge engine works — the per-frame loop, simulation, rendering passes, and architecture."
+    >
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://floraforge.eu/engine.html">
+    <meta name="theme-color" content="#0a1f0a">
+    <link
+        rel="icon"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3Crect x='29' y='34' width='6' height='18' fill='%235c4033'/%3E%3C/svg%3E"
+    >
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet"
+    >
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --green-deep: #081a0c;
+            --green-dark: #132913;
+            --green-mid: #1e4d2b;
+            --green-bright: #3ecf6e;
+            --green-glow: #7cff9f;
+            --cream: #f0ede4;
+            --sand: #c7b99d;
+            --mist: rgba(240, 237, 228, 0.72);
+            --panel: rgba(18, 35, 20, 0.72);
+            --panel-strong: rgba(11, 24, 13, 0.92);
+            --line: rgba(62, 207, 110, 0.14);
+            --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+            --code: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+
+        html {
+            background: var(--green-deep);
+            color: var(--cream);
+            scroll-behavior: smooth;
+        }
+
+        body {
+            min-height: 100vh;
+            font-family: "DM Sans", sans-serif;
+            background:
+                radial-gradient(circle at top center, rgba(124, 255, 159, 0.16), transparent 38%),
+                linear-gradient(180deg, #09190b 0%, #0d1f0f 40%, #08150a 100%);
+            color: var(--cream);
+            overflow-x: hidden;
+            line-height: 1.6;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        a { color: inherit; text-decoration: none; }
+
+        .content { position: relative; z-index: 2; }
+
+        .wrap { width: min(1120px, 100%); margin: 0 auto; padding: 0 2rem; }
+
+        code {
+            font-family: var(--code);
+            font-size: 0.86em;
+            color: var(--green-glow);
+            background: rgba(62, 207, 110, 0.08);
+            border: 1px solid rgba(62, 207, 110, 0.14);
+            border-radius: 6px;
+            padding: 0.08em 0.4em;
+        }
+
+        h1, h2, h3 {
+            font-family: "Space Grotesk", sans-serif;
+            letter-spacing: -0.03em;
+        }
+
+        .accent { color: var(--green-bright); }
+
+        /* ---- top bar ---- */
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            padding: 1.8rem 0;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.9rem;
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+        }
+
+        .brand-mark {
+            width: 2.4rem;
+            height: 2.4rem;
+            border-radius: 999px;
+            background:
+                radial-gradient(circle at 35% 35%, rgba(124, 255, 159, 0.95), transparent 32%),
+                linear-gradient(180deg, #1f5f30, #0c2611);
+            box-shadow: inset 0 0 0 1px rgba(124, 255, 159, 0.22), 0 0 22px rgba(62, 207, 110, 0.18);
+            position: relative;
+        }
+
+        .brand-mark::before,
+        .brand-mark::after {
+            content: "";
+            position: absolute;
+            background: rgba(240, 237, 228, 0.9);
+            border-radius: 999px;
+        }
+
+        .brand-mark::before { width: 0.2rem; height: 1.05rem; left: 1.1rem; top: 0.85rem; }
+        .brand-mark::after { width: 0.85rem; height: 0.36rem; left: 0.78rem; top: 1.22rem; transform: rotate(-24deg); }
+
+        .top-links {
+            display: flex;
+            gap: 1.4rem;
+            flex-wrap: wrap;
+            font-size: 0.95rem;
+            color: var(--mist);
+        }
+
+        .top-links a {
+            border-bottom: 1px solid transparent;
+            transition: color 180ms ease, border-color 180ms ease;
+        }
+
+        .top-links a:hover { color: var(--green-glow); border-color: rgba(124, 255, 159, 0.4); }
+
+        /* ---- hero ---- */
+        .hero { padding: 3rem 0 1rem; }
+
+        .eyebrow {
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 0.8rem;
+            font-weight: 500;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: var(--green-bright);
+            opacity: 0.84;
+        }
+
+        .hero h1 {
+            font-size: clamp(2.6rem, 6vw, 4.4rem);
+            line-height: 0.98;
+            margin: 1.2rem 0 1.4rem;
+        }
+
+        .hero p {
+            max-width: 680px;
+            color: var(--sand);
+            font-size: clamp(1.04rem, 2.2vw, 1.24rem);
+        }
+
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-top: 1.8rem;
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 0.82rem;
+            color: var(--mist);
+        }
+
+        .hero-meta span {
+            padding: 0.55rem 0.8rem;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(62, 207, 110, 0.12);
+        }
+
+        /* ---- sections ---- */
+        section.block { padding: 4rem 0; }
+
+        .section-label {
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 0.8rem;
+            font-weight: 500;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: var(--green-bright);
+            opacity: 0.84;
+        }
+
+        h2 {
+            font-size: clamp(1.8rem, 3.6vw, 2.8rem);
+            line-height: 1.1;
+            margin: 0.9rem 0 1.2rem;
+        }
+
+        .lead { color: var(--sand); max-width: 760px; font-size: 1.05rem; }
+
+        /* ---- loop diagram ---- */
+        .diagram-card {
+            margin-top: 2.5rem;
+            padding: 2rem;
+            border-radius: 24px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow);
+        }
+
+        .loop-svg { width: 100%; height: auto; display: block; }
+        .loop-svg text { font-family: "Space Grotesk", sans-serif; }
+
+        .diagram-caption {
+            margin-top: 1.4rem;
+            color: var(--mist);
+            font-size: 0.92rem;
+            text-align: center;
+        }
+
+        .legend {
+            display: flex;
+            gap: 1.6rem;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-top: 1.2rem;
+            font-size: 0.85rem;
+            color: var(--mist);
+        }
+
+        .legend span { display: inline-flex; align-items: center; gap: 0.5rem; }
+
+        .swatch { width: 0.85rem; height: 0.85rem; border-radius: 4px; display: inline-block; }
+
+        /* ---- two-column phase breakdown ---- */
+        .phases {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin-top: 2.5rem;
+        }
+
+        .phase {
+            border-radius: 20px;
+            padding: 1.8rem;
+            background: rgba(30, 77, 43, 0.14);
+            border: 1px solid rgba(62, 207, 110, 0.12);
+        }
+
+        .phase.cpu { border-top: 3px solid var(--green-bright); }
+        .phase.gpu { border-top: 3px solid #f6c591; }
+
+        .phase h3 {
+            font-size: 1.2rem;
+            margin-bottom: 0.3rem;
+            display: flex;
+            align-items: baseline;
+            gap: 0.6rem;
+        }
+
+        .phase h3 code { font-size: 0.7em; }
+
+        .phase .sub { color: var(--mist); font-size: 0.9rem; margin-bottom: 1.3rem; }
+
+        ol.steps { list-style: none; counter-reset: step; }
+
+        ol.steps li {
+            counter-increment: step;
+            position: relative;
+            padding: 0.7rem 0 0.7rem 2.6rem;
+            border-top: 1px solid var(--line);
+        }
+
+        ol.steps li:first-child { border-top: 0; }
+
+        ol.steps li::before {
+            content: counter(step);
+            position: absolute;
+            left: 0;
+            top: 0.7rem;
+            width: 1.7rem;
+            height: 1.7rem;
+            display: grid;
+            place-items: center;
+            border-radius: 8px;
+            font-family: var(--code);
+            font-size: 0.8rem;
+            color: var(--green-deep);
+            background: linear-gradient(135deg, var(--green-bright), var(--green-glow));
+        }
+
+        .phase.gpu ol.steps li::before {
+            background: linear-gradient(135deg, #f6c591, #f0a861);
+        }
+
+        ol.steps strong { color: var(--cream); font-weight: 600; }
+        ol.steps .note { display: block; color: var(--sand); font-size: 0.9rem; margin-top: 0.15rem; }
+
+        /* ---- render pass pipeline ---- */
+        .passes {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            margin-top: 1.4rem;
+            align-items: stretch;
+        }
+
+        .pass-chip {
+            flex: 1 1 120px;
+            padding: 0.9rem 1rem;
+            border-radius: 14px;
+            background: rgba(11, 24, 13, 0.6);
+            border: 1px solid rgba(246, 197, 145, 0.18);
+            position: relative;
+        }
+
+        .pass-chip b { font-family: "Space Grotesk", sans-serif; display: block; font-size: 0.98rem; }
+        .pass-chip small { color: var(--sand); font-size: 0.82rem; }
+
+        /* ---- state machine ---- */
+        .states {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+
+        .state-card {
+            padding: 1.4rem;
+            border-radius: 16px;
+            background: rgba(30, 77, 43, 0.14);
+            border: 1px solid var(--line);
+        }
+
+        .state-card h4 {
+            font-family: var(--code);
+            font-size: 0.95rem;
+            color: var(--green-bright);
+            margin-bottom: 0.5rem;
+        }
+
+        .state-card p { color: var(--sand); font-size: 0.9rem; }
+
+        .loading-flow {
+            margin-top: 2rem;
+            padding: 1.6rem;
+            border-radius: 18px;
+            background: rgba(11, 24, 13, 0.5);
+            border: 1px solid var(--line);
+        }
+
+        .loading-flow .pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.9rem;
+            font-family: var(--code);
+            font-size: 0.8rem;
+        }
+
+        .loading-flow .pills span {
+            padding: 0.4rem 0.7rem;
+            border-radius: 999px;
+            background: rgba(62, 207, 110, 0.08);
+            border: 1px solid rgba(62, 207, 110, 0.16);
+            color: var(--mist);
+        }
+
+        .loading-flow .pills span.done {
+            background: linear-gradient(135deg, rgba(62, 207, 110, 0.3), rgba(124, 255, 159, 0.18));
+            color: var(--cream);
+        }
+
+        /* ---- architecture layers ---- */
+        .layers { display: flex; flex-direction: column; gap: 1rem; margin-top: 2rem; }
+
+        .layer {
+            padding: 1.6rem 1.8rem;
+            border-radius: 18px;
+            border: 1px solid var(--line);
+            background: rgba(30, 77, 43, 0.14);
+            display: grid;
+            grid-template-columns: minmax(0, 220px) 1fr;
+            gap: 1.5rem;
+            align-items: center;
+        }
+
+        .layer .tag {
+            font-family: var(--code);
+            color: var(--green-bright);
+            font-size: 0.95rem;
+        }
+
+        .layer .tag small { display: block; color: var(--mist); font-family: "DM Sans", sans-serif; font-size: 0.82rem; margin-top: 0.3rem; }
+        .layer p { color: var(--sand); font-size: 0.95rem; }
+
+        .layer.runtime { border-left: 3px solid var(--green-bright); }
+        .layer.core { border-left: 3px solid var(--green-glow); }
+        .layer.render { border-left: 3px solid #f6c591; }
+
+        /* ---- callout ---- */
+        .callout {
+            margin-top: 2rem;
+            padding: 1.4rem 1.6rem;
+            border-radius: 16px;
+            background: rgba(62, 207, 110, 0.06);
+            border: 1px solid rgba(62, 207, 110, 0.16);
+            border-left: 3px solid var(--green-bright);
+            color: var(--sand);
+            font-size: 0.96rem;
+        }
+
+        .callout strong { color: var(--cream); }
+
+        .divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--green-mid), transparent);
+        }
+
+        /* ---- cta + footer ---- */
+        .cta { padding: 5rem 0; text-align: center; }
+        .cta h2 { margin-bottom: 1rem; }
+        .cta p { max-width: 560px; margin: 0 auto 2rem; color: var(--sand); }
+
+        .button {
+            display: inline-block;
+            border: 0;
+            cursor: pointer;
+            border-radius: 999px;
+            padding: 0.95rem 1.5rem;
+            font: inherit;
+            font-weight: 500;
+            transition: transform 180ms ease, box-shadow 180ms ease;
+        }
+
+        .button:hover { transform: translateY(-1px); }
+
+        .button-primary {
+            background: linear-gradient(135deg, var(--green-bright), var(--green-glow));
+            color: #06210e;
+            box-shadow: 0 18px 50px rgba(62, 207, 110, 0.25);
+        }
+
+        .button-secondary {
+            background: rgba(255, 255, 255, 0.02);
+            color: var(--cream);
+            border: 1px solid rgba(240, 237, 228, 0.12);
+            margin-left: 0.6rem;
+        }
+
+        footer { padding: 2rem 0 3rem; }
+
+        .footer-inner {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            border-top: 1px solid rgba(62, 207, 110, 0.08);
+            padding-top: 1.4rem;
+            color: rgba(240, 237, 228, 0.56);
+            font-size: 0.92rem;
+        }
+
+        @media (max-width: 860px) {
+            .phases { grid-template-columns: 1fr; }
+            .layer { grid-template-columns: 1fr; gap: 0.6rem; }
+            .wrap { padding: 0 1.2rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="content">
+        <header class="wrap">
+            <div class="topbar">
+                <a class="brand" href="./index.html">
+                    <span class="brand-mark" aria-hidden="true"></span>
+                    <span>FloraForge</span>
+                </a>
+                <nav class="top-links" aria-label="Site links">
+                    <a href="./index.html">Home</a>
+                    <a href="#loop">The Loop</a>
+                    <a href="#architecture">Architecture</a>
+                    <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a>
+                </nav>
+            </div>
+        </header>
+
+        <section class="hero wrap">
+            <p class="eyebrow">Inside the Engine</p>
+            <h1>One frame, <span class="accent">many times a second.</span></h1>
+            <p>
+                FloraForge is a from-scratch terrain engine written in Rust with the
+                <code>wgpu</code> graphics API. There is no game-engine framework underneath — just a
+                single loop that runs every frame: read input, simulate the world, draw it, repeat.
+                This page is a tour of that loop and the systems hanging off it.
+            </p>
+            <div class="hero-meta">
+                <span>Rust</span>
+                <span>wgpu / WebGPU</span>
+                <span>winit event loop</span>
+                <span>Streaming chunks</span>
+                <span>Compute-generated terrain</span>
+            </div>
+        </section>
+
+        <div class="wrap"><div class="divider"></div></div>
+
+        <!-- ===================== THE LOOP ===================== -->
+        <section class="block wrap" id="loop">
+            <p class="section-label">The Frame Loop</p>
+            <h2>Everything happens inside one cycle</h2>
+            <p class="lead">
+                The window library (<code>winit</code>) runs in <code>Poll</code> mode: as soon as the
+                engine finishes a frame it immediately asks for the next one. Each lap of the loop
+                collects input, runs a single <code>update()</code> to advance the simulation, then a
+                single <code>render()</code> to draw it to the screen — and presents the result.
+            </p>
+
+            <div class="diagram-card">
+                <svg class="loop-svg" viewBox="0 0 1000 420" role="img"
+                     aria-label="The FloraForge frame loop: poll input, update, render, present, then loop back.">
+                    <defs>
+                        <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3"
+                                orient="auto" markerUnits="strokeWidth">
+                            <path d="M0,0 L7,3 L0,6 Z" fill="#7cff9f"></path>
+                        </marker>
+                        <marker id="arrow-loop" markerWidth="10" markerHeight="10" refX="7" refY="3"
+                                orient="auto" markerUnits="strokeWidth">
+                            <path d="M0,0 L7,3 L0,6 Z" fill="#c7b99d"></path>
+                        </marker>
+                        <linearGradient id="g-cpu" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0" stop-color="rgba(62,207,110,0.22)"></stop>
+                            <stop offset="1" stop-color="rgba(11,24,13,0.6)"></stop>
+                        </linearGradient>
+                        <linearGradient id="g-gpu" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0" stop-color="rgba(246,197,145,0.22)"></stop>
+                            <stop offset="1" stop-color="rgba(11,24,13,0.6)"></stop>
+                        </linearGradient>
+                        <linearGradient id="g-io" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0" stop-color="rgba(240,237,228,0.16)"></stop>
+                            <stop offset="1" stop-color="rgba(11,24,13,0.6)"></stop>
+                        </linearGradient>
+                    </defs>
+
+                    <!-- top label -->
+                    <text x="500" y="34" text-anchor="middle" fill="#7cff9f"
+                          font-size="15" letter-spacing="3">AboutToWait → request_redraw → RedrawRequested</text>
+
+                    <!-- Stage boxes (y = 70, h = 150) -->
+                    <!-- Box 1: input -->
+                    <rect x="24" y="80" width="200" height="150" rx="16"
+                          fill="url(#g-io)" stroke="rgba(240,237,228,0.3)" stroke-width="1.2"></rect>
+                    <text x="124" y="120" text-anchor="middle" fill="#f0ede4" font-size="19" font-weight="600">Collect input</text>
+                    <text x="124" y="150" text-anchor="middle" fill="#c7b99d" font-size="13">Keyboard · mouse</text>
+                    <text x="124" y="170" text-anchor="middle" fill="#c7b99d" font-size="13">device deltas</text>
+                    <text x="124" y="200" text-anchor="middle" fill="#c7b99d" font-size="12.5">routed to egui</text>
+                    <text x="124" y="216" text-anchor="middle" fill="#c7b99d" font-size="12.5">or the camera</text>
+
+                    <!-- Box 2: update -->
+                    <rect x="280" y="80" width="200" height="150" rx="16"
+                          fill="url(#g-cpu)" stroke="#3ecf6e" stroke-width="1.4"></rect>
+                    <text x="380" y="118" text-anchor="middle" fill="#7cff9f" font-size="13" font-family="JetBrains Mono, monospace">update()</text>
+                    <text x="380" y="146" text-anchor="middle" fill="#f0ede4" font-size="19" font-weight="600">Simulate</text>
+                    <text x="380" y="174" text-anchor="middle" fill="#c7b99d" font-size="13">advance clock</text>
+                    <text x="380" y="192" text-anchor="middle" fill="#c7b99d" font-size="13">stream chunks</text>
+                    <text x="380" y="210" text-anchor="middle" fill="#c7b99d" font-size="13">move camera · sync GPU</text>
+
+                    <!-- Box 3: render -->
+                    <rect x="536" y="80" width="200" height="150" rx="16"
+                          fill="url(#g-gpu)" stroke="#f6c591" stroke-width="1.4"></rect>
+                    <text x="636" y="118" text-anchor="middle" fill="#f6c591" font-size="13" font-family="JetBrains Mono, monospace">render()</text>
+                    <text x="636" y="146" text-anchor="middle" fill="#f0ede4" font-size="19" font-weight="600">Draw</text>
+                    <text x="636" y="174" text-anchor="middle" fill="#c7b99d" font-size="13">encode passes</text>
+                    <text x="636" y="192" text-anchor="middle" fill="#c7b99d" font-size="13">sky → terrain → plants</text>
+                    <text x="636" y="210" text-anchor="middle" fill="#c7b99d" font-size="13">water → HUD → UI</text>
+
+                    <!-- Box 4: present -->
+                    <rect x="792" y="80" width="184" height="150" rx="16"
+                          fill="url(#g-io)" stroke="rgba(240,237,228,0.3)" stroke-width="1.2"></rect>
+                    <text x="884" y="130" text-anchor="middle" fill="#f0ede4" font-size="19" font-weight="600">Present</text>
+                    <text x="884" y="160" text-anchor="middle" fill="#c7b99d" font-size="13">submit to GPU</text>
+                    <text x="884" y="180" text-anchor="middle" fill="#c7b99d" font-size="13">swap the frame</text>
+                    <text x="884" y="200" text-anchor="middle" fill="#c7b99d" font-size="13">to the screen</text>
+
+                    <!-- arrows between boxes -->
+                    <line x1="226" y1="155" x2="276" y2="155" stroke="#7cff9f" stroke-width="2.4" marker-end="url(#arrow)"></line>
+                    <line x1="482" y1="155" x2="532" y2="155" stroke="#7cff9f" stroke-width="2.4" marker-end="url(#arrow)"></line>
+                    <line x1="738" y1="155" x2="788" y2="155" stroke="#7cff9f" stroke-width="2.4" marker-end="url(#arrow)"></line>
+
+                    <!-- loop-back arrow -->
+                    <path d="M884,232 L884,330 Q884,358 856,358 L152,358 Q124,358 124,330 L124,234"
+                          fill="none" stroke="#c7b99d" stroke-width="2.2" stroke-dasharray="6 5"
+                          marker-end="url(#arrow-loop)"></path>
+                    <text x="500" y="350" text-anchor="middle" fill="#c7b99d" font-size="13.5"
+                          letter-spacing="1.5">next frame — the loop never blocks, it just runs again</text>
+
+                    <!-- frame bracket -->
+                    <text x="508" y="395" text-anchor="middle" fill="rgba(240,237,228,0.45)" font-size="12.5">
+                        one lap ≈ one rendered frame
+                    </text>
+                </svg>
+
+                <div class="legend">
+                    <span><i class="swatch" style="background:#3ecf6e"></i>CPU work (simulation)</span>
+                    <span><i class="swatch" style="background:#f6c591"></i>GPU work (rendering)</span>
+                    <span><i class="swatch" style="background:rgba(240,237,228,0.6)"></i>I/O &amp; presentation</span>
+                </div>
+                <p class="diagram-caption">
+                    Defined in <code>src/app/event_loop.rs</code> and <code>src/app/mod.rs</code>.
+                    The same loop drives the native desktop build and the in-browser WebAssembly build.
+                </p>
+            </div>
+        </section>
+
+        <!-- ===================== UPDATE / RENDER BREAKDOWN ===================== -->
+        <section class="block wrap">
+            <p class="section-label">Inside one lap</p>
+            <h2>What <code>update()</code> and <code>render()</code> actually do</h2>
+            <p class="lead">
+                A frame is two halves. <strong>Update</strong> is pure CPU work that moves the world
+                forward by the elapsed time <code>dt</code>. <strong>Render</strong> records a list of
+                drawing commands and hands them to the GPU. They are deliberately separated so the
+                simulation stays the same whether the machine draws at 30 or 300 fps.
+            </p>
+
+            <div class="phases">
+                <div class="phase cpu">
+                    <h3>Simulate <code>update()</code></h3>
+                    <p class="sub">Runs on the CPU. Branches on the current screen; this is the "Playing" path.</p>
+                    <ol class="steps">
+                        <li><strong>Measure time</strong>
+                            <span class="note">Compute <code>dt</code> since the last frame and smooth the FPS readout with a rolling average.</span></li>
+                        <li><strong>Move the camera</strong>
+                            <span class="note">The camera controller turns held keys and mouse deltas into a new fly-camera position, then clamps it above the terrain.</span></li>
+                        <li><strong>Advance the world clock</strong>
+                            <span class="note">Time of day ticks forward, which drives the sun direction and ambient light.</span></li>
+                        <li><strong>Stream chunks</strong>
+                            <span class="note">Load chunks entering the camera's radius, drop ones that left, and collect terrain finished by background worker threads.</span></li>
+                        <li><strong>Grow plants</strong>
+                            <span class="note">Plant lifecycle advances; chunks whose vegetation changed are reassembled.</span></li>
+                        <li><strong>Sync to GPU</strong>
+                            <span class="note">New chunk meshes and plant instances are uploaded; per-frame uniforms (view-projection, camera, time), lighting, HUD and minimap are written.</span></li>
+                    </ol>
+                </div>
+
+                <div class="phase gpu">
+                    <h3>Draw <code>render()</code></h3>
+                    <p class="sub">Records GPU commands into one encoder, then submits and presents.</p>
+                    <ol class="steps">
+                        <li><strong>Acquire the frame</strong>
+                            <span class="note">Grab the next swapchain texture. This call blocks until the GPU is ready — that wait is how the engine measures whether it is GPU-bound.</span></li>
+                        <li><strong>Open a render pass</strong>
+                            <span class="note">Clear the colour and depth buffers (or blit a pre-blurred background for the menu).</span></li>
+                        <li><strong>Draw the scene, in order</strong>
+                            <span class="note">Each pass below appends draw calls. Terrain, plants and water are frustum-culled so off-screen chunks cost nothing.</span></li>
+                        <li><strong>Overlay the UI</strong>
+                            <span class="note">An <code>egui</code> pass paints menus, the config panel and the plant editor on top of the 3D scene.</span></li>
+                        <li><strong>Submit &amp; present</strong>
+                            <span class="note">The encoded commands go to the GPU queue and the finished frame is swapped to the screen.</span></li>
+                    </ol>
+
+                    <div class="passes" aria-label="Render passes in draw order">
+                        <div class="pass-chip"><b>Sky</b><small>gradient + sun by time of day</small></div>
+                        <div class="pass-chip"><b>Terrain</b><small>129×129 grid per chunk</small></div>
+                        <div class="pass-chip"><b>Instanced</b><small>trees, shrubs, houses</small></div>
+                        <div class="pass-chip"><b>Water</b><small>sea-level surface</small></div>
+                        <div class="pass-chip"><b>HUD + Minimap</b><small>2D overlays</small></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="callout">
+                <strong>Why split CPU and GPU time?</strong> The benchmark mode replays a fixed camera
+                path on a fixed timestep and records both the GPU-acquire stall and the CPU-active
+                time for every frame. That tells us the renderer is almost entirely GPU-bound — useful
+                to know before optimising the wrong half. See <code>src/app/benchmark.rs</code>.
+            </div>
+        </section>
+
+        <div class="wrap"><div class="divider"></div></div>
+
+        <!-- ===================== STATE MACHINE ===================== -->
+        <section class="block wrap">
+            <p class="section-label">Screen state</p>
+            <h2>The same loop, five modes</h2>
+            <p class="lead">
+                The loop doesn't only run the world. A small state machine decides what
+                <code>update()</code> and <code>render()</code> do each frame, so the menu, the plant
+                editor and the live world all share one code path.
+            </p>
+
+            <div class="states">
+                <div class="state-card">
+                    <h4>StartMenu</h4>
+                    <p>Animated sky background with a blurred snapshot of the last frame behind the menu UI.</p>
+                </div>
+                <div class="state-card">
+                    <h4>Loading</h4>
+                    <p>Builds the world one step per frame so the progress bar keeps animating.</p>
+                </div>
+                <div class="state-card">
+                    <h4>Playing</h4>
+                    <p>The full simulate-and-draw path described above, with cursor capture for mouse-look.</p>
+                </div>
+                <div class="state-card">
+                    <h4>Herbarium</h4>
+                    <p>A grid of your plant species, each rendered to a live thumbnail.</p>
+                </div>
+                <div class="state-card">
+                    <h4>PlantEditor</h4>
+                    <p>An orbit camera around a single procedurally generated plant you can tune in real time.</p>
+                </div>
+            </div>
+
+            <div class="loading-flow">
+                <strong>Loading is itself a mini state machine.</strong>
+                <p style="color:var(--sand); margin-top:0.4rem; font-size:0.95rem;">
+                    Rather than freezing the window while the world generates, each phase runs on its
+                    own frame and bumps the progress bar. Background threads generate chunk terrain in
+                    parallel; the <code>WaitForChunks</code> phase polls until they're all in.
+                </p>
+                <div class="pills">
+                    <span class="done">Init</span>
+                    <span>BuildRegistry</span>
+                    <span>CreateWorld</span>
+                    <span>DispatchChunks</span>
+                    <span>WaitForChunks</span>
+                    <span>SyncTerrain</span>
+                    <span>SyncWater</span>
+                    <span>SyncInstances</span>
+                    <span>SyncMinimap</span>
+                    <span class="done">Done</span>
+                </div>
+            </div>
+        </section>
+
+        <div class="wrap"><div class="divider"></div></div>
+
+        <!-- ===================== ARCHITECTURE ===================== -->
+        <section class="block wrap" id="architecture">
+            <p class="section-label">Architecture</p>
+            <h2>Three layers, cleanly separated</h2>
+            <p class="lead">
+                The code that the loop calls into is split into three layers. The split keeps world
+                generation testable and free of any graphics code, and keeps all GPU concerns in one
+                place.
+            </p>
+
+            <div class="layers">
+                <div class="layer core">
+                    <div class="tag">world_core
+                        <small>Domain logic — pure data</small>
+                    </div>
+                    <p>
+                        Chunk, terrain and biome generation, heightmaps, plant lifecycle and the world
+                        clock. No rendering, no GPU — just the rules of the world, which makes it easy to
+                        test in isolation.
+                    </p>
+                </div>
+                <div class="layer runtime">
+                    <div class="tag">world_runtime
+                        <small>Orchestration</small>
+                    </div>
+                    <p>
+                        Streams chunks in and out around the moving camera, dispatches generation to
+                        worker threads, advances the clock, and tracks lifecycle changes. This is the
+                        layer <code>update()</code> drives each frame.
+                    </p>
+                </div>
+                <div class="layer render">
+                    <div class="tag">renderer_wgpu
+                        <small>GPU adapter</small>
+                    </div>
+                    <p>
+                        All <code>wgpu</code> code: the device/surface context, per-frame and
+                        per-material bind groups, the compute shader that builds terrain meshes, instanced
+                        rendering, water, sky, HUD and the <code>egui</code> overlay.
+                    </p>
+                </div>
+            </div>
+
+            <div class="callout">
+                <strong>Terrain is generated on the GPU.</strong> Each 256&nbsp;m chunk is a 129×129
+                grid. A compute shader turns per-vertex height and moisture into a finished mesh, and
+                every chunk shares one index buffer — so streaming a new chunk is mostly just uploading
+                its vertex data.
+            </div>
+        </section>
+
+        <!-- ===================== CTA ===================== -->
+        <section class="cta wrap">
+            <h2>See it running</h2>
+            <p>
+                The whole loop compiles to WebAssembly and runs in your browser over WebGPU — the same
+                Rust code as the desktop build.
+            </p>
+            <a class="button button-primary" href="./index.html#top">Launch FloraForge</a>
+            <a class="button button-secondary" href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">Read the Source</a>
+        </section>
+
+        <footer class="wrap">
+            <div class="footer-inner">
+                <p>FloraForge — a procedural world-building engine built from scratch in Rust.</p>
+                <p><a href="./index.html">Home</a> · <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a></p>
+            </div>
+        </footer>
+    </div>
+</body>
+</html>
