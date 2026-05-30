@@ -321,9 +321,11 @@ impl PlantEditorPanel {
                     ui.add_space(4.0);
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 180, 90),
-                        "⚠ Rendered as a billboard in-world — procedural controls \
-                         below only affect this preview. Leaf colour still tints \
-                         the billboard.",
+                        concat!(
+                            "⚠ Rendered as a billboard in-world — procedural controls ",
+                            "below only affect this preview. Leaf colour still tints ",
+                            "the billboard.",
+                        ),
                     );
                     ui.add_space(4.0);
                     ui.separator();
