@@ -1,0 +1,78 @@
+name: Native build
+
+# Reusable native desktop build matrix (macOS + Windows), called by both the PR
+# CI workflow (debug build — compile/link validation) and the Release workflow
+# (release build + packaged artifacts). Defining the matrix and runner pins in
+# ONE place keeps PR validation and the release build from drifting apart — the
+# drift that let a Windows-only break reach master undetected.
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        description: "Build optimized binaries and upload packaged artifacts"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # report every platform; don't let one cancel the others
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: floraforge-macos-aarch64
+          - name: Windows
+            # Pinned to windows-2022 (last known-good MSVC image). windows-latest
+            # is mid-migration to windows-2025-vs2026, where rustc's MSVC linker
+            # autodetection resolves a VS toolset version whose link.exe is
+            # absent, breaking every msvc-target build before any crate compiles.
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            artifact: floraforge-windows-x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.1
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Debug build on PRs (faster, still links the binary so linker/cfg/platform
+      # errors surface); optimized build for releases.
+      - name: Build executable
+        run: cargo build ${{ inputs.release && '--release' || '' }} --target ${{ matrix.target }} --bin world-gen
+
+      - name: Package (macOS)
+        if: ${{ inputs.release && runner.os == 'macOS' }}
+        run: |
+          mkdir staging
+          cp target/${{ matrix.target }}/release/world-gen staging/floraforge
+          cd staging && zip -r ../${{ matrix.artifact }}.zip .
+
+      - name: Package (Windows)
+        if: ${{ inputs.release && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path staging
+          Copy-Item "target/${{ matrix.target }}/release/world-gen.exe" staging/floraforge.exe
+          Compress-Archive -Path staging/* -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Upload artifact
+        if: ${{ inputs.release }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
