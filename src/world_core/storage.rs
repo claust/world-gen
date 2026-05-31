@@ -50,7 +50,19 @@ impl FileStorage {
     fn atomic_write(path: &str, data: &[u8]) -> anyhow::Result<()> {
         let tmp = format!("{path}.tmp");
         std::fs::write(&tmp, data)?;
-        std::fs::rename(&tmp, path)?;
+        if let Err(err) = std::fs::rename(&tmp, path) {
+            // Windows refuses to rename onto an existing file; remove it and
+            // retry (a brief non-atomic window, but avoids a persistent save
+            // failure). Other platforms replace atomically, so a genuine error
+            // there is propagated rather than masked.
+            if cfg!(windows) {
+                let _ = std::fs::remove_file(path);
+                std::fs::rename(&tmp, path)?;
+            } else {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(err.into());
+            }
+        }
         Ok(())
     }
 }
