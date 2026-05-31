@@ -1,3 +1,12 @@
+//! Loaded-only spread + catch-up simulation.
+//!
+//! Superseded by the global [`PlantWorld`](super::plant_world::PlantWorld) tick
+//! (M2): the render bridge now reads plants from `PlantWorld`, so the runtime no
+//! longer drives this path. It is kept dormant (still compiling and test-covered)
+//! until M3 reintroduces spread globally and deletes this module together with
+//! the catch-up machinery — keeping that a clean, reviewable diff.
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 
 use glam::{IVec2, Vec3};

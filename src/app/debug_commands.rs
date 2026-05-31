@@ -344,6 +344,8 @@ impl AppState {
                 center: [stats.center_chunk.x, stats.center_chunk.y],
             },
             lifecycle: LifecycleSnapshot {
+                world_population: stats.world_population,
+                world_populated_chunks: stats.world_populated_chunks,
                 delta_chunks: stats.lifecycle.total_chunks,
                 loaded_delta_chunks: stats.lifecycle.loaded_chunks,
                 delta_plants: stats.lifecycle.total_plants,

@@ -7,6 +7,7 @@ use super::chunk_loader::{ChunkLoader, PlatformLoader};
 use super::delta_store::DeltaStore;
 use super::lifecycle_sim::{tick_chunk_lifecycle, LifecycleTickContext};
 use super::plant_landing::{prune_chunk_delta_on_load, PlantLandingRules};
+use super::plant_world::PlantWorld;
 use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::PlantRegistry;
@@ -59,14 +60,13 @@ impl StreamingWorld {
         })
     }
 
-    pub fn update(&mut self, camera_position: Vec3, delta_store: &mut DeltaStore) {
-        let landing_rules = PlantLandingRules {
-            registry: &self.registry,
-            biome_config: &self.config.biome,
-            sea_level: self.config.sea_level,
-        };
-        for chunk in self.loader.poll() {
-            let chunk = apply_chunk_delta(chunk, delta_store, &landing_rules);
+    pub fn update(&mut self, camera_position: Vec3, plant_world: &PlantWorld) {
+        // Newly generated chunks take their plant list from the resident
+        // PlantWorld (the whole-world store), reconstructed into this raw
+        // chunk's span. Terrain is still generated per chunk for the mesh.
+        for mut chunk in self.loader.poll() {
+            let plants = plant_world.instances_for(chunk.coord, &chunk.terrain);
+            chunk.content.set_plants(plants);
             self.loaded.insert(chunk.coord, chunk);
         }
 
@@ -119,6 +119,9 @@ impl StreamingWorld {
         chunk.content.set_plants(next_plants)
     }
 
+    // Dormant loaded-only growth/spread tick — the runtime now ticks the global
+    // PlantWorld instead. Kept (and test-covered) until M3 deletes this path.
+    #[allow(dead_code)]
     pub fn tick_loaded_chunk_growth(
         &mut self,
         total_hours: f64,
@@ -176,30 +179,6 @@ impl StreamingWorld {
     }
 }
 
-fn apply_chunk_delta(
-    mut chunk: ChunkData,
-    delta_store: &mut DeltaStore,
-    landing_rules: &PlantLandingRules<'_>,
-) -> ChunkData {
-    let Some(existing) = delta_store.get(&chunk.coord).cloned() else {
-        return chunk;
-    };
-
-    let mut delta = existing;
-    prune_chunk_delta_on_load(chunk.coord, &chunk, &mut delta, landing_rules);
-    chunk
-        .content
-        .set_plants(assemble_plants(&chunk.content.base_plants, &delta));
-
-    if delta.is_empty() {
-        let _ = delta_store.remove(&chunk.coord);
-        return chunk;
-    }
-
-    *delta_store.get_or_create(chunk.coord) = delta;
-    chunk
-}
-
 pub(super) fn world_to_chunk(position: Vec3) -> IVec2 {
     IVec2::new(
         (position.x / CHUNK_SIZE_METERS).floor() as i32,
@@ -226,10 +205,10 @@ mod tests {
 
     use glam::{IVec2, Vec3};
 
-    use super::{apply_chunk_delta, StreamingWorld};
+    use super::StreamingWorld;
     use crate::world_core::chunk::{
         canonical_chunk, ChunkContent, ChunkData, ChunkTerrain, PlantInstance,
-        CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS,
+        CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
     };
     use crate::world_core::lifecycle::{ChunkDelta, GrowthStage};
     use crate::world_core::{
@@ -237,7 +216,6 @@ mod tests {
         herbarium::{Herbarium, PlantRegistry},
     };
     use crate::world_runtime::lifecycle_sim::{spawn_seedling, spread_roll, SeedlingSpawnRequest};
-    use crate::world_runtime::plant_landing::PlantLandingRules;
     use crate::world_runtime::DeltaStore;
 
     fn test_registry() -> Arc<PlantRegistry> {
@@ -285,190 +263,6 @@ mod tests {
                 houses: Vec::new(),
             },
         }
-    }
-
-    #[test]
-    fn apply_chunk_delta_prunes_stale_removed_base_indices_on_load() {
-        let coord = IVec2::new(4, 5);
-        let base_plants = vec![
-            PlantInstance {
-                position: Vec3::new(1.0, 2.0, 3.0),
-                rotation: 0.0,
-                height: 10.0,
-                species_index: 0,
-                growth_stage: GrowthStage::Mature,
-            },
-            PlantInstance {
-                position: Vec3::new(4.0, 5.0, 6.0),
-                rotation: 0.0,
-                height: 11.0,
-                species_index: 0,
-                growth_stage: GrowthStage::Mature,
-            },
-        ];
-        let chunk = ChunkData {
-            coord,
-            terrain: ChunkTerrain {
-                heights: Vec::new(),
-                moisture: Vec::new(),
-                min_height: 0.0,
-                max_height: 0.0,
-                has_water: false,
-            },
-            content: ChunkContent {
-                base_plants: base_plants.clone(),
-                plants: base_plants,
-                plants_revision: 0,
-                houses: Vec::new(),
-            },
-        };
-        let mut deltas = DeltaStore::default();
-        *deltas.get_or_create(coord) = ChunkDelta {
-            removed_base: vec![1, 4],
-            added_plants: Vec::new(),
-            last_sim_hour: 0.0,
-        };
-
-        let registry = test_registry();
-        let config = GameConfig::default();
-        let chunk = apply_chunk_delta(
-            chunk,
-            &mut deltas,
-            &PlantLandingRules {
-                registry: registry.as_ref(),
-                biome_config: &config.biome,
-                sea_level: config.sea_level,
-            },
-        );
-        let delta = deltas.get(&coord).expect("delta should remain");
-
-        assert_eq!(delta.removed_base, vec![1]);
-        assert_eq!(chunk.content.plants.len(), 1);
-        assert_eq!(chunk.content.plants[0].position, Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(chunk.content.plants_revision, 1);
-    }
-
-    #[test]
-    fn delta_persists_across_a_world_lap_and_rebases_into_the_loaded_chunk() {
-        // A delta authored at a canonical chunk must reappear when that same
-        // canonical chunk is loaded one full world lap away, with its plant
-        // rebased into the loaded chunk's world span (M1's "full lap returnable").
-        let config = GameConfig::default();
-        let registry = test_registry();
-        let canon = IVec2::new(4, 5);
-        let raw = IVec2::new(canon.x + WORLD_SIZE_CHUNKS, canon.y);
-        let lap = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
-
-        // Author the delta in the canonical chunk's span.
-        let local_x = 24.0;
-        let local_z = 36.0;
-        let mut deltas = DeltaStore::default();
-        *deltas.get_or_create(canon) = ChunkDelta {
-            removed_base: Vec::new(),
-            added_plants: vec![crate::world_core::lifecycle::DeltaPlant {
-                position: Vec3::new(
-                    canon.x as f32 * CHUNK_SIZE_METERS + local_x,
-                    12.0,
-                    canon.y as f32 * CHUNK_SIZE_METERS + local_z,
-                ),
-                rotation: 0.3,
-                height: 8.0,
-                species_index: 0,
-                stage: GrowthStage::Mature,
-                born_hour: 0.0,
-            }],
-            last_sim_hour: 0.0,
-        };
-
-        // Load the *same canonical chunk* a lap east and apply the delta.
-        let chunk = apply_chunk_delta(
-            test_chunk_with_terrain(raw, Vec::new()),
-            &mut deltas,
-            &PlantLandingRules {
-                registry: registry.as_ref(),
-                biome_config: &config.biome,
-                sea_level: config.sea_level,
-            },
-        );
-
-        // The plant survived the lap and now sits in the loaded chunk's span.
-        assert_eq!(chunk.content.plants.len(), 1);
-        let plant = &chunk.content.plants[0];
-        assert!((plant.position.x - (raw.x as f32 * CHUNK_SIZE_METERS + local_x)).abs() < 1e-2);
-        assert!((plant.position.z - (raw.y as f32 * CHUNK_SIZE_METERS + local_z)).abs() < 1e-2);
-
-        // The stored delta is keyed canonically and now holds the rebased position.
-        let stored = deltas
-            .get(&canon)
-            .expect("delta should persist canonically");
-        assert_eq!(stored.added_plants.len(), 1);
-        assert!(
-            (stored.added_plants[0].position.x
-                - (canon.x as f32 * CHUNK_SIZE_METERS + local_x + lap))
-                .abs()
-                < 1e-2
-        );
-    }
-
-    #[test]
-    fn apply_chunk_delta_prunes_invalid_deferred_seedlings_idempotently() {
-        let coord = IVec2::new(1, -2);
-        let config = GameConfig::default();
-        let registry = test_registry();
-        let valid_x = coord.x as f32 * CHUNK_SIZE_METERS + 24.0;
-        let valid_z = coord.y as f32 * CHUNK_SIZE_METERS + 36.0;
-        let valid_seedling = crate::world_core::lifecycle::DeltaPlant {
-            position: Vec3::new(valid_x, 12.0, valid_z),
-            rotation: 0.3,
-            height: 8.0,
-            species_index: 0,
-            stage: GrowthStage::Seedling,
-            born_hour: 24.0,
-        };
-        let duplicate_seedling = crate::world_core::lifecycle::DeltaPlant {
-            position: Vec3::new(valid_x, 999.0, valid_z),
-            ..valid_seedling.clone()
-        };
-
-        let mut deltas = DeltaStore::default();
-        *deltas.get_or_create(coord) = ChunkDelta {
-            removed_base: Vec::new(),
-            added_plants: vec![valid_seedling, duplicate_seedling],
-            last_sim_hour: 24.0,
-        };
-
-        let first = apply_chunk_delta(
-            test_chunk_with_terrain(coord, Vec::new()),
-            &mut deltas,
-            &PlantLandingRules {
-                registry: registry.as_ref(),
-                biome_config: &config.biome,
-                sea_level: config.sea_level,
-            },
-        );
-        let second = apply_chunk_delta(
-            test_chunk_with_terrain(coord, Vec::new()),
-            &mut deltas,
-            &PlantLandingRules {
-                registry: registry.as_ref(),
-                biome_config: &config.biome,
-                sea_level: config.sea_level,
-            },
-        );
-        let delta = deltas.get(&coord).expect("delta should remain");
-
-        assert_eq!(delta.added_plants.len(), 1);
-        assert_eq!(delta.added_plants[0].position.y, 80.0);
-        assert_eq!(first.content.plants.len(), 1);
-        assert_eq!(second.content.plants.len(), 1);
-        assert_eq!(
-            first.content.plants[0].position,
-            second.content.plants[0].position
-        );
-        assert_eq!(
-            first.content.plants[0].growth_stage,
-            second.content.plants[0].growth_stage
-        );
     }
 
     #[test]

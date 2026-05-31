@@ -4,6 +4,7 @@ use std::sync::Arc;
 use glam::{IVec2, Vec3};
 
 use super::delta_store::{DeltaStore, DeltaStoreStats};
+use super::plant_world::PlantWorld;
 use crate::world_core::chunk::ChunkData;
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::PlantRegistry;
@@ -28,13 +29,27 @@ pub struct RuntimeStats {
     pub loaded_visible_seedlings: usize,
     pub loaded_visible_young: usize,
     pub loaded_visible_mature: usize,
+    /// Total plants across the whole world (every canonical chunk, loaded or not).
+    pub world_population: usize,
+    /// Canonical chunks holding at least one plant.
+    pub world_populated_chunks: usize,
 }
 
 pub struct WorldRuntime {
     streaming: StreamingWorld,
     clock: WorldClock,
     delta_store: DeltaStore,
+    /// Resident plant store for the whole finite world. Render reads loaded
+    /// chunks from here; the global growth tick advances it.
+    plant_world: PlantWorld,
+    /// Global-clock hour of the last growth tick, so growth is rate-limited to
+    /// the sim cadence rather than running every frame.
+    last_growth_hour: f64,
 }
+
+/// Sim-hours between global growth ticks. Growth is analytic, so a coarse
+/// cadence is plenty and keeps the per-frame cost off the hot path.
+const GROWTH_TICK_HOURS: f64 = 1.0;
 
 impl WorldRuntime {
     pub fn new(
@@ -58,10 +73,34 @@ impl WorldRuntime {
 
         let arc_config = Arc::new(config.clone());
 
+        // One-time world-creation cost: generate base flora for every canonical
+        // chunk into the resident store (parallel; terrain discarded per chunk).
+        let plant_world = PlantWorld::generate_base(seed, config, Arc::clone(&registry), threads);
+        log::info!(
+            "PlantWorld: {} plants across {} populated chunks",
+            plant_world.population(),
+            plant_world.populated_chunks(),
+        );
+
+        // The delta store is legacy state from the loaded-only model. The global
+        // PlantWorld sim does not apply it to rendering yet, so surface it rather
+        // than letting a non-empty save silently stop affecting the world. It is
+        // still loaded/saved for telemetry continuity and reconciled when spread
+        // persistence lands (M4).
+        let delta_store = DeltaStore::load(storage);
+        if !delta_store.is_empty() {
+            log::warn!(
+                "loaded legacy delta state; the global PlantWorld sim does not apply it to \
+                 rendering — it will be reconciled when spread persistence lands"
+            );
+        }
+
         Ok(Self {
             streaming: StreamingWorld::new(seed, load_radius, threads, arc_config, registry)?,
             clock: WorldClock::new(start_hour, total_hours, day_speed),
-            delta_store: DeltaStore::load(storage),
+            delta_store,
+            plant_world,
+            last_growth_hour: total_hours,
         })
     }
 
@@ -71,16 +110,22 @@ impl WorldRuntime {
 
     pub fn update(&mut self, dt_seconds: f32, camera_position: Vec3) {
         self.clock.update(dt_seconds);
-        self.streaming
-            .update(camera_position, &mut self.delta_store);
+        self.tick_plant_world_growth();
+        // Stream chunks around the camera; loaded chunks read their plants from
+        // the resident PlantWorld.
+        self.streaming.update(camera_position, &self.plant_world);
+    }
 
-        let changed_coords = self
-            .streaming
-            .tick_loaded_chunk_growth(self.clock.total_hours(), &mut self.delta_store);
-        for coord in changed_coords {
-            self.streaming
-                .reassemble_loaded_chunk(coord, &mut self.delta_store);
+    /// Advance global growth, rate-limited to [`GROWTH_TICK_HOURS`] of sim time
+    /// and capped to one pass per call so a high `day_speed` can't spin it every
+    /// frame. Growth is analytic, so each pass is cheap.
+    fn tick_plant_world_growth(&mut self) {
+        let now = self.clock.total_hours();
+        if now - self.last_growth_hour < GROWTH_TICK_HOURS {
+            return;
         }
+        self.last_growth_hour = now;
+        self.plant_world.tick_growth(now);
     }
 
     pub fn chunks(&self) -> &HashMap<IVec2, ChunkData> {
@@ -136,6 +181,8 @@ impl WorldRuntime {
             loaded_visible_seedlings,
             loaded_visible_young,
             loaded_visible_mature,
+            world_population: self.plant_world.population(),
+            world_populated_chunks: self.plant_world.populated_chunks(),
         }
     }
 

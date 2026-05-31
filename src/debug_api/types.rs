@@ -47,6 +47,10 @@ pub struct TelemetrySnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LifecycleSnapshot {
+    /// Total plants across the whole finite world (every canonical chunk).
+    pub world_population: usize,
+    /// Canonical chunks holding at least one plant.
+    pub world_populated_chunks: usize,
     pub delta_chunks: usize,
     pub loaded_delta_chunks: usize,
     pub delta_plants: usize,
