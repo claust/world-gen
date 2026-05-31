@@ -6,7 +6,7 @@ use super::sampling::{
 use crate::world_core::biome::Biome;
 use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{
-    ChunkTerrain, HouseInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
+    canonical_chunk, ChunkTerrain, HouseInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
 };
 use crate::world_core::config::HousesConfig;
 use crate::world_core::layer::Layer;
@@ -78,8 +78,11 @@ impl<'a> Layer<HousesInput<'a>, Vec<HouseInstance>> for HousesLayer {
             return Vec::new();
         }
 
-        let cx = coord.x as u32;
-        let cy = coord.y as u32;
+        // Hash on the canonical (wrapped) chunk id so wrapped chunks place the
+        // same hamlets/houses; world positions below stay on the raw `coord`.
+        let canon = canonical_chunk(coord);
+        let cx = canon.x as u32;
+        let cy = canon.y as u32;
         let mut houses = Vec::new();
 
         // Phase 1: Hamlet clusters on a coarse grid

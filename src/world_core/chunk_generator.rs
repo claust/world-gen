@@ -54,6 +54,51 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn wrapped_chunks_generate_identical_content_offset_by_one_lap() {
+        use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
+
+        let config = GameConfig::default();
+        let herb = Herbarium::default_seeded();
+        let generator =
+            ChunkGenerator::new(7, &config, Arc::new(PlantRegistry::from_herbarium(&herb)));
+
+        // A chunk and the same chunk one full world lap east must share terrain
+        // and content; only the world-space position is shifted by `L`.
+        let raw = IVec2::new(5, -3);
+        let wrapped = IVec2::new(raw.x + WORLD_SIZE_CHUNKS, raw.y);
+        let lap = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
+
+        let a = generator.generate_chunk(raw);
+        let b = generator.generate_chunk(wrapped);
+
+        // Terrain field is bit-for-bit identical (periodic noise, position-free).
+        assert_eq!(a.terrain.heights, b.terrain.heights);
+        assert_eq!(a.terrain.moisture, b.terrain.moisture);
+
+        // Same vegetation, shifted one lap in x.
+        assert_eq!(a.content.base_plants.len(), b.content.base_plants.len());
+        for (pa, pb) in a
+            .content
+            .base_plants
+            .iter()
+            .zip(b.content.base_plants.iter())
+        {
+            assert!((pb.position.x - pa.position.x - lap).abs() < 1e-2);
+            assert!((pb.position.z - pa.position.z).abs() < 1e-2);
+            assert!((pa.position.y - pb.position.y).abs() < 1e-3);
+            assert_eq!(pa.species_index, pb.species_index);
+            assert!((pa.height - pb.height).abs() < 1e-3);
+        }
+
+        // Same houses, shifted one lap in x.
+        assert_eq!(a.content.houses.len(), b.content.houses.len());
+        for (ha, hb) in a.content.houses.iter().zip(b.content.houses.iter()) {
+            assert!((hb.position.x - ha.position.x - lap).abs() < 1e-2);
+            assert!((hb.position.z - ha.position.z).abs() < 1e-2);
+        }
+    }
+
+    #[test]
     fn plant_generation_is_deterministic_for_same_seed_and_chunk() {
         let config = GameConfig::default();
         let herb = Herbarium::default_seeded();

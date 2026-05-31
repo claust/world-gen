@@ -6,7 +6,7 @@ use super::sampling::{
 use crate::world_core::biome::Biome;
 use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{
-    ChunkTerrain, PlantInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
+    canonical_chunk, ChunkTerrain, PlantInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
 };
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::layer::Layer;
@@ -73,6 +73,11 @@ impl FloraLayer {
         // Use a different seed offset for shrubs to avoid grid overlap
         let seed_offset: u32 = if kind_filter == "shrub" { 2000 } else { 0 };
 
+        // Hash on the canonical (wrapped) chunk id so chunks a whole number of
+        // world laps apart grow identical vegetation; world positions below stay
+        // on the raw `coord` so placement follows the camera's actual location.
+        let canon = canonical_chunk(coord);
+
         let cells_per_side = (CHUNK_SIZE_METERS / spacing) as i32;
         let mut eligible: Vec<(usize, f32)> = Vec::with_capacity(self.registry.species.len());
 
@@ -81,21 +86,21 @@ impl FloraLayer {
                 let cell_id = ((gx as u32) << 16) | (gz as u32);
                 let rnd = hash_to_unit_float(hash4(
                     self.seed.wrapping_add(seed_offset),
-                    coord.x as u32,
-                    coord.y as u32,
+                    canon.x as u32,
+                    canon.y as u32,
                     cell_id,
                 ));
 
                 let jitter_x = hash_to_unit_float(hash4(
                     self.seed.wrapping_add(71 + seed_offset),
-                    coord.x as u32,
-                    coord.y as u32,
+                    canon.x as u32,
+                    canon.y as u32,
                     cell_id,
                 ));
                 let jitter_z = hash_to_unit_float(hash4(
                     self.seed.wrapping_add(193 + seed_offset),
-                    coord.x as u32,
-                    coord.y as u32,
+                    canon.x as u32,
+                    canon.y as u32,
                     cell_id,
                 ));
 
@@ -160,8 +165,8 @@ impl FloraLayer {
                 }
                 let select_rnd = hash_to_unit_float(hash4(
                     self.seed.wrapping_add(500 + seed_offset),
-                    coord.x as u32,
-                    coord.y as u32,
+                    canon.x as u32,
+                    canon.y as u32,
                     cell_id,
                 )) * total_weight;
 
@@ -180,8 +185,8 @@ impl FloraLayer {
                 // Generate height from species range
                 let height_rnd = hash_to_unit_float(hash4(
                     self.seed.wrapping_add(401 + seed_offset),
-                    coord.x as u32,
-                    coord.y as u32,
+                    canon.x as u32,
+                    canon.y as u32,
                     cell_id,
                 ));
                 let plant_height = species.height_range[0]
@@ -189,8 +194,8 @@ impl FloraLayer {
 
                 let rotation = hash_to_unit_float(hash4(
                     self.seed.wrapping_add(1117 + seed_offset),
-                    coord.x as u32,
-                    coord.y as u32,
+                    canon.x as u32,
+                    canon.y as u32,
                     cell_id,
                 )) * std::f32::consts::TAU;
 
