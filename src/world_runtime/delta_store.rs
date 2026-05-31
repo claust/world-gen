@@ -186,7 +186,6 @@ mod tests {
                 stage: GrowthStage::Seedling,
                 born_hour: 11.0,
             }],
-            last_sim_hour: 5.0,
         };
         let _ = store.get_or_create(IVec2::new(0, 0));
 
@@ -222,7 +221,6 @@ mod tests {
             ChunkDelta {
                 removed_base: vec![1],
                 added_plants: vec![plant(5.0)],
-                last_sim_hour: 5.0,
             },
         );
         legacy.insert(
@@ -230,7 +228,6 @@ mod tests {
             ChunkDelta {
                 removed_base: vec![2],
                 added_plants: vec![plant(9.0)],
-                last_sim_hour: 9.0,
             },
         );
         let json = serde_json::to_string(&serde_json::json!({ "deltas": legacy })).unwrap();
@@ -246,7 +243,6 @@ mod tests {
             .expect("legacy delta should resolve at its canonical chunk");
         assert_eq!(merged.removed_base, vec![1, 2]);
         assert_eq!(merged.added_plants.len(), 2);
-        assert_eq!(merged.last_sim_hour, 9.0);
         assert!(loaded.get(&IVec2::new(258, 253)).is_some());
     }
 
@@ -273,7 +269,6 @@ mod tests {
                     born_hour: 15.0,
                 },
             ],
-            last_sim_hour: 5.0,
         };
         *store.get_or_create(IVec2::new(8, 9)) = ChunkDelta {
             removed_base: Vec::new(),
@@ -285,7 +280,6 @@ mod tests {
                 stage: GrowthStage::Mature,
                 born_hour: 18.0,
             }],
-            last_sim_hour: 6.0,
         };
         let _ = store.get_or_create(IVec2::new(0, 0));
 

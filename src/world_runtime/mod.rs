@@ -1,7 +1,5 @@
 mod chunk_loader;
 mod delta_store;
-mod lifecycle_sim;
-mod plant_landing;
 mod plant_world;
 mod runtime;
 mod streaming;

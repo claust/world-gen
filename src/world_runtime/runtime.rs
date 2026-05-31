@@ -40,16 +40,22 @@ pub struct WorldRuntime {
     clock: WorldClock,
     delta_store: DeltaStore,
     /// Resident plant store for the whole finite world. Render reads loaded
-    /// chunks from here; the global growth tick advances it.
+    /// chunks from here; the global growth + spread ticks advance it.
     plant_world: PlantWorld,
     /// Global-clock hour of the last growth tick, so growth is rate-limited to
     /// the sim cadence rather than running every frame.
     last_growth_hour: f64,
+    /// Global-clock hour of the last spread pass — the expensive, lower-cadence
+    /// half of the tick.
+    last_spread_hour: f64,
 }
 
 /// Sim-hours between global growth ticks. Growth is analytic, so a coarse
 /// cadence is plenty and keeps the per-frame cost off the hot path.
 const GROWTH_TICK_HOURS: f64 = 1.0;
+
+/// Sim-hours between global spread passes (one reproduction round per sim-day).
+const SPREAD_TICK_HOURS: f64 = 24.0;
 
 impl WorldRuntime {
     pub fn new(
@@ -101,6 +107,7 @@ impl WorldRuntime {
             delta_store,
             plant_world,
             last_growth_hour: total_hours,
+            last_spread_hour: total_hours,
         })
     }
 
@@ -110,31 +117,47 @@ impl WorldRuntime {
 
     pub fn update(&mut self, dt_seconds: f32, camera_position: Vec3) {
         self.clock.update(dt_seconds);
-        self.tick_plant_world_growth();
-        // Stream chunks around the camera; loaded chunks read their plants from
-        // the resident PlantWorld.
+        let mut changed = self.tick_plant_world_growth();
+        changed |= self.tick_plant_world_spread();
+        // Stream chunks around the camera; newly loaded chunks read their plants
+        // from the resident PlantWorld.
         self.streaming.update(camera_position, &self.plant_world);
+        // If the global sim changed the world, refresh the already-loaded chunks
+        // so growth stage changes and new seedlings show up.
+        if changed {
+            self.streaming
+                .refresh_loaded_from_plant_world(&self.plant_world);
+        }
     }
 
     /// Advance global growth, rate-limited to [`GROWTH_TICK_HOURS`] of sim time
     /// and capped to one pass per call so a high `day_speed` can't spin it every
-    /// frame. Growth is analytic, so each pass is cheap.
-    fn tick_plant_world_growth(&mut self) {
+    /// frame. Growth is analytic, so each pass is cheap. Returns whether anything
+    /// changed.
+    fn tick_plant_world_growth(&mut self) -> bool {
         let now = self.clock.total_hours();
         if now - self.last_growth_hour < GROWTH_TICK_HOURS {
-            return;
+            return false;
         }
         self.last_growth_hour = now;
-        self.plant_world.tick_growth(now);
+        self.plant_world.tick_growth(now)
+    }
+
+    /// Run a global spread pass, rate-limited to [`SPREAD_TICK_HOURS`] of sim
+    /// time and capped to one pass per call (the pass is the expensive part, so a
+    /// high `day_speed` lets sim-time lag rather than running it many times per
+    /// frame). Returns whether any seedling was added.
+    fn tick_plant_world_spread(&mut self) -> bool {
+        let now = self.clock.total_hours();
+        if now - self.last_spread_hour < SPREAD_TICK_HOURS {
+            return false;
+        }
+        self.last_spread_hour = now;
+        self.plant_world.tick_spread(now)
     }
 
     pub fn chunks(&self) -> &HashMap<IVec2, ChunkData> {
         self.streaming.chunks()
-    }
-
-    pub fn reassemble_loaded_chunk(&mut self, coord: IVec2) -> bool {
-        self.streaming
-            .reassemble_loaded_chunk(coord, &mut self.delta_store)
     }
 
     pub fn lighting(&self) -> LightingState {
