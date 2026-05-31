@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use glam::IVec2;
@@ -101,11 +102,21 @@ impl DeltaStore {
 
         match serde_json::from_str::<DeltaStoreSerde>(&contents) {
             Ok(data) => {
-                let deltas = data
-                    .deltas
-                    .into_iter()
-                    .filter_map(|(key, delta)| parse_coord_key(&key).map(|coord| (coord, delta)))
-                    .collect();
+                // Canonicalize every parsed key so saves written before delta
+                // state was keyed by canonical chunk still resolve; merge any
+                // legacy raw keys that collapse onto the same canonical chunk.
+                let mut deltas: HashMap<IVec2, ChunkDelta> = HashMap::new();
+                for (key, delta) in data.deltas {
+                    let Some(coord) = parse_coord_key(&key) else {
+                        continue;
+                    };
+                    match deltas.entry(canonical_chunk(coord)) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(delta);
+                        }
+                        Entry::Occupied(mut entry) => entry.get_mut().merge(delta),
+                    }
+                }
                 Self { deltas }
             }
             Err(error) => {
@@ -191,6 +202,52 @@ mod tests {
         assert_eq!(delta.removed_base, vec![1, 4]);
         assert_eq!(delta.added_plants.len(), 1);
         assert_eq!(delta.added_plants[0].stage, GrowthStage::Seedling);
+    }
+
+    #[test]
+    fn load_canonicalizes_and_merges_legacy_raw_keys() {
+        // Two legacy (pre-canonical) raw keys a whole world lap apart collapse
+        // onto the same canonical chunk: (2, -3) and (258, 253) both → (2, 253).
+        let plant = |born: f64| DeltaPlant {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            rotation: 0.25,
+            height: 7.0,
+            species_index: 2,
+            stage: GrowthStage::Mature,
+            born_hour: born,
+        };
+        let mut legacy: HashMap<String, ChunkDelta> = HashMap::new();
+        legacy.insert(
+            "2,-3".to_string(),
+            ChunkDelta {
+                removed_base: vec![1],
+                added_plants: vec![plant(5.0)],
+                last_sim_hour: 5.0,
+            },
+        );
+        legacy.insert(
+            "258,253".to_string(),
+            ChunkDelta {
+                removed_base: vec![2],
+                added_plants: vec![plant(9.0)],
+                last_sim_hour: 9.0,
+            },
+        );
+        let json = serde_json::to_string(&serde_json::json!({ "deltas": legacy })).unwrap();
+
+        let storage = MemoryStorage::default();
+        storage.save("deltas", &json).unwrap();
+        let loaded = DeltaStore::load(&storage);
+
+        // The two legacy keys are merged under the canonical chunk and resolve
+        // via either raw coord.
+        let merged = loaded
+            .get(&IVec2::new(2, -3))
+            .expect("legacy delta should resolve at its canonical chunk");
+        assert_eq!(merged.removed_base, vec![1, 2]);
+        assert_eq!(merged.added_plants.len(), 2);
+        assert_eq!(merged.last_sim_hour, 9.0);
+        assert!(loaded.get(&IVec2::new(258, 253)).is_some());
     }
 
     #[test]
