@@ -158,6 +158,9 @@ pub struct PlantWorld {
     populated_chunks: usize,
     /// Seedlings added by the most recent spread pass, for telemetry.
     last_spread_added: usize,
+    /// Cached per-biome fill, refreshed only when saturation changes — `stats()`
+    /// reads it every frame, so it must not rescan the world each call.
+    biome_fill: Vec<(&'static str, f32, usize)>,
 }
 
 fn chunk_index(canon: IVec2) -> usize {
@@ -260,7 +263,7 @@ impl PlantWorld {
         let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let saturated = vec![false; chunks.len()];
 
-        Self {
+        let mut world = Self {
             chunks,
             immature,
             saturated,
@@ -274,7 +277,10 @@ impl PlantWorld {
             population,
             populated_chunks,
             last_spread_added: 0,
-        }
+            biome_fill: Vec::new(),
+        };
+        world.recompute_biome_fill();
+        world
     }
 
     /// Total plants across the whole world (loaded or not). O(1).
@@ -415,6 +421,8 @@ impl PlantWorld {
             }
         }
         self.last_spread_added = added;
+        // Saturation may have flipped this pass; refresh the cached telemetry.
+        self.recompute_biome_fill();
         added > 0
     }
 
@@ -438,30 +446,30 @@ impl PlantWorld {
     }
 
     /// Per-biome fill: the percentage (0–100) of each biome's chunks that are
-    /// saturated (done spreading). Returns `(biome_name, percent, chunk_count)`
-    /// for the five biomes; biomes with no chunks report 0.
+    /// saturated (done spreading), as `(biome_name, percent, chunk_count)` for the
+    /// five biomes; biomes with no chunks report 0. O(1): it returns a cache
+    /// refreshed only when saturation can change (spread passes, load, creation),
+    /// since `stats()` reads it every frame.
     pub fn biome_fill_percents(&self) -> Vec<(&'static str, f32, usize)> {
-        const BIOMES: [Biome; 5] = [
-            Biome::Forest,
-            Biome::Grassland,
-            Biome::Desert,
-            Biome::Rock,
-            Biome::Snow,
-        ];
-        // Single pass: tally total and saturated chunks per biome.
-        let mut total = [0usize; 5];
-        let mut saturated = [0usize; 5];
+        self.biome_fill.clone()
+    }
+
+    /// Recompute the per-biome fill cache in one pass. Called after generation,
+    /// load, and any spread pass that can flip saturation.
+    fn recompute_biome_fill(&mut self) {
+        let mut total = [0usize; BIOME_SLOTS];
+        let mut saturated = [0usize; BIOME_SLOTS];
         for (idx, &b) in self.biome.iter().enumerate() {
-            let slot = b as usize;
+            let slot = biome_slot(b);
             total[slot] += 1;
             if self.saturated[idx] {
                 saturated[slot] += 1;
             }
         }
-        BIOMES
+        self.biome_fill = BIOME_ORDER
             .iter()
             .map(|&biome| {
-                let slot = biome as usize;
+                let slot = biome_slot(biome);
                 let percent = if total[slot] == 0 {
                     0.0
                 } else {
@@ -469,7 +477,7 @@ impl PlantWorld {
                 };
                 (biome_name(biome), percent, total[slot])
             })
-            .collect()
+            .collect();
     }
 
     /// Save the spread suffix of every chunk (the plants beyond the regenerable
@@ -570,6 +578,7 @@ impl PlantWorld {
         for (idx, &immature) in self.immature.iter().enumerate() {
             self.saturated[idx] = immature == 0;
         }
+        self.recompute_biome_fill();
         Ok(added)
     }
 }
@@ -849,6 +858,30 @@ fn biome_name(biome: Biome) -> &'static str {
     }
 }
 
+const BIOME_SLOTS: usize = 5;
+
+/// Order biomes are reported in. Output order, independent of enum discriminant.
+const BIOME_ORDER: [Biome; BIOME_SLOTS] = [
+    Biome::Forest,
+    Biome::Grassland,
+    Biome::Desert,
+    Biome::Rock,
+    Biome::Snow,
+];
+
+/// Stable per-biome slot for the fill tallies. An exhaustive match (rather than
+/// `biome as usize`) so adding a `Biome` variant is a compile error here, not an
+/// out-of-bounds index at runtime.
+fn biome_slot(biome: Biome) -> usize {
+    match biome {
+        Biome::Forest => 0,
+        Biome::Grassland => 1,
+        Biome::Desert => 2,
+        Biome::Rock => 3,
+        Biome::Snow => 4,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Spread persistence — compact little-endian blob of the per-chunk spread suffix
 // ---------------------------------------------------------------------------
@@ -979,6 +1012,7 @@ mod tests {
             population,
             populated_chunks,
             last_spread_added: 0,
+            biome_fill: Vec::new(),
         }
     }
 
