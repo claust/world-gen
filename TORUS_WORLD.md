@@ -260,6 +260,11 @@ spread densifies past base biome density.
 
 ### Iteration 1 — global per-plant sim, fill-to-capacity
 
+> **Build doc:** the implementation sequencing (milestones, current-state map,
+> acceptance checks) lives in
+> [docs/LIVE_SIM_ITERATION_1.md](docs/LIVE_SIM_ITERATION_1.md). The summary below
+> is the design intent.
+
 **Goal:** every chunk's plants simulate continuously on one global clock from
 `t=0`; sparse areas fill in via spread until spacing limits stop them; state
 persists across sessions. No death, no genome. Notably this **removes** machinery —
