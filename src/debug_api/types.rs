@@ -57,7 +57,7 @@ pub struct LifecycleSnapshot {
     pub tick_ms: f32,
     /// Approximate resident megabytes of the whole-world plant store.
     pub resident_mb: f32,
-    /// Per-biome fill: fraction of each biome's chunks that are saturated.
+    /// Per-biome fill: percentage (0–100) of each biome's chunks that are saturated.
     pub biome_fill: Vec<BiomeFill>,
     pub loaded_base_plants: usize,
     pub loaded_visible_plants: usize,
@@ -69,6 +69,7 @@ pub struct LifecycleSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BiomeFill {
     pub biome: String,
+    /// Percentage (0–100) of this biome's chunks that are saturated.
     pub percent: f32,
     pub chunks: usize,
 }

@@ -437,9 +437,9 @@ impl PlantWorld {
         plant + headers + indices
     }
 
-    /// Per-biome fill: the fraction of each biome's chunks that are saturated
-    /// (done spreading). Returns `(biome_name, percent, chunk_count)` for the
-    /// five biomes; biomes with no chunks report 0%.
+    /// Per-biome fill: the percentage (0–100) of each biome's chunks that are
+    /// saturated (done spreading). Returns `(biome_name, percent, chunk_count)`
+    /// for the five biomes; biomes with no chunks report 0.
     pub fn biome_fill_percents(&self) -> Vec<(&'static str, f32, usize)> {
         const BIOMES: [Biome; 5] = [
             Biome::Forest,
@@ -542,6 +542,11 @@ impl PlantWorld {
             let count = cur.read_u32()? as usize;
             if idx >= self.chunks.len() {
                 anyhow::bail!("chunk index {idx} out of range");
+            }
+            // Bound `count` by the bytes actually left before reserving, so a
+            // corrupted length can't trigger a huge allocation ahead of the EOF.
+            if count.saturating_mul(PLANT_BYTES) > cur.remaining() {
+                anyhow::bail!("declared {count} plants exceed the remaining data");
             }
             // The base list was shrunk to fit during generation; reserve the
             // suffix up front so restoring it is one growth, not many.
@@ -850,6 +855,8 @@ fn biome_name(biome: Biome) -> &'static str {
 
 const SPREAD_MAGIC: u32 = 0x504c_4e54; // "PLNT"
 const SPREAD_VERSION: u32 = 1;
+/// Serialized size of one plant: u16×4 + u8×2 + f32.
+const PLANT_BYTES: usize = 14;
 
 fn write_plant(buf: &mut Vec<u8>, p: &Plant) {
     buf.extend_from_slice(&p.local_x.to_le_bytes());
@@ -882,6 +889,10 @@ struct Cursor<'a> {
 impl<'a> Cursor<'a> {
     fn new(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.buf.len() - self.pos
     }
 
     fn take(&mut self, n: usize) -> anyhow::Result<&'a [u8]> {
@@ -935,6 +946,7 @@ fn stage_for(plant: &Plant, total_hours: f64, registry: &PlantRegistry) -> Growt
 mod tests {
     use super::*;
     use crate::world_core::herbarium::Herbarium;
+    use crate::world_core::storage::Storage as _;
 
     fn registry() -> Arc<PlantRegistry> {
         Arc::new(PlantRegistry::from_herbarium(&Herbarium::default_seeded()))
@@ -1038,6 +1050,25 @@ mod tests {
         assert!(reloaded.saturated[0]);
         assert!(!reloaded.saturated[1]);
         assert!(reloaded.saturated[2]);
+    }
+
+    #[test]
+    fn apply_saved_spread_rejects_a_corrupt_plant_count() {
+        // A blob whose declared plant count far exceeds its bytes must be rejected
+        // (not reserve a huge allocation) — header + one chunk claiming 1e9 plants.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SPREAD_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&SPREAD_VERSION.to_le_bytes());
+        buf.extend_from_slice(&7u32.to_le_bytes()); // seed (matches test_world)
+        buf.extend_from_slice(&1u32.to_le_bytes()); // one chunk
+        buf.extend_from_slice(&0u32.to_le_bytes()); // chunk idx 0
+        buf.extend_from_slice(&1_000_000_000u32.to_le_bytes()); // bogus count
+        let storage = MemBytes::default();
+        storage.save_bytes("plants", &buf).unwrap();
+
+        let mut world = test_world(vec![vec![]], registry());
+        assert_eq!(world.apply_saved_spread(&storage), 0);
+        assert!(world.chunks[0].is_empty());
     }
 
     #[test]
