@@ -2,16 +2,22 @@
 
 ## Status
 
-**Decision made.** We are converting the world from an unbounded flat plane to a
-**finite, wrapping flat plane (a torus)**. This is a living design doc — sections
-marked _OPEN_ are still under discussion.
+**Geometric foundation: shipped** (#55). The world is now a finite, seamlessly
+wrapping flat plane (a torus) — `256 × 256` chunks, periodic 4D-torus noise,
+canonical chunk ids at content lookup. The sections below on coordinate wrapping,
+tileable noise, streaming, and world size are **done** and kept as the design
+record.
 
-**Scope of this change: the geometric foundation only.** The plant life-cycle
-**simulation and ecosystem** work (sim scope, sustainability tuning, delta
-compaction — sections #4–#6) is the *motivation* for going finite, but it is
-**out of scope for this change** and deferred to a later one. This change makes the
-world a torus geometrically; it does **not** alter how plants spread, die, or are
-simulated. See [Out of scope](#out-of-scope-deferred-to-a-later-change).
+**Now active: the live simulation.** The plant life-cycle simulation was the
+*motivation* for going finite and was deferred from the geometry change. Its
+direction is now decided — see [Live simulation](#live-simulation-the-deferred-work).
+After exploring aggregate vs. per-plant models, we chose to **simulate every plant
+in every chunk individually**, globally, from `t=0`, because the long-term goal is
+to play with **evolution** (per-plant heritable rules), and a per-individual
+substrate is the natural — and aggregation-hostile-to-evolution — foundation.
+**Iteration 1** (specified below) runs that global per-plant sim with **constant
+traits** and **grow-to-capacity** dynamics; death and genomes follow in later
+iterations.
 
 ## Why (the requirement)
 
@@ -205,73 +211,114 @@ One forward-looking note: `N` should be defined as a single named constant
 versioning can reference it. Changing `N` later invalidates existing saves, so
 treat it as part of the world seed/format.
 
-## Out of scope (deferred to a later change)
+## Live simulation (the deferred work)
 
-The following are the *reason* we want a finite world, but they are **not part of
-this change**. This change delivers the torus geometry only; the simulation keeps
-behaving exactly as it does today (loaded-only spreading with capped catch-up).
-These are captured here so we don't lose the design context.
+The finite world exists so the plant life-cycle can be a **real, closed,
+persistent ecosystem** rather than the loaded-only approximation we ship today.
+The long-term goal is to play with **evolution**: each plant carries heritable
+rules (a genome) that mutate on reproduction and are shaped by selection over long
+time. That goal is what fixes the architecture.
 
-### S1. Lifecycle sim scope — _DEFERRED_
+### Why per-plant, not aggregate
 
-A finite world **enables** a better sim but doesn't give it for free. Today
-spreading ticks **only loaded chunks**, with capped catch-up on reload. With a
-bounded chunk set there's a real choice to make *later*:
+We explored a two-tier model (a coarse per-chunk aggregate as the persistent truth,
+concrete plants realized on load). It is cheap and bounded, but it is **hostile to
+evolution**: a genome *distribution* cannot be compressed to a per-species scalar
+count — averaging destroys exactly the within-population variation that selection
+acts on. So the substrate must be **per-individual**. The existing code is already
+a decent evolutionary substrate: `validate_seedling_landing` (spacing / biome /
+sea-level checks) is effectively a fitness function selecting which seeds survive.
 
-- **Keep loaded-only + catch-up.** Cheap. The biosphere is lazily evaluated —
-  frozen until visited, then deterministically replayed. Returnability works but
-  far regions don't truly "live" while away.
-- **Two-tier sim (coarse-global + fine-local).** A low-frequency, low-resolution
-  pass over **all `N²` chunks** (aggregate population/biome health per chunk, not
-  per-plant) that runs regardless of what's loaded; refined into individual plants
-  on arrival. This is what makes "the whole biosphere develops while you're away"
-  actually true rather than approximated.
+### Decided shape
 
-_Decide later: lazy vs. two-tier._
+- **Simulate every plant in every chunk, individually.** No coarse/fine split.
+- **Global from `t=0`.** All `N²` (65,536) canonical chunks tick on one global
+  clock; the whole world lives, loaded or not.
+- **All plants** (trees *and* shrubs) are in the sim.
+- Iteration 1 keeps **constant traits** (today's species config) — no genome yet —
+  and **grow-to-capacity** dynamics — no death yet. Death and genomes are
+  iterations 2 and 3, with seams left for them.
 
-**Caveat that touches this change:** spreading already uses
-`hash4(seed, cx, cz, i)`. Once the sim runs on a torus, those chunk ids must be the
-**canonical (wrapped)** ids so a seed landing across the seam is deterministic.
-That canonicalization is a *small* follow-up, but it is **not** done here — for now
-the sim continues to use raw ids, which is harmless until the deferred sim work
-begins. Flagged so it isn't forgotten.
+### Feasibility (the numbers we sized against)
 
-### S2. Sustainability tuning — _DEFERRED_
+Per chunk: ~529 tree slots (11 m grid) + ~4096 shrub slots (4 m grid), filled at
+biome density (Forest up to 0.72). A dense forest chunk ≈ 3,300 plants (~90 %
+shrubs). Across 65,536 chunks: **~25–65 M plants**, peaking somewhat higher once
+spread densifies past base biome density.
 
-A closed system needs equilibrium, or populations explode to fill every tile or
-collapse to zero. To resolve later:
+- **RAM:** ~40 M plants × ~32 B packed ≈ **~1.3–2 GB resident**. This is the
+  binding constraint; the `Plant` struct must be packed (chunk-local quantized
+  position, `u8` species/rotation/stage), not today's `Vec3`+`usize` layout. Big
+  later lever if RAM bites: shrubs as **genets** (one sim entity → many billboards),
+  cutting evolving count 5–20×.
+- **Startup (first world creation only):** generating terrain+flora for all 65k
+  chunks is tens of seconds on 16 cores — paid **once**, then persisted and mmap'd
+  on later loads. Not a per-session cost.
+- **Tick:** growth is **analytic** (computed from `born_hour`, ~free). The periodic
+  global **spread** pass scans mature plants — parallel via rayon, ~100–300 ms,
+  decoupled from frame rate and time-sliced. Cost scales with churn, not raw count.
 
-- Is there **mortality / death**? Per-plant lifespan?
-- **Carrying capacity** per chunk or per biome (resource competition)?
-- What's the target dynamic — stable equilibrium, or boom/bust cycles?
+### Iteration 1 — global per-plant sim, fill-to-capacity
 
-### S3. Persistence / DeltaStore growth — _DEFERRED_
+**Goal:** every chunk's plants simulate continuously on one global clock from
+`t=0`; sparse areas fill in via spread until spacing limits stop them; state
+persists across sessions. No death, no genome. Notably this **removes** machinery —
+the loaded-only catch-up scaffolding exists only to fake unsimulated chunks.
 
-Finiteness caps spatial extent but not **history**: a long sim could accumulate
-unbounded deltas. Need periodic **compaction** of deltas into a fresh base state so
-the store stays bounded over real time, not just over space.
+1. **Canonical sim domain + delete catch-up.** Operate over the 256×256 canonical
+   grid; canonicalize spread targets (`world_to_chunk → canonical_chunk`). Delete
+   `last_sim_hour`, `MAX_CATCH_UP_HOURS`, and the clamp/replay logic in
+   [lifecycle_sim.rs](src/world_runtime/lifecycle_sim.rs). *Net code removed.*
+2. **`PlantWorld` — resident full-world plant store.** Live plant list per
+   canonical chunk, all 65,536 resident. Base must be resident anyway (spreaders
+   include mature base plants; regenerating 65k chunks of flora per tick is far too
+   expensive). Init = batch-generate base flora for the whole world once at
+   creation (parallel; terrain generated transiently, then discarded).
+3. **Global tick driver.** Replace `tick_loaded_chunk_growth`
+   ([runtime.rs](src/world_runtime/runtime.rs)) with a global pass over all
+   canonical chunks. Spread runs parallel at a fixed cadence, **decoupled from
+   frame rate** and time-sliced so a pass never stalls a frame. Spacing-based
+   landing validation is the capacity gate — confirm it genuinely terminates growth
+   so the world settles instead of creeping forever.
+4. **Render bridge.** Loaded chunks read plants from `PlantWorld` instead of
+   regenerating base+delta; terrain still regenerated per loaded chunk for the mesh.
+   Re-upload a chunk's instance buffer when spread changes its list.
+5. **Binary paged persistence.** Replace the single pretty-JSON `deltas` blob
+   ([delta_store.rs](src/world_runtime/delta_store.rs)) with binary region files
+   (mmap load, write-back dirty regions). Represent as delta-from-base for now
+   (constant traits → base is regenerable, so disk stays small); migrate to full
+   lists when evolution removes base-regenerability.
+6. **Telemetry + bench.** World population, per-biome fill %, spread events/tick,
+   tick ms, resident MB. Bench the global pass; assert population converges to a
+   bounded capacity.
 
-## Suggested sequencing
+**Risks to handle in iteration 1:**
 
-**This change (geometric foundation only):**
+- **Cross-chunk spread is a parallel write hazard.** A chunk's seeds land in
+  *neighbor* chunks' lists. Parallelizing spread over chunks needs a two-phase
+  gather/scatter: phase 1 each chunk emits `(target_canonical_chunk, seedling)`;
+  phase 2 a merge step appends. Keeps it deterministic and race-free.
+- **Spread cadence vs `day_speed`.** High day-speed → many spread passes/sec → CPU
+  spikes. Cap passes-per-frame or run the sim on its own fixed timestep independent
+  of render.
 
-1. Introduce `N` and a `canonical(raw_id) = raw_id.rem_euclid(N)` helper (#1, #4).
-2. 4D-torus tileable noise in [heightmap.rs](src/world_core/heightmap.rs) (#2).
-3. Route generation/persistence content lookups through `canonical()`; leave
-   streaming, culling, and placement on raw ids (#1, #3).
+### Later iterations (seams left, not built yet)
 
-That's the whole change — the world becomes a seamless torus. Streaming behaves as
-today; the sim behaves as today.
+- **Iteration 2 — death + carrying capacity.** Constant per-species lifespan; spread
+  gated on capacity. Turns the static "full" state into a **living equilibrium**
+  (sprout → mature → spread → die → regrow). This is the stable-equilibrium dynamic
+  we're targeting; grow-to-capacity in iteration 1 is its precursor.
+- **Iteration 3 — evolution.** Add a genome to the `Plant` struct; express traits
+  (growth rate, mature height, spread radius/chance, tolerances, lifespan, seed
+  count) from genes instead of fixed species config; mutate on reproduction;
+  landing validation = selection. Species become *starting genomes*, not hard rules.
+  Persistence migrates base→full lists (mutated lineages aren't seed-regenerable).
+- **Shrub genets** — model shrubs as genetic clumps to cut evolving-individual count
+  5–20×. Pull in whenever RAM becomes the constraint.
 
-**Later changes (deferred, see [Out of scope](#out-of-scope-deferred-to-a-later-change)):**
+## Decisions log
 
-4. Canonicalize sim chunk ids so spreading is deterministic across the seam (S1).
-5. Sim scope decision + implementation — lazy vs. two-tier (S1).
-6. Sustainability tuning (S2) and delta compaction (S3).
-
-## Open decisions checklist
-
-**Geometric foundation (this change):**
+**Geometric foundation (shipped, #55):**
 
 - [x] **1a (wrap at lookup)** vs 1b — DECIDED: 1a, camera position grows unbounded
 - [x] Noise: **4D-torus wrap** vs integer-period domain wrap — DECIDED: 4D-torus
@@ -279,9 +326,15 @@ today; the sim behaves as today.
   streaming/placement, canonical ids only at content lookup; no seam special-case)
 - [x] World size `N` — DECIDED: `N = 256` (~65 km², ~65k chunks; `L = 65 536 m`)
 
-**Deferred to a later change (out of scope here):**
+**Live simulation:**
 
-- [ ] Sim scope: lazy (loaded-only) vs two-tier (coarse-global + fine-local)
-- [ ] Mortality / carrying-capacity model for equilibrium
-- [ ] Delta compaction strategy
-- [ ] Canonicalize sim chunk ids for seam-correct, deterministic spreading
+- [x] Sim model: aggregate (two-tier) vs **per-plant individual** — DECIDED:
+  per-plant (evolution needs per-individual variation)
+- [x] Scope: loaded-only vs **global from `t=0`** — DECIDED: global, all `N²` chunks
+- [x] Coverage: **all plants** (trees + shrubs) in iteration 1
+- [x] Iteration 1 dynamics: **grow-to-capacity, no death**; constant traits, no genome
+- [ ] Iteration 2: mortality model + carrying-capacity tuning (stable equilibrium)
+- [ ] Iteration 3: genome representation, trait expression, mutation/selection
+- [ ] Persistence: binary region-file/mmap format details; delta-from-base →
+  full-list migration trigger
+- [ ] Shrub genets — if/when RAM forces it
