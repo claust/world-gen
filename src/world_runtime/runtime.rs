@@ -161,7 +161,8 @@ impl WorldRuntime {
     /// Run a global spread pass, rate-limited to [`SPREAD_TICK_HOURS`] of sim
     /// time and capped to one pass per call (the pass is the expensive part, so a
     /// high `day_speed` lets sim-time lag rather than running it many times per
-    /// frame). Returns `None` if no pass was due, else `Some(seedlings_added)`.
+    /// frame). Returns `None` if no pass was due, else `Some(added)` where `added`
+    /// is whether any seedling was placed.
     fn tick_plant_world_spread(&mut self) -> Option<bool> {
         let now = self.clock.total_hours();
         if now - self.last_spread_hour < SPREAD_TICK_HOURS {
