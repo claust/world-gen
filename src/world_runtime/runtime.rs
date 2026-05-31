@@ -82,10 +82,23 @@ impl WorldRuntime {
             plant_world.populated_chunks(),
         );
 
+        // The delta store is legacy state from the loaded-only model. The global
+        // PlantWorld sim does not apply it to rendering yet, so surface it rather
+        // than letting a non-empty save silently stop affecting the world. It is
+        // still loaded/saved for telemetry continuity and reconciled when spread
+        // persistence lands (M4).
+        let delta_store = DeltaStore::load(storage);
+        if !delta_store.is_empty() {
+            log::warn!(
+                "loaded legacy delta state; the global PlantWorld sim does not apply it to \
+                 rendering — it will be reconciled when spread persistence lands"
+            );
+        }
+
         Ok(Self {
             streaming: StreamingWorld::new(seed, load_radius, threads, arc_config, registry)?,
             clock: WorldClock::new(start_hour, total_hours, day_speed),
-            delta_store: DeltaStore::load(storage),
+            delta_store,
             plant_world,
             last_growth_hour: total_hours,
         })

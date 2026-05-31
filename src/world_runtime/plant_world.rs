@@ -61,14 +61,21 @@ fn stage_from_u8(value: u8) -> GrowthStage {
     }
 }
 
+// Quantize `[0, CHUNK_SIZE_METERS)` onto the `u16` range using a 2^16 divisor and
+// `floor`, so the dequantized value is always strictly less than
+// `CHUNK_SIZE_METERS`. A plant therefore never reconstructs exactly on the chunk
+// boundary, where `floor(pos / CHUNK_SIZE_METERS)` would attribute it to the
+// neighbouring chunk.
+const SPAN_STEPS: f32 = 65536.0;
+
 fn quantize_span(value: f32) -> u16 {
-    (value / CHUNK_SIZE_METERS * u16::MAX as f32)
-        .round()
+    (value / CHUNK_SIZE_METERS * SPAN_STEPS)
+        .floor()
         .clamp(0.0, u16::MAX as f32) as u16
 }
 
 fn dequantize_span(value: u16) -> f32 {
-    value as f32 / u16::MAX as f32 * CHUNK_SIZE_METERS
+    value as f32 / SPAN_STEPS * CHUNK_SIZE_METERS
 }
 
 impl Plant {
@@ -118,7 +125,11 @@ pub struct PlantWorld {
     /// fully-grown chunks (all of them, before spread exists).
     immature: Vec<u32>,
     registry: Arc<PlantRegistry>,
+    /// Cached totals so `stats()` (called every frame) stays O(1). Maintained as
+    /// chunks change; spread (M3) updates them as chunks gain plants / transition
+    /// empty↔non-empty.
     population: usize,
+    populated_chunks: usize,
 }
 
 fn chunk_index(canon: IVec2) -> usize {
@@ -135,6 +146,14 @@ impl PlantWorld {
         registry: Arc<PlantRegistry>,
         threads: usize,
     ) -> Self {
+        // `Plant` packs the species index into a `u8`; guarantee the herbarium
+        // fits before generating millions of plants (this is a long-lived store).
+        assert!(
+            registry.species.len() <= u8::MAX as usize + 1,
+            "PlantWorld packs species_index into a u8, but the herbarium has {} species (max 256)",
+            registry.species.len()
+        );
+
         let n = WORLD_SIZE_CHUNKS;
         let total = (n as usize) * (n as usize);
         let generator = ChunkGenerator::new(seed, config, Arc::clone(&registry));
@@ -180,6 +199,7 @@ impl PlantWorld {
         };
 
         let population = chunks.iter().map(Vec::len).sum();
+        let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
         let immature = chunks
             .iter()
             .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
@@ -190,21 +210,22 @@ impl PlantWorld {
             immature,
             registry,
             population,
+            populated_chunks,
         }
     }
 
-    /// Total plants across the whole world (loaded or not).
+    /// Total plants across the whole world (loaded or not). O(1).
     pub fn population(&self) -> usize {
         self.population
     }
 
-    /// Number of canonical chunks holding at least one plant.
+    /// Number of canonical chunks holding at least one plant. O(1).
     pub fn populated_chunks(&self) -> usize {
-        self.chunks.iter().filter(|c| !c.is_empty()).count()
+        self.populated_chunks
     }
 
     /// Packed plants for a canonical chunk.
-    pub fn chunk(&self, canon: IVec2) -> &[Plant] {
+    fn chunk(&self, canon: IVec2) -> &[Plant] {
         &self.chunks[chunk_index(canon)]
     }
 
@@ -360,6 +381,7 @@ mod tests {
             immature: vec![1],
             registry: Arc::clone(&reg),
             population: 1,
+            populated_chunks: 1,
         };
 
         // Before any growth time, it stays a seedling.
