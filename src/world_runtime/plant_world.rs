@@ -133,10 +133,12 @@ pub struct PlantWorld {
     /// Count of plants not yet `Mature`, per chunk — lets the growth tick skip
     /// fully-grown chunks.
     immature: Vec<u32>,
-    /// Per chunk: fully grown and packed, so no candidate can land. With no death
-    /// in iteration 1 this is permanent, so the spread pass skips these chunks —
-    /// which is what makes the global pass cheap again once the world fills.
-    settled: Vec<bool>,
+    /// Per chunk: all-mature and saturated — the last spread pass added nothing
+    /// here. A chunk's plants can only spread into the 8 adjacent chunks (spread
+    /// radius ≪ chunk size), so phase 1 skips a chunk only when it *and* all eight
+    /// neighbours are saturated. That keeps a packed chunk feeding a still-filling
+    /// neighbour, while making the global pass cheap once a whole region fills.
+    saturated: Vec<bool>,
     registry: Arc<PlantRegistry>,
     /// Terrain + rules for validating spread landings without the full per-chunk
     /// grid: the heightmap is point-sampled at each seedling position.
@@ -170,6 +172,17 @@ impl PlantWorld {
             registry.species.len() <= u8::MAX as usize + 1,
             "PlantWorld packs species_index into a u8, but the herbarium has {} species (max 256)",
             registry.species.len()
+        );
+        // The saturation skip assumes a plant spreads no further than an adjacent
+        // chunk, so seedlings reach at most the 8-neighbourhood.
+        let max_spread = registry
+            .species
+            .iter()
+            .map(|s| s.placement.spread_radius)
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_spread < CHUNK_SIZE_METERS,
+            "spread radius {max_spread} must stay within one chunk ({CHUNK_SIZE_METERS} m)"
         );
 
         let n = WORLD_SIZE_CHUNKS;
@@ -222,11 +235,11 @@ impl PlantWorld {
             .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
             .collect();
 
-        let settled = vec![false; chunks.len()];
+        let saturated = vec![false; chunks.len()];
         Self {
             chunks,
             immature,
-            settled,
+            saturated,
             registry,
             heightmap: Heightmap::new(seed, config.heightmap.clone()),
             biome_config: config.biome.clone(),
@@ -302,12 +315,12 @@ impl PlantWorld {
     pub fn tick_spread(&mut self, born_hour: f64) -> bool {
         let total = self.chunks.len();
 
-        // Phase 1: emit candidates. Read-only over the whole grid; settled chunks
-        // (fully grown and packed) are skipped — their mature plants would only
-        // re-propose already-placed seedlings.
-        let settled = &self.settled;
+        // Phase 1: emit candidates. Read-only over the whole grid. A chunk is
+        // skipped only when it and all eight neighbours are saturated, so a packed
+        // chunk still seeds a not-yet-full neighbour across the border.
+        let saturated = &self.saturated;
         let emit = |idx: usize| {
-            if settled[idx] {
+            if neighbourhood_saturated(saturated, idx) {
                 return Vec::new();
             }
             emit_chunk_candidates(idx, &self.chunks, &self.registry, self.seed)
@@ -353,13 +366,14 @@ impl PlantWorld {
             .collect();
 
         // Serial fold of the per-chunk results into the cached counters and the
-        // settled flags.
+        // saturation flags.
         let mut any = false;
-        for idx in 0..total {
-            let count = accepted[idx];
+        for (idx, &count) in accepted.iter().enumerate() {
             if count > 0 {
                 any = true;
-                self.settled[idx] = false;
+                // It gained plants, so it is not saturated and may spread once
+                // those seedlings mature.
+                self.saturated[idx] = false;
                 // `len() == count` means the chunk held nothing before this pass,
                 // so it just transitioned empty → non-empty.
                 if self.chunks[idx].len() == count as usize {
@@ -367,14 +381,38 @@ impl PlantWorld {
                 }
                 self.immature[idx] += count;
                 self.population += count as usize;
-            } else if !incoming[idx].is_empty() && self.immature[idx] == 0 {
-                // Candidates were proposed here but none fit, and nothing is left
-                // growing — permanently packed (no death in iteration 1).
-                self.settled[idx] = true;
+            } else {
+                // Nothing landed: saturated iff nothing is left growing here. A
+                // neighbour maturing and spreading in (above) clears this again.
+                self.saturated[idx] = self.immature[idx] == 0;
             }
         }
         any
     }
+}
+
+/// True when chunk `idx` and all eight of its (wrapped) neighbours are saturated,
+/// so the chunk's plants cannot place a seedling anywhere this pass.
+fn neighbourhood_saturated(saturated: &[bool], idx: usize) -> bool {
+    if !saturated[idx] {
+        return false;
+    }
+    let n = WORLD_SIZE_CHUNKS;
+    let cx = (idx as i32) % n;
+    let cz = (idx as i32) / n;
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dz == 0 {
+                continue;
+            }
+            let nx = (cx + dx).rem_euclid(n);
+            let nz = (cz + dz).rem_euclid(n);
+            if !saturated[(nz * n + nx) as usize] {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// A seedling proposed by phase 1, targeting canonical chunk `target`.
@@ -664,11 +702,11 @@ mod tests {
             .iter()
             .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
             .collect();
-        let settled = vec![false; chunks.len()];
+        let saturated = vec![false; chunks.len()];
         PlantWorld {
             chunks,
             immature,
-            settled,
+            saturated,
             registry: reg,
             heightmap: Heightmap::new(7, config.heightmap.clone()),
             biome_config: config.biome.clone(),
@@ -750,6 +788,43 @@ mod tests {
         assert!((lap.position.x - (here.position.x + lap_meters)).abs() < 0.01);
         assert!((lap.position.z - here.position.z).abs() < 0.01);
         assert!((lap.position.y - here.position.y).abs() < 1e-3);
+    }
+
+    #[test]
+    fn neighbourhood_saturation_requires_self_and_all_eight_neighbours() {
+        let n = WORLD_SIZE_CHUNKS;
+        let cells = (n * n) as usize;
+        let saturate = |sat: &mut [bool], cx: i32, cz: i32| {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let nx = (cx + dx).rem_euclid(n);
+                    let nz = (cz + dz).rem_euclid(n);
+                    sat[(nz * n + nx) as usize] = true;
+                }
+            }
+        };
+
+        // Interior chunk with its full 3×3 block saturated.
+        let mut sat = vec![false; cells];
+        saturate(&mut sat, 5, 5);
+        let idx = (5 * n + 5) as usize;
+        assert!(neighbourhood_saturated(&sat, idx));
+
+        // Clearing any one neighbour breaks it.
+        sat[(6 * n + 5) as usize] = false;
+        assert!(!neighbourhood_saturated(&sat, idx));
+
+        // The centre itself must be saturated too.
+        sat[(6 * n + 5) as usize] = true;
+        sat[idx] = false;
+        assert!(!neighbourhood_saturated(&sat, idx));
+
+        // Corner chunk (0,0): neighbours wrap around the torus to row/col n-1.
+        let mut wrap = vec![false; cells];
+        saturate(&mut wrap, 0, 0);
+        assert!(neighbourhood_saturated(&wrap, 0));
+        wrap[((n - 1) * n + (n - 1)) as usize] = false; // the (-1,-1) diagonal
+        assert!(!neighbourhood_saturated(&wrap, 0));
     }
 
     #[test]
