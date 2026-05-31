@@ -543,6 +543,9 @@ impl PlantWorld {
             if idx >= self.chunks.len() {
                 anyhow::bail!("chunk index {idx} out of range");
             }
+            // The base list was shrunk to fit during generation; reserve the
+            // suffix up front so restoring it is one growth, not many.
+            self.chunks[idx].reserve(count);
             for _ in 0..count {
                 let plant = read_plant(&mut cur)?;
                 if plant.stage != MATURE {

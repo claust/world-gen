@@ -1375,11 +1375,12 @@ impl AppState {
             log::warn!("failed to save game state: {e}");
             return Err(e);
         }
-        self.save = Some(save);
         if let Err(e) = world.save_plants(&*self.storage) {
             log::warn!("failed to save plant state: {e}");
             return Err(e);
         }
+        // Only advance the in-memory resume point once both writes succeeded.
+        self.save = Some(save);
         Ok(())
     }
 
