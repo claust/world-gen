@@ -5,8 +5,9 @@ use glam::{IVec2, Vec3};
 use super::frustum::Frustum;
 use super::geometry::Vertex;
 use super::instancing::{
-    build_house_instances, build_plant_instances, shrub_billboard_mesh, upload_instances,
-    upload_prototype, GpuInstanceChunk, InstanceData, ModelRegistry, PrototypeMesh,
+    build_house_instances, build_plant_instances, shrub_billboard_mesh, sign_post_mesh,
+    upload_instances, upload_prototype, GpuInstanceChunk, InstanceData, ModelRegistry,
+    PrototypeMesh,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
@@ -36,6 +37,8 @@ pub struct InstancedPass {
     /// Seedlings and young plants; always drawn with LOD meshes.
     plant_lod_instances: Vec<HashMap<IVec2, ChunkPlantBuffers>>,
     house_instances: HashMap<IVec2, GpuInstanceChunk>,
+    /// One debug road-post sign per chunk, placed at the chunk center.
+    sign_instances: HashMap<IVec2, GpuInstanceChunk>,
 }
 
 struct ChunkPlantBuffers {
@@ -174,6 +177,13 @@ impl InstancedPass {
         let (species_names, species_lod_names, species_is_shrub) =
             Self::build_species_meshes(device, &mut models, registry);
 
+        // Debug tile-marker road-post sign (one shared prototype mesh).
+        let (sign_verts, sign_indices) = sign_post_mesh();
+        models.models.insert(
+            "sign-post".to_string(),
+            upload_prototype(device, &sign_verts, &sign_indices, "sign-post"),
+        );
+
         let plant_instances = (0..registry.species.len())
             .map(|_| HashMap::new())
             .collect();
@@ -191,6 +201,7 @@ impl InstancedPass {
                 .map(|_| HashMap::new())
                 .collect(),
             house_instances: HashMap::new(),
+            sign_instances: HashMap::new(),
         }
     }
 
@@ -297,6 +308,8 @@ impl InstancedPass {
         }
         self.house_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
+        self.sign_instances
+            .retain(|coord, _| world_chunks.contains_key(coord));
 
         for (coord, chunk) in world_chunks {
             let needs_rebuild = self
@@ -348,6 +361,24 @@ impl InstancedPass {
                     "house",
                 ) {
                     self.house_instances.insert(*coord, gpu);
+                }
+            }
+
+            // Debug tile-marker sign: one post at the chunk center, on the ground.
+            if !self.sign_instances.contains_key(coord) {
+                let half = CHUNK_SIZE_METERS * 0.5;
+                let ground = chunk.terrain.height_at_world(half, half);
+                let cx = (coord.x as f32 + 0.5) * CHUNK_SIZE_METERS;
+                let cz = (coord.y as f32 + 0.5) * CHUNK_SIZE_METERS;
+                let instance = InstanceData {
+                    position: [cx, ground, cz],
+                    rotation_y: 0.0,
+                    scale: [1.0, 1.0, 1.0],
+                    _pad: 0.0,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                };
+                if let Some(gpu) = upload_instances(device, &[instance], "sign-post") {
+                    self.sign_instances.insert(*coord, gpu);
                 }
             }
         }
@@ -502,6 +533,19 @@ impl InstancedPass {
                 pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
             }
         }
+
+        // Draw debug tile-marker sign posts.
+        if let Some(mesh) = self.models.get("sign-post") {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for (coord, inst) in &self.sign_instances {
+                if !frustum.is_chunk_visible(*coord) {
+                    continue;
+                }
+                pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+            }
+        }
     }
 
     /// Depth-only pass: render shadow casters from the light's point of view.
@@ -548,6 +592,16 @@ impl InstancedPass {
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             for inst in self.house_instances.values() {
+                pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
+                pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+            }
+        }
+
+        // Debug tile-marker sign posts.
+        if let Some(mesh) = self.models.get("sign-post") {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for inst in self.sign_instances.values() {
                 pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
                 pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
             }

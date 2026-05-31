@@ -81,6 +81,32 @@ pub struct ChunkTerrain {
     pub has_water: bool,
 }
 
+impl ChunkTerrain {
+    /// Sample the terrain height at a position local to this chunk, where
+    /// `local_x`/`local_z` are in meters within `[0, CHUNK_SIZE_METERS]`.
+    /// Bilinearly interpolates the stored `CHUNK_GRID_RESOLUTION²` height grid.
+    pub fn height_at_world(&self, local_x: f32, local_z: f32) -> f32 {
+        let side = CHUNK_GRID_RESOLUTION;
+        let cell = CHUNK_SIZE_METERS / (side - 1) as f32;
+
+        let max_idx = (side - 1) as f32;
+        let fx = (local_x / cell).clamp(0.0, max_idx);
+        let fz = (local_z / cell).clamp(0.0, max_idx);
+
+        let x0 = fx.floor() as usize;
+        let z0 = fz.floor() as usize;
+        let x1 = (x0 + 1).min(side - 1);
+        let z1 = (z0 + 1).min(side - 1);
+        let tx = fx - x0 as f32;
+        let tz = fz - z0 as f32;
+
+        let h = |x: usize, z: usize| self.heights[z * side + x];
+        let top = h(x0, z0) * (1.0 - tx) + h(x1, z0) * tx;
+        let bottom = h(x0, z1) * (1.0 - tx) + h(x1, z1) * tx;
+        top * (1.0 - tz) + bottom * tz
+    }
+}
+
 #[derive(Clone)]
 pub struct ChunkData {
     pub coord: IVec2,
