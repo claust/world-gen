@@ -42,6 +42,17 @@ impl FileStorage {
         Self::validate_key(key)?;
         Ok(format!("{key}.bin"))
     }
+
+    /// Write `data` to `path` atomically: a full write to `path.tmp` followed by
+    /// a rename, so a crash or full disk mid-write can't truncate or corrupt the
+    /// existing file (the rename is atomic on the same filesystem). Important for
+    /// the large `plants.bin`.
+    fn atomic_write(path: &str, data: &[u8]) -> anyhow::Result<()> {
+        let tmp = format!("{path}.tmp");
+        std::fs::write(&tmp, data)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,8 +75,7 @@ impl Storage for FileStorage {
 
     fn save(&self, key: &str, data: &str) -> anyhow::Result<()> {
         let path = FileStorage::path_for(key)?;
-        std::fs::write(&path, data)?;
-        Ok(())
+        FileStorage::atomic_write(&path, data.as_bytes())
     }
 
     fn load_bytes(&self, key: &str) -> Option<Vec<u8>> {
@@ -83,8 +93,7 @@ impl Storage for FileStorage {
 
     fn save_bytes(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
         let path = FileStorage::bin_path_for(key)?;
-        std::fs::write(&path, data)?;
-        Ok(())
+        FileStorage::atomic_write(&path, data)
     }
 }
 
