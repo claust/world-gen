@@ -1377,6 +1377,12 @@ impl AppState {
         }
         if let Err(e) = world.save_plants(&*self.storage) {
             log::warn!("failed to save plant state: {e}");
+            // The new metadata is already on disk but the plant blob isn't, so
+            // restore the previous metadata (best-effort) to keep the on-disk
+            // save.json / plants.bin pair consistent.
+            if let Some(prev) = &self.save {
+                let _ = prev.save(&*self.storage);
+            }
             return Err(e);
         }
         // Only advance the in-memory resume point once both writes succeeded.

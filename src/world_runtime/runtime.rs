@@ -1,5 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use glam::{IVec2, Vec3};
 
@@ -116,14 +121,14 @@ impl WorldRuntime {
     pub fn update(&mut self, dt_seconds: f32, camera_position: Vec3) {
         self.clock.update(dt_seconds);
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let tick_start = std::time::Instant::now();
+        // `Instant` resolves to `web_time::Instant` on wasm, so the tick is timed
+        // on every platform.
+        let tick_start = Instant::now();
         let growth = self.tick_plant_world_growth();
         let spread = self.tick_plant_world_spread();
         // A pass *ran* if it was due; it *changed* the world if it returned `true`.
         // Time every actual pass so `tick_ms` reflects the latest tick, not the
         // latest visible change.
-        #[cfg(not(target_arch = "wasm32"))]
         if growth.is_some() || spread.is_some() {
             self.last_tick_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
         }
