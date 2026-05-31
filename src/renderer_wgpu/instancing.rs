@@ -148,6 +148,110 @@ pub fn shrub_billboard_mesh(height: f32, half_width: f32) -> (Vec<Vertex>, Vec<u
     (verts, indices)
 }
 
+// --- Debug tile-marker road-post sign --------------------------------------
+//
+// A small post standing in the middle of each chunk with a flat board near the
+// top. The chunk coordinate is painted onto the board by `SignTextPass`; these
+// constants are shared so the text planes line up with the board faces.
+
+/// Pole half-thickness in X and Z (meters).
+pub const SIGN_POLE_HALF: f32 = 0.06;
+/// Board center height above the ground (meters).
+pub const SIGN_BOARD_CENTER_Y: f32 = 2.0;
+/// Board half-width in X (meters).
+pub const SIGN_BOARD_HALF_W: f32 = 0.80;
+/// Board half-height in Y (meters).
+pub const SIGN_BOARD_HALF_H: f32 = 0.34;
+/// Board half-thickness in Z (meters). The board is opaque so each face
+/// occludes the text painted on the opposite side.
+pub const SIGN_BOARD_HALF_T: f32 = 0.05;
+
+/// Append an axis-aligned box centered at `center` with half-extents `half`,
+/// flat-shaded with `color`. Faces wind CCW as seen from outside (matches the
+/// instanced pipeline's back-face culling).
+fn push_box(
+    verts: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    center: [f32; 3],
+    half: [f32; 3],
+    color: [f32; 3],
+) {
+    // (normal, in-plane right axis u, in-plane up axis v) with u × v = normal.
+    let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]), // +X
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), // -X
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]), // +Y
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]), // -Y
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),  // +Z
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), // -Z
+    ];
+
+    for (n, u, v) in faces {
+        // Half-extent along each in-plane axis (pick the matching component).
+        let hu = u[0].abs() * half[0] + u[1].abs() * half[1] + u[2].abs() * half[2];
+        let hv = v[0].abs() * half[0] + v[1].abs() * half[1] + v[2].abs() * half[2];
+        let hn = n[0].abs() * half[0] + n[1].abs() * half[1] + n[2].abs() * half[2];
+        let fc = [
+            center[0] + n[0] * hn,
+            center[1] + n[1] * hn,
+            center[2] + n[2] * hn,
+        ];
+        // Corners: bottom-left, bottom-right, top-right, top-left (CCW from outside).
+        let corner = |su: f32, sv: f32| {
+            [
+                fc[0] + u[0] * hu * su + v[0] * hv * sv,
+                fc[1] + u[1] * hu * su + v[1] * hv * sv,
+                fc[2] + u[2] * hu * su + v[2] * hv * sv,
+            ]
+        };
+        let base = verts.len() as u32;
+        for pos in [
+            corner(-1.0, -1.0),
+            corner(1.0, -1.0),
+            corner(1.0, 1.0),
+            corner(-1.0, 1.0),
+        ] {
+            verts.push(Vertex {
+                position: pos,
+                normal: n,
+                color,
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
+/// Mesh for a single road-post sign: a wooden pole topped by a flat board.
+/// Origin at ground level, centered on X/Z; the board faces ±Z.
+pub fn sign_post_mesh() -> (Vec<Vertex>, Vec<u32>) {
+    let mut verts = Vec::new();
+    let mut indices = Vec::new();
+
+    let pole_color = [0.40, 0.27, 0.15];
+    let board_color = [0.88, 0.82, 0.66];
+
+    // Pole: from the ground up to the board center.
+    let pole_top = SIGN_BOARD_CENTER_Y;
+    push_box(
+        &mut verts,
+        &mut indices,
+        [0.0, pole_top * 0.5, 0.0],
+        [SIGN_POLE_HALF, pole_top * 0.5, SIGN_POLE_HALF],
+        pole_color,
+    );
+
+    // Board: centered at SIGN_BOARD_CENTER_Y, facing ±Z.
+    push_box(
+        &mut verts,
+        &mut indices,
+        [0.0, SIGN_BOARD_CENTER_Y, 0.0],
+        [SIGN_BOARD_HALF_W, SIGN_BOARD_HALF_H, SIGN_BOARD_HALF_T],
+        board_color,
+    );
+
+    (verts, indices)
+}
+
 /// Build per-species instance data from plant instances.
 /// Returns a Vec where index i = (mature instances, forced-LOD instances) for species i.
 pub fn build_plant_instances(

@@ -8,6 +8,7 @@ use super::instanced_pass::{InstancedPass, InstancedStats};
 use super::instancing::{GpuInstanceChunk, PrototypeMesh};
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
 use super::minimap_pass::MinimapPass;
+use super::sign_text::SignTextPass;
 use super::sky::SkyPalette;
 use super::sky_pass::SkyPass;
 use super::terrain_pass::TerrainPass;
@@ -27,6 +28,7 @@ pub struct WorldRenderer {
     terrain: TerrainPass,
     water: WaterPass,
     instanced: InstancedPass,
+    sign_text: SignTextPass,
     hud: HudPass,
     minimap: MinimapPass,
     fog_color: [f32; 3],
@@ -96,6 +98,7 @@ impl WorldRenderer {
             &shadow_map.layout,
             &registry,
         );
+        let sign_text = SignTextPass::new(device, queue, render_format, &frame_bg.layout);
         let hud = HudPass::new(device, queue, render_format);
         let minimap = MinimapPass::new(device, queue, render_format);
 
@@ -114,6 +117,7 @@ impl WorldRenderer {
             terrain,
             water,
             instanced,
+            sign_text,
             hud,
             minimap,
             fog_color,
@@ -330,6 +334,7 @@ impl WorldRenderer {
 
     pub fn sync_instances(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
         self.instanced.sync_chunks(device, chunks, &self.registry);
+        self.sign_text.sync_chunks(device, chunks);
     }
 
     pub fn sync_minimap(&mut self, queue: &wgpu::Queue, chunks: &HashMap<IVec2, ChunkData>) {
@@ -388,6 +393,10 @@ impl WorldRenderer {
         );
         self.water
             .render(pass, &frustum, &self.shadow_map.bind_group);
+        // Sign labels render last: this pass rebinds group 1 to the font atlas,
+        // so it must come after every pass that relies on group 1 being the
+        // terrain-material bind group (terrain/instanced/water).
+        self.sign_text.render(pass, &frustum, self.camera_position);
     }
 
     pub fn clear_color(&self) -> wgpu::Color {
