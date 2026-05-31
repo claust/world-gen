@@ -122,6 +122,11 @@ async function cmdScreenshot(apiBase: string) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdSave(apiBase: string) {
+  const result = await sendAndWait(apiBase, { type: "save_world" });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdSetDaySpeed(apiBase: string, flags: Record<string, string>) {
   const value = requireFloat(flags, "value");
   const result = await sendAndWait(apiBase, { type: "set_day_speed", value });
@@ -282,6 +287,7 @@ const USAGE = `Usage: bun tools/debug-cli/cli.ts <command> [options]
 Commands:
   state                                    Get current telemetry state
   screenshot                               Capture a screenshot
+  save                                     Save the world (camera + plant state)
   set_day_speed   --value <n>              Set day/night cycle speed
   set_camera_position --x <n> --y <n> --z <n>  Teleport camera
   set_camera_look --yaw <n> --pitch <n>    Set camera orientation
@@ -307,6 +313,9 @@ async function main() {
         break;
       case "screenshot":
         await cmdScreenshot(apiBase);
+        break;
+      case "save":
+        await cmdSave(apiBase);
         break;
       case "set_day_speed":
         await cmdSetDaySpeed(apiBase, flags);

@@ -4,8 +4,8 @@
 //! `WORLD_SIZE_CHUNKS²` canonical chunks resident and simulates them on one
 //! global clock — see [`docs/LIVE_SIM_ITERATION_1.md`]. This module is the
 //! store: a packed `Plant` per canonical chunk, generated once at world
-//! creation, read by the render bridge, and ticked for growth + spread on the
-//! global clock. Persistence (M4/M5) saves it.
+//! creation, read by the render bridge, ticked for growth + spread on the global
+//! clock, and persisted as a compact spread-delta on top of the regenerable base.
 
 use std::sync::Arc;
 
@@ -16,8 +16,8 @@ use glam::{IVec2, Vec3};
 
 use crate::world_core::biome::{classify, Biome};
 use crate::world_core::chunk::{
-    canonical_chunk, ChunkTerrain, PlantInstance, CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS,
-    WORLD_SIZE_METERS,
+    canonical_chunk, ChunkTerrain, PlantInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
+    WORLD_SIZE_CHUNKS, WORLD_SIZE_METERS,
 };
 use crate::world_core::chunk_generator::ChunkGenerator;
 use crate::world_core::config::{BiomeConfig, GameConfig};
@@ -139,6 +139,12 @@ pub struct PlantWorld {
     /// neighbours are saturated. That keeps a packed chunk feeding a still-filling
     /// neighbour, while making the global pass cheap once a whole region fills.
     saturated: Vec<bool>,
+    /// Number of deterministic base-flora plants per chunk, always the prefix of
+    /// each chunk's list. Persistence saves only the spread suffix beyond this,
+    /// since the base is regenerable from the seed.
+    base_count: Vec<u32>,
+    /// Biome at each chunk's centre, for per-biome telemetry.
+    biome: Vec<Biome>,
     registry: Arc<PlantRegistry>,
     /// Terrain + rules for validating spread landings without the full per-chunk
     /// grid: the heightmap is point-sampled at each seedling position.
@@ -150,6 +156,11 @@ pub struct PlantWorld {
     /// spread adds plants and transitions chunks empty→non-empty.
     population: usize,
     populated_chunks: usize,
+    /// Seedlings added by the most recent spread pass, for telemetry.
+    last_spread_added: usize,
+    /// Cached per-biome fill, refreshed only when saturation changes — `stats()`
+    /// reads it every frame, so it must not rescan the world each call.
+    biome_fill: Vec<(&'static str, f32, usize)>,
 }
 
 fn chunk_index(canon: IVec2) -> usize {
@@ -189,8 +200,11 @@ impl PlantWorld {
         let total = (n as usize) * (n as usize);
         let generator = ChunkGenerator::new(seed, config, Arc::clone(&registry));
 
-        // Pack one canonical chunk's base flora; terrain/biome are transient.
-        let build_one = |idx: usize| -> Vec<Plant> {
+        // Pack one canonical chunk's base flora (and classify its centre biome);
+        // terrain/biome maps are transient.
+        let centre =
+            (CHUNK_GRID_RESOLUTION / 2) * CHUNK_GRID_RESOLUTION + CHUNK_GRID_RESOLUTION / 2;
+        let build_one = |idx: usize| -> (Vec<Plant>, Biome) {
             let cx = (idx as i32) % n;
             let cz = (idx as i32) / n;
             let coord = IVec2::new(cx, cz);
@@ -202,11 +216,16 @@ impl PlantWorld {
                 plants.push(Plant::pack(plant, origin_x, origin_z));
             }
             plants.shrink_to_fit();
-            plants
+            let biome = classify(
+                data.terrain.heights[centre],
+                data.terrain.moisture[centre],
+                &config.biome,
+            );
+            (plants, biome)
         };
 
         #[cfg(not(target_arch = "wasm32"))]
-        let chunks: Vec<Vec<Plant>> = {
+        let built: Vec<(Vec<Plant>, Biome)> = {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads.max(1))
                 .build()
@@ -223,10 +242,17 @@ impl PlantWorld {
             }
         };
         #[cfg(target_arch = "wasm32")]
-        let chunks: Vec<Vec<Plant>> = {
+        let built: Vec<(Vec<Plant>, Biome)> = {
             let _ = threads;
             (0..total).map(build_one).collect()
         };
+
+        let mut chunks = Vec::with_capacity(total);
+        let mut biome = Vec::with_capacity(total);
+        for (plants, b) in built {
+            chunks.push(plants);
+            biome.push(b);
+        }
 
         let population = chunks.iter().map(Vec::len).sum();
         let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
@@ -234,12 +260,15 @@ impl PlantWorld {
             .iter()
             .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
             .collect();
-
+        let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let saturated = vec![false; chunks.len()];
-        Self {
+
+        let mut world = Self {
             chunks,
             immature,
             saturated,
+            base_count,
+            biome,
             registry,
             heightmap: Heightmap::new(seed, config.heightmap.clone()),
             biome_config: config.biome.clone(),
@@ -247,7 +276,11 @@ impl PlantWorld {
             seed,
             population,
             populated_chunks,
-        }
+            last_spread_added: 0,
+            biome_fill: Vec::new(),
+        };
+        world.recompute_biome_fill();
+        world
     }
 
     /// Total plants across the whole world (loaded or not). O(1).
@@ -367,10 +400,10 @@ impl PlantWorld {
 
         // Serial fold of the per-chunk results into the cached counters and the
         // saturation flags.
-        let mut any = false;
+        let mut added = 0usize;
         for (idx, &count) in accepted.iter().enumerate() {
             if count > 0 {
-                any = true;
+                added += count as usize;
                 // It gained plants, so it is not saturated and may spread once
                 // those seedlings mature.
                 self.saturated[idx] = false;
@@ -387,7 +420,166 @@ impl PlantWorld {
                 self.saturated[idx] = self.immature[idx] == 0;
             }
         }
-        any
+        self.last_spread_added = added;
+        // Saturation may have flipped this pass; refresh the cached telemetry.
+        self.recompute_biome_fill();
+        added > 0
+    }
+
+    /// Seedlings added by the most recent spread pass.
+    pub fn last_spread_added(&self) -> usize {
+        self.last_spread_added
+    }
+
+    /// Approximate resident bytes of the store (packed plants + per-chunk Vec
+    /// headers + the parallel index Vecs).
+    pub fn resident_bytes(&self) -> usize {
+        let plant = self.population * std::mem::size_of::<Plant>();
+        let headers = self.chunks.len() * std::mem::size_of::<Vec<Plant>>();
+        let side = self.chunks.len();
+        let indices = side
+            * (std::mem::size_of::<u32>() // immature
+                + std::mem::size_of::<bool>() // saturated
+                + std::mem::size_of::<u32>() // base_count
+                + std::mem::size_of::<Biome>()); // biome
+        plant + headers + indices
+    }
+
+    /// Per-biome fill: the percentage (0–100) of each biome's chunks that are
+    /// saturated (done spreading), as `(biome_name, percent, chunk_count)` for the
+    /// five biomes; biomes with no chunks report 0. O(1): it returns a cache
+    /// refreshed only when saturation can change (spread passes, load, creation),
+    /// since `stats()` reads it every frame.
+    pub fn biome_fill_percents(&self) -> Vec<(&'static str, f32, usize)> {
+        self.biome_fill.clone()
+    }
+
+    /// Recompute the per-biome fill cache in one pass. Called after generation,
+    /// load, and any spread pass that can flip saturation.
+    fn recompute_biome_fill(&mut self) {
+        let mut total = [0usize; BIOME_SLOTS];
+        let mut saturated = [0usize; BIOME_SLOTS];
+        for (idx, &b) in self.biome.iter().enumerate() {
+            let slot = biome_slot(b);
+            total[slot] += 1;
+            if self.saturated[idx] {
+                saturated[slot] += 1;
+            }
+        }
+        self.biome_fill = BIOME_ORDER
+            .iter()
+            .map(|&biome| {
+                let slot = biome_slot(biome);
+                let percent = if total[slot] == 0 {
+                    0.0
+                } else {
+                    saturated[slot] as f32 / total[slot] as f32 * 100.0
+                };
+                (biome_name(biome), percent, total[slot])
+            })
+            .collect();
+    }
+
+    /// Save the spread suffix of every chunk (the plants beyond the regenerable
+    /// base) as a compact binary blob. Round-trips the full world together with
+    /// the seed-deterministic base.
+    pub fn save_spread(
+        &self,
+        storage: &dyn crate::world_core::storage::Storage,
+    ) -> anyhow::Result<()> {
+        let spread_chunks: Vec<usize> = (0..self.chunks.len())
+            .filter(|&i| self.chunks[i].len() as u32 > self.base_count[i])
+            .collect();
+
+        // header(16) + per-chunk(8) + 14 bytes per spread plant.
+        let plant_total: usize = spread_chunks
+            .iter()
+            .map(|&i| self.chunks[i].len() - self.base_count[i] as usize)
+            .sum();
+        let mut buf = Vec::with_capacity(16 + spread_chunks.len() * 8 + plant_total * 14);
+        buf.extend_from_slice(&SPREAD_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&SPREAD_VERSION.to_le_bytes());
+        buf.extend_from_slice(&self.seed.to_le_bytes());
+        buf.extend_from_slice(&(spread_chunks.len() as u32).to_le_bytes());
+        for &i in &spread_chunks {
+            let suffix = &self.chunks[i][self.base_count[i] as usize..];
+            buf.extend_from_slice(&(i as u32).to_le_bytes());
+            buf.extend_from_slice(&(suffix.len() as u32).to_le_bytes());
+            for plant in suffix {
+                write_plant(&mut buf, plant);
+            }
+        }
+        storage.save_bytes("plants", &buf)
+    }
+
+    /// Re-apply a previously saved spread suffix on top of the freshly generated
+    /// base. Ignored (with a warning) if absent, malformed, or for another seed.
+    /// Returns how many plants were restored.
+    pub fn apply_saved_spread(
+        &mut self,
+        storage: &dyn crate::world_core::storage::Storage,
+    ) -> usize {
+        let Some(buf) = storage.load_bytes("plants") else {
+            return 0;
+        };
+        match self.read_spread(&buf) {
+            Ok(added) => added,
+            Err(err) => {
+                log::warn!("ignoring saved spread state: {err}");
+                0
+            }
+        }
+    }
+
+    fn read_spread(&mut self, buf: &[u8]) -> anyhow::Result<usize> {
+        let mut cur = Cursor::new(buf);
+        if cur.read_u32()? != SPREAD_MAGIC {
+            anyhow::bail!("bad magic");
+        }
+        if cur.read_u32()? != SPREAD_VERSION {
+            anyhow::bail!("unsupported version");
+        }
+        let seed = cur.read_u32()?;
+        if seed != self.seed {
+            anyhow::bail!("seed {seed} does not match world seed {}", self.seed);
+        }
+        let chunk_count = cur.read_u32()? as usize;
+        let mut added = 0usize;
+        for _ in 0..chunk_count {
+            let idx = cur.read_u32()? as usize;
+            let count = cur.read_u32()? as usize;
+            if idx >= self.chunks.len() {
+                anyhow::bail!("chunk index {idx} out of range");
+            }
+            // Bound `count` by the bytes actually left before reserving, so a
+            // corrupted length can't trigger a huge allocation ahead of the EOF.
+            if count.saturating_mul(PLANT_BYTES) > cur.remaining() {
+                anyhow::bail!("declared {count} plants exceed the remaining data");
+            }
+            // The base list was shrunk to fit during generation; reserve the
+            // suffix up front so restoring it is one growth, not many.
+            self.chunks[idx].reserve(count);
+            for _ in 0..count {
+                let plant = read_plant(&mut cur)?;
+                if plant.stage != MATURE {
+                    self.immature[idx] += 1;
+                }
+                self.chunks[idx].push(plant);
+                added += 1;
+            }
+        }
+        // Recompute cached totals from scratch — cheap next to world generation.
+        self.population = self.chunks.iter().map(Vec::len).sum();
+        self.populated_chunks = self.chunks.iter().filter(|c| !c.is_empty()).count();
+        // Seed saturation so a resumed, settled world is cheap on its first spread
+        // pass instead of emitting for every chunk: an all-mature chunk is treated
+        // as saturated (a chunk that still has room re-clears the flag the moment a
+        // neighbour's seedling lands in it).
+        for (idx, &immature) in self.immature.iter().enumerate() {
+            self.saturated[idx] = immature == 0;
+        }
+        self.recompute_biome_fill();
+        Ok(added)
     }
 }
 
@@ -666,6 +858,106 @@ fn biome_name(biome: Biome) -> &'static str {
     }
 }
 
+const BIOME_SLOTS: usize = 5;
+
+/// Order biomes are reported in. Output order, independent of enum discriminant.
+const BIOME_ORDER: [Biome; BIOME_SLOTS] = [
+    Biome::Forest,
+    Biome::Grassland,
+    Biome::Desert,
+    Biome::Rock,
+    Biome::Snow,
+];
+
+/// Stable per-biome slot for the fill tallies. An exhaustive match (rather than
+/// `biome as usize`) so adding a `Biome` variant is a compile error here, not an
+/// out-of-bounds index at runtime.
+fn biome_slot(biome: Biome) -> usize {
+    match biome {
+        Biome::Forest => 0,
+        Biome::Grassland => 1,
+        Biome::Desert => 2,
+        Biome::Rock => 3,
+        Biome::Snow => 4,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spread persistence — compact little-endian blob of the per-chunk spread suffix
+// ---------------------------------------------------------------------------
+
+const SPREAD_MAGIC: u32 = 0x504c_4e54; // "PLNT"
+const SPREAD_VERSION: u32 = 1;
+/// Serialized size of one plant: u16×4 + u8×2 + f32.
+const PLANT_BYTES: usize = 14;
+
+fn write_plant(buf: &mut Vec<u8>, p: &Plant) {
+    buf.extend_from_slice(&p.local_x.to_le_bytes());
+    buf.extend_from_slice(&p.local_z.to_le_bytes());
+    buf.extend_from_slice(&p.height.to_le_bytes());
+    buf.extend_from_slice(&p.rotation.to_le_bytes());
+    buf.push(p.species);
+    buf.push(p.stage);
+    buf.extend_from_slice(&p.born_hour.to_le_bytes());
+}
+
+fn read_plant(cur: &mut Cursor<'_>) -> anyhow::Result<Plant> {
+    Ok(Plant {
+        local_x: cur.read_u16()?,
+        local_z: cur.read_u16()?,
+        height: cur.read_u16()?,
+        rotation: cur.read_u16()?,
+        species: cur.read_u8()?,
+        stage: cur.read_u8()?,
+        born_hour: cur.read_f32()?,
+    })
+}
+
+/// Minimal bounds-checked little-endian reader over a byte slice.
+struct Cursor<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.buf.len() - self.pos
+    }
+
+    fn take(&mut self, n: usize) -> anyhow::Result<&'a [u8]> {
+        let end = self.pos + n;
+        if end > self.buf.len() {
+            anyhow::bail!("unexpected end of spread data");
+        }
+        let slice = &self.buf[self.pos..end];
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn read_u8(&mut self) -> anyhow::Result<u8> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn read_u16(&mut self) -> anyhow::Result<u16> {
+        let b = self.take(2)?;
+        Ok(u16::from_le_bytes([b[0], b[1]]))
+    }
+
+    fn read_u32(&mut self) -> anyhow::Result<u32> {
+        let b = self.take(4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn read_f32(&mut self) -> anyhow::Result<f32> {
+        let b = self.take(4)?;
+        Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+}
+
 /// Analytic growth stage for a packed plant at `total_hours`.
 fn stage_for(plant: &Plant, total_hours: f64, registry: &PlantRegistry) -> GrowthStage {
     let Some(species) = registry.species.get(plant.species as usize) else {
@@ -687,6 +979,7 @@ fn stage_for(plant: &Plant, total_hours: f64, registry: &PlantRegistry) -> Growt
 mod tests {
     use super::*;
     use crate::world_core::herbarium::Herbarium;
+    use crate::world_core::storage::Storage as _;
 
     fn registry() -> Arc<PlantRegistry> {
         Arc::new(PlantRegistry::from_herbarium(&Herbarium::default_seeded()))
@@ -703,10 +996,14 @@ mod tests {
             .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
             .collect();
         let saturated = vec![false; chunks.len()];
+        let base_count = chunks.iter().map(|c| c.len() as u32).collect();
+        let biome = vec![Biome::Forest; chunks.len()];
         PlantWorld {
             chunks,
             immature,
             saturated,
+            base_count,
+            biome,
             registry: reg,
             heightmap: Heightmap::new(7, config.heightmap.clone()),
             biome_config: config.biome.clone(),
@@ -714,7 +1011,114 @@ mod tests {
             seed: 7,
             population,
             populated_chunks,
+            last_spread_added: 0,
+            biome_fill: Vec::new(),
         }
+    }
+
+    // In-memory storage with binary support, for persistence round-trips.
+    #[derive(Default)]
+    struct MemBytes {
+        bytes: std::cell::RefCell<std::collections::HashMap<String, Vec<u8>>>,
+    }
+    impl crate::world_core::storage::Storage for MemBytes {
+        fn load(&self, _key: &str) -> Option<String> {
+            None
+        }
+        fn save(&self, _key: &str, _data: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn load_bytes(&self, key: &str) -> Option<Vec<u8>> {
+            self.bytes.borrow().get(key).cloned()
+        }
+        fn save_bytes(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
+            self.bytes
+                .borrow_mut()
+                .insert(key.to_string(), data.to_vec());
+            Ok(())
+        }
+    }
+
+    fn seedling(local_x: f32, born_hour: f32) -> Plant {
+        Plant {
+            local_x: quantize_span(local_x),
+            local_z: quantize_span(50.0),
+            height: quantize_span(4.0),
+            rotation: quantize_rotation(1.0),
+            species: 0,
+            stage: stage_to_u8(GrowthStage::Seedling),
+            born_hour,
+        }
+    }
+
+    #[test]
+    fn spread_state_round_trips_through_save_and_load() {
+        let reg = registry();
+        // A world whose chunk 1 has one base plant plus two spread seedlings.
+        let base = Plant {
+            stage: MATURE,
+            ..seedling(10.0, 0.0)
+        };
+        let mut world = test_world(vec![Vec::new(), vec![base], Vec::new()], Arc::clone(&reg));
+        // base_count was set to current lengths, so anything appended now is spread.
+        world.chunks[1].push(seedling(20.0, 24.0));
+        world.chunks[1].push(seedling(30.0, 24.0));
+        world.immature[1] = 2;
+        world.population += 2;
+
+        let storage = MemBytes::default();
+        world.save_spread(&storage).unwrap();
+
+        // Reload: a fresh world with only the base, then apply the saved spread.
+        let mut reloaded = test_world(vec![Vec::new(), vec![base], Vec::new()], reg);
+        let restored = reloaded.apply_saved_spread(&storage);
+
+        assert_eq!(restored, 2);
+        assert_eq!(reloaded.population, world.population);
+        assert_eq!(reloaded.chunks[1].len(), 3);
+        assert_eq!(reloaded.immature[1], 2);
+        // The spread suffix is byte-identical.
+        assert_eq!(&reloaded.chunks[1][1..], &world.chunks[1][1..]);
+        // Saturation is seeded from maturity so a settled resume is cheap: the
+        // all-mature empty chunks are saturated, the chunk with seedlings is not.
+        assert!(reloaded.saturated[0]);
+        assert!(!reloaded.saturated[1]);
+        assert!(reloaded.saturated[2]);
+    }
+
+    #[test]
+    fn apply_saved_spread_rejects_a_corrupt_plant_count() {
+        // A blob whose declared plant count far exceeds its bytes must be rejected
+        // (not reserve a huge allocation) — header + one chunk claiming 1e9 plants.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SPREAD_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&SPREAD_VERSION.to_le_bytes());
+        buf.extend_from_slice(&7u32.to_le_bytes()); // seed (matches test_world)
+        buf.extend_from_slice(&1u32.to_le_bytes()); // one chunk
+        buf.extend_from_slice(&0u32.to_le_bytes()); // chunk idx 0
+        buf.extend_from_slice(&1_000_000_000u32.to_le_bytes()); // bogus count
+        let storage = MemBytes::default();
+        storage.save_bytes("plants", &buf).unwrap();
+
+        let mut world = test_world(vec![vec![]], registry());
+        assert_eq!(world.apply_saved_spread(&storage), 0);
+        assert!(world.chunks[0].is_empty());
+    }
+
+    #[test]
+    fn apply_saved_spread_rejects_a_mismatched_seed() {
+        let reg = registry();
+        let mut world = test_world(vec![vec![], vec![seedling(10.0, 0.0)]], Arc::clone(&reg));
+        world.chunks[1].push(seedling(20.0, 24.0));
+        world.immature[1] = 2;
+        let storage = MemBytes::default();
+        world.save_spread(&storage).unwrap();
+
+        // A world with a different seed must ignore the save rather than corrupt.
+        let mut other = test_world(vec![vec![], vec![seedling(10.0, 0.0)]], reg);
+        other.seed = 999;
+        assert_eq!(other.apply_saved_spread(&storage), 0);
+        assert_eq!(other.chunks[1].len(), 1);
     }
 
     #[test]

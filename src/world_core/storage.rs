@@ -1,6 +1,19 @@
 pub trait Storage {
     fn load(&self, key: &str) -> Option<String>;
     fn save(&self, key: &str, data: &str) -> anyhow::Result<()>;
+
+    /// Load a binary blob. Defaults to "unsupported" (returns `None`); backends
+    /// that can hold large binary data (the native file store) override it.
+    fn load_bytes(&self, _key: &str) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Save a binary blob. Defaults to "unsupported"; see [`load_bytes`].
+    fn save_bytes(&self, _key: &str, _data: &[u8]) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "binary storage is not supported by this backend"
+        ))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -24,6 +37,34 @@ impl FileStorage {
         Self::validate_key(key)?;
         Ok(format!("{key}.json"))
     }
+
+    fn bin_path_for(key: &str) -> anyhow::Result<String> {
+        Self::validate_key(key)?;
+        Ok(format!("{key}.bin"))
+    }
+
+    /// Write `data` to `path` atomically: a full write to `path.tmp` followed by
+    /// a rename, so a crash or full disk mid-write can't truncate or corrupt the
+    /// existing file (the rename is atomic on the same filesystem). Important for
+    /// the large `plants.bin`.
+    fn atomic_write(path: &str, data: &[u8]) -> anyhow::Result<()> {
+        let tmp = format!("{path}.tmp");
+        std::fs::write(&tmp, data)?;
+        if let Err(err) = std::fs::rename(&tmp, path) {
+            // Windows refuses to rename onto an existing file; remove it and
+            // retry (a brief non-atomic window, but avoids a persistent save
+            // failure). Other platforms replace atomically, so a genuine error
+            // there is propagated rather than masked.
+            if cfg!(windows) {
+                let _ = std::fs::remove_file(path);
+                std::fs::rename(&tmp, path)?;
+            } else {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(err.into());
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -46,8 +87,25 @@ impl Storage for FileStorage {
 
     fn save(&self, key: &str, data: &str) -> anyhow::Result<()> {
         let path = FileStorage::path_for(key)?;
-        std::fs::write(&path, data)?;
-        Ok(())
+        FileStorage::atomic_write(&path, data.as_bytes())
+    }
+
+    fn load_bytes(&self, key: &str) -> Option<Vec<u8>> {
+        let path = FileStorage::bin_path_for(key).ok()?;
+        match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("Warning: failed to read storage file '{}': {}", path, err);
+                }
+                None
+            }
+        }
+    }
+
+    fn save_bytes(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
+        let path = FileStorage::bin_path_for(key)?;
+        FileStorage::atomic_write(&path, data)
     }
 }
 

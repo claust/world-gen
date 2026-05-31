@@ -1,13 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use glam::{IVec2, Vec3};
 
-use super::delta_store::{DeltaStore, DeltaStoreStats};
 use super::plant_world::PlantWorld;
 use crate::world_core::chunk::ChunkData;
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::PlantRegistry;
+use crate::world_core::lifecycle::GrowthStage;
 use crate::world_core::save::SaveData;
 use crate::world_core::storage::Storage;
 use crate::world_core::time::WorldClock;
@@ -23,7 +28,6 @@ pub struct RuntimeStats {
     pub pending_chunks: usize,
     pub center_chunk: IVec2,
     pub hour: f32,
-    pub lifecycle: DeltaStoreStats,
     pub loaded_base_plants: usize,
     pub loaded_visible_plants: usize,
     pub loaded_visible_seedlings: usize,
@@ -33,12 +37,19 @@ pub struct RuntimeStats {
     pub world_population: usize,
     /// Canonical chunks holding at least one plant.
     pub world_populated_chunks: usize,
+    /// Seedlings added by the most recent spread pass.
+    pub spread_last_added: usize,
+    /// Wall-clock duration of the most recent growth/spread tick, in ms.
+    pub tick_ms: f32,
+    /// Approximate resident bytes of the whole-world plant store.
+    pub resident_bytes: usize,
+    /// Per-biome fill: `(name, percent_saturated, chunk_count)`.
+    pub biome_fill: Vec<(&'static str, f32, usize)>,
 }
 
 pub struct WorldRuntime {
     streaming: StreamingWorld,
     clock: WorldClock,
-    delta_store: DeltaStore,
     /// Resident plant store for the whole finite world. Render reads loaded
     /// chunks from here; the global growth + spread ticks advance it.
     plant_world: PlantWorld,
@@ -48,6 +59,8 @@ pub struct WorldRuntime {
     /// Global-clock hour of the last spread pass — the expensive, lower-cadence
     /// half of the tick.
     last_spread_hour: f64,
+    /// Wall-clock ms of the most recent growth/spread tick (telemetry).
+    last_tick_ms: f32,
 }
 
 /// Sim-hours between global growth ticks. Growth is analytic, so a coarse
@@ -80,34 +93,24 @@ impl WorldRuntime {
         let arc_config = Arc::new(config.clone());
 
         // One-time world-creation cost: generate base flora for every canonical
-        // chunk into the resident store (parallel; terrain discarded per chunk).
-        let plant_world = PlantWorld::generate_base(seed, config, Arc::clone(&registry), threads);
+        // chunk into the resident store (parallel; terrain discarded per chunk),
+        // then re-apply any persisted spread state on top of the regenerable base.
+        let mut plant_world =
+            PlantWorld::generate_base(seed, config, Arc::clone(&registry), threads);
+        let restored = plant_world.apply_saved_spread(storage);
         log::info!(
-            "PlantWorld: {} plants across {} populated chunks",
+            "PlantWorld: {} plants across {} populated chunks ({restored} restored from save)",
             plant_world.population(),
             plant_world.populated_chunks(),
         );
 
-        // The delta store is legacy state from the loaded-only model. The global
-        // PlantWorld sim does not apply it to rendering yet, so surface it rather
-        // than letting a non-empty save silently stop affecting the world. It is
-        // still loaded/saved for telemetry continuity and reconciled when spread
-        // persistence lands (M4).
-        let delta_store = DeltaStore::load(storage);
-        if !delta_store.is_empty() {
-            log::warn!(
-                "loaded legacy delta state; the global PlantWorld sim does not apply it to \
-                 rendering — it will be reconciled when spread persistence lands"
-            );
-        }
-
         Ok(Self {
             streaming: StreamingWorld::new(seed, load_radius, threads, arc_config, registry)?,
             clock: WorldClock::new(start_hour, total_hours, day_speed),
-            delta_store,
             plant_world,
             last_growth_hour: total_hours,
             last_spread_hour: total_hours,
+            last_tick_ms: 0.0,
         })
     }
 
@@ -117,8 +120,20 @@ impl WorldRuntime {
 
     pub fn update(&mut self, dt_seconds: f32, camera_position: Vec3) {
         self.clock.update(dt_seconds);
-        let mut changed = self.tick_plant_world_growth();
-        changed |= self.tick_plant_world_spread();
+
+        // `Instant` resolves to `web_time::Instant` on wasm, so the tick is timed
+        // on every platform.
+        let tick_start = Instant::now();
+        let growth = self.tick_plant_world_growth();
+        let spread = self.tick_plant_world_spread();
+        // A pass *ran* if it was due; it *changed* the world if it returned `true`.
+        // Time every actual pass so `tick_ms` reflects the latest tick, not the
+        // latest visible change.
+        if growth.is_some() || spread.is_some() {
+            self.last_tick_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
+        }
+        let changed = growth.unwrap_or(false) || spread.unwrap_or(false);
+
         // Stream chunks around the camera; newly loaded chunks read their plants
         // from the resident PlantWorld.
         self.streaming.update(camera_position, &self.plant_world);
@@ -132,28 +147,29 @@ impl WorldRuntime {
 
     /// Advance global growth, rate-limited to [`GROWTH_TICK_HOURS`] of sim time
     /// and capped to one pass per call so a high `day_speed` can't spin it every
-    /// frame. Growth is analytic, so each pass is cheap. Returns whether anything
-    /// changed.
-    fn tick_plant_world_growth(&mut self) -> bool {
+    /// frame. Growth is analytic, so each pass is cheap. Returns `None` if no pass
+    /// was due, else `Some(changed)`.
+    fn tick_plant_world_growth(&mut self) -> Option<bool> {
         let now = self.clock.total_hours();
         if now - self.last_growth_hour < GROWTH_TICK_HOURS {
-            return false;
+            return None;
         }
         self.last_growth_hour = now;
-        self.plant_world.tick_growth(now)
+        Some(self.plant_world.tick_growth(now))
     }
 
     /// Run a global spread pass, rate-limited to [`SPREAD_TICK_HOURS`] of sim
     /// time and capped to one pass per call (the pass is the expensive part, so a
     /// high `day_speed` lets sim-time lag rather than running it many times per
-    /// frame). Returns whether any seedling was added.
-    fn tick_plant_world_spread(&mut self) -> bool {
+    /// frame). Returns `None` if no pass was due, else `Some(added)` where `added`
+    /// is whether any seedling was placed.
+    fn tick_plant_world_spread(&mut self) -> Option<bool> {
         let now = self.clock.total_hours();
         if now - self.last_spread_hour < SPREAD_TICK_HOURS {
-            return false;
+            return None;
         }
         self.last_spread_hour = now;
-        self.plant_world.tick_spread(now)
+        Some(self.plant_world.tick_spread(now))
     }
 
     pub fn chunks(&self) -> &HashMap<IVec2, ChunkData> {
@@ -169,9 +185,6 @@ impl WorldRuntime {
 
     pub fn stats(&self) -> RuntimeStats {
         let streaming = self.streaming.stats();
-        let lifecycle = self
-            .delta_store
-            .stats(self.streaming.chunks().keys().copied());
         let mut loaded_base_plants = 0;
         let mut loaded_visible_plants = 0;
         let mut loaded_visible_seedlings = 0;
@@ -184,11 +197,9 @@ impl WorldRuntime {
 
             for plant in &chunk.content.plants {
                 match plant.growth_stage {
-                    crate::world_core::lifecycle::GrowthStage::Seedling => {
-                        loaded_visible_seedlings += 1
-                    }
-                    crate::world_core::lifecycle::GrowthStage::Young => loaded_visible_young += 1,
-                    crate::world_core::lifecycle::GrowthStage::Mature => loaded_visible_mature += 1,
+                    GrowthStage::Seedling => loaded_visible_seedlings += 1,
+                    GrowthStage::Young => loaded_visible_young += 1,
+                    GrowthStage::Mature => loaded_visible_mature += 1,
                 }
             }
         }
@@ -198,7 +209,6 @@ impl WorldRuntime {
             pending_chunks: streaming.pending_chunks,
             center_chunk: streaming.center_chunk,
             hour: self.clock.hour(),
-            lifecycle,
             loaded_base_plants,
             loaded_visible_plants,
             loaded_visible_seedlings,
@@ -206,6 +216,10 @@ impl WorldRuntime {
             loaded_visible_mature,
             world_population: self.plant_world.population(),
             world_populated_chunks: self.plant_world.populated_chunks(),
+            spread_last_added: self.plant_world.last_spread_added(),
+            tick_ms: self.last_tick_ms,
+            resident_bytes: self.plant_world.resident_bytes(),
+            biome_fill: self.plant_world.biome_fill_percents(),
         }
     }
 
@@ -237,7 +251,7 @@ impl WorldRuntime {
         self.clock.total_hours()
     }
 
-    pub fn save_deltas(&self, storage: &dyn Storage) -> anyhow::Result<()> {
-        self.delta_store.save(storage)
+    pub fn save_plants(&self, storage: &dyn Storage) -> anyhow::Result<()> {
+        self.plant_world.save_spread(storage)
     }
 }

@@ -72,7 +72,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                                 if app.config_panel.is_visible() {
                                     app.config_panel.toggle();
                                 }
-                                app.save_and_update();
+                                let _ = app.save_and_update();
                                 app.release_cursor();
                                 app.return_to_menu();
                             }
@@ -310,7 +310,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                                 if app.config_panel.is_visible() {
                                     app.config_panel.toggle();
                                 }
-                                app.save_and_update();
+                                let _ = app.save_and_update();
                                 app.release_cursor();
                                 app.return_to_menu();
                             }

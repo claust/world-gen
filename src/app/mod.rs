@@ -1359,28 +1359,35 @@ impl AppState {
         if let Err(e) = save.save(&*self.storage) {
             log::warn!("failed to save game state: {e}");
         }
-        if let Err(e) = world.save_deltas(&*self.storage) {
-            log::warn!("failed to save lifecycle deltas: {e}");
+        if let Err(e) = world.save_plants(&*self.storage) {
+            log::warn!("failed to save plant state: {e}");
         }
     }
 
     /// Save to storage and update the in-memory save (for mid-session resume).
-    fn save_and_update(&mut self) {
-        let Some(world) = &self.world else { return };
+    /// Returns `Ok` only when both the metadata and the plant state were written.
+    fn save_and_update(&mut self) -> anyhow::Result<()> {
+        let Some(world) = &self.world else {
+            return Err(anyhow::anyhow!("no world loaded"));
+        };
         let save = Self::build_save_data(&self.camera, world);
-        match save.save(&*self.storage) {
-            Ok(()) => {
-                self.save = Some(save);
-                if let Some(world) = &self.world {
-                    if let Err(e) = world.save_deltas(&*self.storage) {
-                        log::warn!("failed to save lifecycle deltas: {e}");
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("failed to save game state: {e}");
-            }
+        if let Err(e) = save.save(&*self.storage) {
+            log::warn!("failed to save game state: {e}");
+            return Err(e);
         }
+        if let Err(e) = world.save_plants(&*self.storage) {
+            log::warn!("failed to save plant state: {e}");
+            // The new metadata is already on disk but the plant blob isn't, so
+            // restore the previous metadata (best-effort) to keep the on-disk
+            // save.json / plants.bin pair consistent.
+            if let Some(prev) = &self.save {
+                let _ = prev.save(&*self.storage);
+            }
+            return Err(e);
+        }
+        // Only advance the in-memory resume point once both writes succeeded.
+        self.save = Some(save);
+        Ok(())
     }
 
     fn build_save_data(camera: &FlyCamera, world: &WorldRuntime) -> SaveData {
