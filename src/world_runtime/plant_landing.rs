@@ -128,6 +128,9 @@ pub(super) fn validate_seedling_landing(
     Some(landed)
 }
 
+// Used only by the dormant loaded-only spread path (lifecycle_sim); removed in
+// M3 with that path.
+#[allow(dead_code)]
 pub(super) fn existing_plants_for_chunk(
     chunk: &ChunkData,
     delta: Option<&ChunkDelta>,
