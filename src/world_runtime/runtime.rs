@@ -118,12 +118,16 @@ impl WorldRuntime {
 
         #[cfg(not(target_arch = "wasm32"))]
         let tick_start = std::time::Instant::now();
-        let mut changed = self.tick_plant_world_growth();
-        changed |= self.tick_plant_world_spread();
+        let growth = self.tick_plant_world_growth();
+        let spread = self.tick_plant_world_spread();
+        // A pass *ran* if it was due; it *changed* the world if it returned `true`.
+        // Time every actual pass so `tick_ms` reflects the latest tick, not the
+        // latest visible change.
         #[cfg(not(target_arch = "wasm32"))]
-        if changed {
+        if growth.is_some() || spread.is_some() {
             self.last_tick_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
         }
+        let changed = growth.unwrap_or(false) || spread.unwrap_or(false);
 
         // Stream chunks around the camera; newly loaded chunks read their plants
         // from the resident PlantWorld.
@@ -138,28 +142,28 @@ impl WorldRuntime {
 
     /// Advance global growth, rate-limited to [`GROWTH_TICK_HOURS`] of sim time
     /// and capped to one pass per call so a high `day_speed` can't spin it every
-    /// frame. Growth is analytic, so each pass is cheap. Returns whether anything
-    /// changed.
-    fn tick_plant_world_growth(&mut self) -> bool {
+    /// frame. Growth is analytic, so each pass is cheap. Returns `None` if no pass
+    /// was due, else `Some(changed)`.
+    fn tick_plant_world_growth(&mut self) -> Option<bool> {
         let now = self.clock.total_hours();
         if now - self.last_growth_hour < GROWTH_TICK_HOURS {
-            return false;
+            return None;
         }
         self.last_growth_hour = now;
-        self.plant_world.tick_growth(now)
+        Some(self.plant_world.tick_growth(now))
     }
 
     /// Run a global spread pass, rate-limited to [`SPREAD_TICK_HOURS`] of sim
     /// time and capped to one pass per call (the pass is the expensive part, so a
     /// high `day_speed` lets sim-time lag rather than running it many times per
-    /// frame). Returns whether any seedling was added.
-    fn tick_plant_world_spread(&mut self) -> bool {
+    /// frame). Returns `None` if no pass was due, else `Some(seedlings_added)`.
+    fn tick_plant_world_spread(&mut self) -> Option<bool> {
         let now = self.clock.total_hours();
         if now - self.last_spread_hour < SPREAD_TICK_HOURS {
-            return false;
+            return None;
         }
         self.last_spread_hour = now;
-        self.plant_world.tick_spread(now)
+        Some(self.plant_world.tick_spread(now))
     }
 
     pub fn chunks(&self) -> &HashMap<IVec2, ChunkData> {

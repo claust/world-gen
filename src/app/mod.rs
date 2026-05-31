@@ -1365,22 +1365,22 @@ impl AppState {
     }
 
     /// Save to storage and update the in-memory save (for mid-session resume).
-    fn save_and_update(&mut self) {
-        let Some(world) = &self.world else { return };
+    /// Returns `Ok` only when both the metadata and the plant state were written.
+    fn save_and_update(&mut self) -> anyhow::Result<()> {
+        let Some(world) = &self.world else {
+            return Err(anyhow::anyhow!("no world loaded"));
+        };
         let save = Self::build_save_data(&self.camera, world);
-        match save.save(&*self.storage) {
-            Ok(()) => {
-                self.save = Some(save);
-                if let Some(world) = &self.world {
-                    if let Err(e) = world.save_plants(&*self.storage) {
-                        log::warn!("failed to save plant state: {e}");
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("failed to save game state: {e}");
-            }
+        if let Err(e) = save.save(&*self.storage) {
+            log::warn!("failed to save game state: {e}");
+            return Err(e);
         }
+        self.save = Some(save);
+        if let Err(e) = world.save_plants(&*self.storage) {
+            log::warn!("failed to save plant state: {e}");
+            return Err(e);
+        }
+        Ok(())
     }
 
     fn build_save_data(camera: &FlyCamera, world: &WorldRuntime) -> SaveData {

@@ -218,22 +218,18 @@ impl AppState {
                         continue;
                     }
                 }
-                CommandKind::SaveWorld => {
-                    if self.world.is_some() {
-                        self.save_and_update();
-                        CommandAppliedEvent::ok(
-                            command.id,
-                            self.frame_index,
-                            "world saved".to_string(),
-                        )
-                    } else {
-                        CommandAppliedEvent::err(
-                            command.id,
-                            self.frame_index,
-                            "no world loaded".to_string(),
-                        )
-                    }
-                }
+                CommandKind::SaveWorld => match self.save_and_update() {
+                    Ok(()) => CommandAppliedEvent::ok(
+                        command.id,
+                        self.frame_index,
+                        "world saved".to_string(),
+                    ),
+                    Err(e) => CommandAppliedEvent::err(
+                        command.id,
+                        self.frame_index,
+                        format!("save failed: {e}"),
+                    ),
+                },
                 CommandKind::UiSnapshot => {
                     let snapshot = self.ui_registry.take_snapshot(self.screen_name());
                     let data = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);

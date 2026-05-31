@@ -441,32 +441,33 @@ impl PlantWorld {
     /// (done spreading). Returns `(biome_name, percent, chunk_count)` for the
     /// five biomes; biomes with no chunks report 0%.
     pub fn biome_fill_percents(&self) -> Vec<(&'static str, f32, usize)> {
-        let biomes = [
+        const BIOMES: [Biome; 5] = [
             Biome::Forest,
             Biome::Grassland,
             Biome::Desert,
             Biome::Rock,
             Biome::Snow,
         ];
-        biomes
+        // Single pass: tally total and saturated chunks per biome.
+        let mut total = [0usize; 5];
+        let mut saturated = [0usize; 5];
+        for (idx, &b) in self.biome.iter().enumerate() {
+            let slot = b as usize;
+            total[slot] += 1;
+            if self.saturated[idx] {
+                saturated[slot] += 1;
+            }
+        }
+        BIOMES
             .iter()
-            .map(|&target| {
-                let mut total = 0usize;
-                let mut saturated = 0usize;
-                for (idx, &b) in self.biome.iter().enumerate() {
-                    if b == target {
-                        total += 1;
-                        if self.saturated[idx] {
-                            saturated += 1;
-                        }
-                    }
-                }
-                let percent = if total == 0 {
+            .map(|&biome| {
+                let slot = biome as usize;
+                let percent = if total[slot] == 0 {
                     0.0
                 } else {
-                    saturated as f32 / total as f32 * 100.0
+                    saturated[slot] as f32 / total[slot] as f32 * 100.0
                 };
-                (biome_name(target), percent, total)
+                (biome_name(biome), percent, total[slot])
             })
             .collect()
     }
@@ -482,7 +483,12 @@ impl PlantWorld {
             .filter(|&i| self.chunks[i].len() as u32 > self.base_count[i])
             .collect();
 
-        let mut buf = Vec::with_capacity(16 + spread_chunks.len() * 8);
+        // header(16) + per-chunk(8) + 14 bytes per spread plant.
+        let plant_total: usize = spread_chunks
+            .iter()
+            .map(|&i| self.chunks[i].len() - self.base_count[i] as usize)
+            .sum();
+        let mut buf = Vec::with_capacity(16 + spread_chunks.len() * 8 + plant_total * 14);
         buf.extend_from_slice(&SPREAD_MAGIC.to_le_bytes());
         buf.extend_from_slice(&SPREAD_VERSION.to_le_bytes());
         buf.extend_from_slice(&self.seed.to_le_bytes());
@@ -549,6 +555,13 @@ impl PlantWorld {
         // Recompute cached totals from scratch — cheap next to world generation.
         self.population = self.chunks.iter().map(Vec::len).sum();
         self.populated_chunks = self.chunks.iter().filter(|c| !c.is_empty()).count();
+        // Seed saturation so a resumed, settled world is cheap on its first spread
+        // pass instead of emitting for every chunk: an all-mature chunk is treated
+        // as saturated (a chunk that still has room re-clears the flag the moment a
+        // neighbour's seedling lands in it).
+        for (idx, &immature) in self.immature.iter().enumerate() {
+            self.saturated[idx] = immature == 0;
+        }
         Ok(added)
     }
 }
@@ -1017,6 +1030,11 @@ mod tests {
         assert_eq!(reloaded.immature[1], 2);
         // The spread suffix is byte-identical.
         assert_eq!(&reloaded.chunks[1][1..], &world.chunks[1][1..]);
+        // Saturation is seeded from maturity so a settled resume is cheap: the
+        // all-mature empty chunks are saturated, the chunk with seedlings is not.
+        assert!(reloaded.saturated[0]);
+        assert!(!reloaded.saturated[1]);
+        assert!(reloaded.saturated[2]);
     }
 
     #[test]
