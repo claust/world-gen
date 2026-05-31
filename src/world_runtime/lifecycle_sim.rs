@@ -7,7 +7,7 @@ use super::plant_landing::{
     existing_plants_for_chunk, validate_seedling_landing, PlantLandingRules,
 };
 use super::streaming::world_to_chunk;
-use crate::world_core::chunk::ChunkData;
+use crate::world_core::chunk::{canonical_chunk, ChunkData};
 use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::{
@@ -40,6 +40,11 @@ pub(super) fn tick_chunk_lifecycle(
     let Some(chunk) = context.loaded.get(&coord) else {
         return;
     };
+
+    // Spread randomness is hashed on the canonical chunk id so a chunk spreads
+    // identically no matter which raw lap it is loaded at; positions below stay
+    // in raw world space (from the source plant) and get rebased on load.
+    let canon = canonical_chunk(coord);
 
     let last_sim_hour = {
         let delta = delta_store.get_or_create(coord);
@@ -123,16 +128,16 @@ pub(super) fn tick_chunk_lifecycle(
                     continue;
                 };
 
-                if spread_roll(context.world_seed, coord, plant_index as u32)
+                if spread_roll(context.world_seed, canon, plant_index as u32)
                     >= species.placement.spread_chance.clamp(0.0, 1.0)
                 {
                     continue;
                 }
 
-                let seed_count = spread_seed_count(context.world_seed, coord, plant_index as u32);
+                let seed_count = spread_seed_count(context.world_seed, canon, plant_index as u32);
                 for seed_i in 0..seed_count {
                     let request = SeedlingSpawnRequest {
-                        coord,
+                        coord: canon,
                         plant_index: plant_index as u32,
                         seed_i,
                         source_position: plant.position,

@@ -49,6 +49,20 @@ impl ChunkDelta {
         self.removed_base.is_empty() && self.added_plants.is_empty() && self.last_sim_hour == 0.0
     }
 
+    /// Fold another chunk's delta into this one. Used when canonicalizing the
+    /// keys of a save written before delta state was keyed by canonical chunk:
+    /// two legacy raw chunk ids a whole number of world laps apart collapse to
+    /// the same canonical chunk and must be combined. `removed_base` indices and
+    /// `added_plants` refer to the shared canonical chunk, so they union/concat;
+    /// added-plant positions are normalized into the loaded chunk's span on load.
+    pub fn merge(&mut self, other: ChunkDelta) {
+        self.removed_base.extend(other.removed_base);
+        self.removed_base.sort_unstable();
+        self.removed_base.dedup();
+        self.added_plants.extend(other.added_plants);
+        self.last_sim_hour = self.last_sim_hour.max(other.last_sim_hour);
+    }
+
     pub fn prune_removed_base(&mut self, base_len: usize) -> bool {
         let original = self.removed_base.clone();
         self.removed_base.retain(|&index| index < base_len);

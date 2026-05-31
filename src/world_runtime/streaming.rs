@@ -228,8 +228,8 @@ mod tests {
 
     use super::{apply_chunk_delta, StreamingWorld};
     use crate::world_core::chunk::{
-        ChunkContent, ChunkData, ChunkTerrain, PlantInstance, CHUNK_GRID_RESOLUTION,
-        CHUNK_SIZE_METERS,
+        canonical_chunk, ChunkContent, ChunkData, ChunkTerrain, PlantInstance,
+        CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS,
     };
     use crate::world_core::lifecycle::{ChunkDelta, GrowthStage};
     use crate::world_core::{
@@ -346,6 +346,68 @@ mod tests {
         assert_eq!(chunk.content.plants.len(), 1);
         assert_eq!(chunk.content.plants[0].position, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(chunk.content.plants_revision, 1);
+    }
+
+    #[test]
+    fn delta_persists_across_a_world_lap_and_rebases_into_the_loaded_chunk() {
+        // A delta authored at a canonical chunk must reappear when that same
+        // canonical chunk is loaded one full world lap away, with its plant
+        // rebased into the loaded chunk's world span (M1's "full lap returnable").
+        let config = GameConfig::default();
+        let registry = test_registry();
+        let canon = IVec2::new(4, 5);
+        let raw = IVec2::new(canon.x + WORLD_SIZE_CHUNKS, canon.y);
+        let lap = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
+
+        // Author the delta in the canonical chunk's span.
+        let local_x = 24.0;
+        let local_z = 36.0;
+        let mut deltas = DeltaStore::default();
+        *deltas.get_or_create(canon) = ChunkDelta {
+            removed_base: Vec::new(),
+            added_plants: vec![crate::world_core::lifecycle::DeltaPlant {
+                position: Vec3::new(
+                    canon.x as f32 * CHUNK_SIZE_METERS + local_x,
+                    12.0,
+                    canon.y as f32 * CHUNK_SIZE_METERS + local_z,
+                ),
+                rotation: 0.3,
+                height: 8.0,
+                species_index: 0,
+                stage: GrowthStage::Mature,
+                born_hour: 0.0,
+            }],
+            last_sim_hour: 0.0,
+        };
+
+        // Load the *same canonical chunk* a lap east and apply the delta.
+        let chunk = apply_chunk_delta(
+            test_chunk_with_terrain(raw, Vec::new()),
+            &mut deltas,
+            &PlantLandingRules {
+                registry: registry.as_ref(),
+                biome_config: &config.biome,
+                sea_level: config.sea_level,
+            },
+        );
+
+        // The plant survived the lap and now sits in the loaded chunk's span.
+        assert_eq!(chunk.content.plants.len(), 1);
+        let plant = &chunk.content.plants[0];
+        assert!((plant.position.x - (raw.x as f32 * CHUNK_SIZE_METERS + local_x)).abs() < 1e-2);
+        assert!((plant.position.z - (raw.y as f32 * CHUNK_SIZE_METERS + local_z)).abs() < 1e-2);
+
+        // The stored delta is keyed canonically and now holds the rebased position.
+        let stored = deltas
+            .get(&canon)
+            .expect("delta should persist canonically");
+        assert_eq!(stored.added_plants.len(), 1);
+        assert!(
+            (stored.added_plants[0].position.x
+                - (canon.x as f32 * CHUNK_SIZE_METERS + local_x + lap))
+                .abs()
+                < 1e-2
+        );
     }
 
     #[test]
@@ -527,9 +589,10 @@ mod tests {
         let mut right =
             StreamingWorld::new(42, 1, 1, config, registry).expect("streaming world should build");
 
+        // Spread is hashed on the canonical chunk id, so predict with it too.
         let coord = (-4..=4)
             .flat_map(|z| (-4..=4).map(move |x| IVec2::new(x, z)))
-            .find(|coord| spread_roll(42, *coord, 0) < 0.3)
+            .find(|coord| spread_roll(42, canonical_chunk(*coord), 0) < 0.3)
             .expect("expected a coord with a successful spread roll");
         let base_plant = PlantInstance {
             position: Vec3::new(
@@ -593,7 +656,9 @@ mod tests {
         let (coord, seedling) = (-6..=6)
             .flat_map(|z| (-6..=6).map(move |x| IVec2::new(x, z)))
             .find_map(|coord| {
-                if spread_roll(42, coord, 0) >= 0.3 {
+                // Spread randomness is keyed on the canonical chunk id.
+                let canon = canonical_chunk(coord);
+                if spread_roll(42, canon, 0) >= 0.3 {
                     return None;
                 }
 
@@ -605,7 +670,7 @@ mod tests {
 
                 (0..2).find_map(|seed_i| {
                     let request = SeedlingSpawnRequest {
-                        coord,
+                        coord: canon,
                         plant_index: 0,
                         seed_i,
                         source_position,
@@ -636,12 +701,18 @@ mod tests {
             .insert(coord, test_chunk_with_terrain(coord, vec![base_plant]));
 
         let mut deltas = DeltaStore::default();
-        let changed = streaming.tick_loaded_chunk_growth(24.0, &mut deltas);
+        let _changed = streaming.tick_loaded_chunk_growth(24.0, &mut deltas);
         let target_delta = deltas
             .get(&target_coord)
             .expect("deferred target delta should be created");
 
-        assert!(changed.contains(&coord));
+        // The source chunk ticked (its delta clock advanced to this hour)...
+        assert_eq!(
+            deltas.get(&coord).map(|delta| delta.last_sim_hour),
+            Some(24.0)
+        );
+        // ...and a seedling that crossed into an unloaded neighbour was stored
+        // there deferred (no landing validation, position kept verbatim).
         assert!(!streaming.loaded.contains_key(&target_coord));
         assert!(target_delta
             .added_plants

@@ -1,7 +1,9 @@
 use glam::IVec2;
 
 use crate::world_core::biome::{classify, Biome};
-use crate::world_core::chunk::{ChunkData, PlantInstance, CHUNK_SIZE_METERS};
+use crate::world_core::chunk::{
+    rebase_position_to_chunk, ChunkData, PlantInstance, CHUNK_SIZE_METERS,
+};
 use crate::world_core::content::sampling::{estimate_slope, sample_field_bilinear};
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::{assemble_plants, ChunkDelta, DeltaPlant};
@@ -34,7 +36,12 @@ pub(super) fn prune_chunk_delta_on_load(
     let original_snapshot = original_added.clone();
     let original_len = original_added.len();
 
-    for plant in original_added {
+    for mut plant in original_added {
+        // The delta is shared across laps by canonical id, so its absolute
+        // positions may belong to a different raw lap than this loaded chunk.
+        // Rebase into this chunk's span before validating/landing so spacing
+        // checks and rendering happen in the loaded region's coordinates.
+        plant.position = rebase_position_to_chunk(plant.position, coord);
         if let Some(validated) =
             validate_seedling_landing(&plant, coord, chunk, &existing, landing_rules)
         {
