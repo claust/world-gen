@@ -15,7 +15,7 @@ use wgpu::util::DeviceExt;
 
 use super::frustum::Frustum;
 use super::hud_font::{self, ATLAS_H, ATLAS_W, GLYPH_H, GLYPH_W};
-use super::instancing::{SIGN_BOARD_CENTER_Y, SIGN_BOARD_HALF_T};
+use super::instancing::{SIGN_BOARD_CENTER_Y, SIGN_BOARD_HALF_T, SIGN_BOARD_HALF_W};
 use super::pipeline::DEPTH_FORMAT;
 use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 
@@ -277,10 +277,19 @@ impl SignTextPass {
 fn build_label_vertices(coord: IVec2, ground_y: f32) -> Vec<SignVertex> {
     let text = format!("X{} Z{}", coord.x, coord.y);
 
-    let gh = TEXT_HEIGHT_M;
-    let gw = gh * (GLYPH_W as f32 / GLYPH_H as f32);
-    let advance = gw;
+    // Shrink the glyphs so the whole label fits within the usable board width,
+    // leaving a small margin on each side. Long labels (e.g. "X-10 Z-10")
+    // would otherwise overflow the board face.
     let count = text.chars().count() as f32;
+    let usable_w = 2.0 * SIGN_BOARD_HALF_W * 0.92;
+    let mut gh = TEXT_HEIGHT_M;
+    let aspect = GLYPH_W as f32 / GLYPH_H as f32;
+    let natural_w = count * gh * aspect;
+    if natural_w > usable_w {
+        gh *= usable_w / natural_w;
+    }
+    let gw = gh * aspect;
+    let advance = gw;
     let start_x = -count * advance * 0.5;
 
     let cx = (coord.x as f32 + 0.5) * CHUNK_SIZE_METERS;
