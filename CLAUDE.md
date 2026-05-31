@@ -46,6 +46,7 @@ bun tools/debug-cli/cli.ts set_camera_position --x 100 --y 150 --z 100
 bun tools/debug-cli/cli.ts set_camera_look --yaw 1.5 --pitch -0.3
 bun tools/debug-cli/cli.ts set_day_speed --value 0.1
 bun tools/debug-cli/cli.ts move --key w --duration 500
+bun tools/debug-cli/cli.ts save                                # save camera + plant state
 ```
 
 ### FPS benchmark (`src/app/benchmark.rs`, `tools/bench.ts`)

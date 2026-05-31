@@ -1359,8 +1359,8 @@ impl AppState {
         if let Err(e) = save.save(&*self.storage) {
             log::warn!("failed to save game state: {e}");
         }
-        if let Err(e) = world.save_deltas(&*self.storage) {
-            log::warn!("failed to save lifecycle deltas: {e}");
+        if let Err(e) = world.save_plants(&*self.storage) {
+            log::warn!("failed to save plant state: {e}");
         }
     }
 
@@ -1372,8 +1372,8 @@ impl AppState {
             Ok(()) => {
                 self.save = Some(save);
                 if let Some(world) = &self.world {
-                    if let Err(e) = world.save_deltas(&*self.storage) {
-                        log::warn!("failed to save lifecycle deltas: {e}");
+                    if let Err(e) = world.save_plants(&*self.storage) {
+                        log::warn!("failed to save plant state: {e}");
                     }
                 }
             }

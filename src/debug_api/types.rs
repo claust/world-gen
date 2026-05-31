@@ -51,18 +51,26 @@ pub struct LifecycleSnapshot {
     pub world_population: usize,
     /// Canonical chunks holding at least one plant.
     pub world_populated_chunks: usize,
-    pub delta_chunks: usize,
-    pub loaded_delta_chunks: usize,
-    pub delta_plants: usize,
-    pub loaded_delta_plants: usize,
-    pub seedlings: usize,
-    pub young: usize,
-    pub mature: usize,
+    /// Seedlings added by the most recent global spread pass.
+    pub spread_last_added: usize,
+    /// Wall-clock duration of the most recent growth/spread tick, in ms.
+    pub tick_ms: f32,
+    /// Approximate resident megabytes of the whole-world plant store.
+    pub resident_mb: f32,
+    /// Per-biome fill: fraction of each biome's chunks that are saturated.
+    pub biome_fill: Vec<BiomeFill>,
     pub loaded_base_plants: usize,
     pub loaded_visible_plants: usize,
     pub loaded_visible_seedlings: usize,
     pub loaded_visible_young: usize,
     pub loaded_visible_mature: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BiomeFill {
+    pub biome: String,
+    pub percent: f32,
+    pub chunks: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +146,7 @@ pub enum CommandKind {
         distance: Option<f32>,
     },
     TakeScreenshot,
+    SaveWorld,
     PressKey {
         key: PressableKey,
     },

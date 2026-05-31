@@ -2,8 +2,8 @@ use glam::Vec3;
 use std::time::{Duration, Instant};
 
 use crate::debug_api::{
-    CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind, LifecycleSnapshot, MoveKey,
-    ObjectKind, PressableKey, RendererSnapshot, TelemetrySnapshot,
+    BiomeFill, CameraSnapshot, ChunkSnapshot, CommandAppliedEvent, CommandKind, LifecycleSnapshot,
+    MoveKey, ObjectKind, PressableKey, RendererSnapshot, TelemetrySnapshot,
 };
 use crate::renderer_wgpu::camera::MoveDirection;
 use crate::world_runtime::RuntimeStats;
@@ -218,6 +218,22 @@ impl AppState {
                         continue;
                     }
                 }
+                CommandKind::SaveWorld => {
+                    if self.world.is_some() {
+                        self.save_and_update();
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            "world saved".to_string(),
+                        )
+                    } else {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            "no world loaded".to_string(),
+                        )
+                    }
+                }
                 CommandKind::UiSnapshot => {
                     let snapshot = self.ui_registry.take_snapshot(self.screen_name());
                     let data = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
@@ -346,13 +362,18 @@ impl AppState {
             lifecycle: LifecycleSnapshot {
                 world_population: stats.world_population,
                 world_populated_chunks: stats.world_populated_chunks,
-                delta_chunks: stats.lifecycle.total_chunks,
-                loaded_delta_chunks: stats.lifecycle.loaded_chunks,
-                delta_plants: stats.lifecycle.total_plants,
-                loaded_delta_plants: stats.lifecycle.loaded_plants,
-                seedlings: stats.lifecycle.seedlings,
-                young: stats.lifecycle.young,
-                mature: stats.lifecycle.mature,
+                spread_last_added: stats.spread_last_added,
+                tick_ms: stats.tick_ms,
+                resident_mb: stats.resident_bytes as f32 / (1024.0 * 1024.0),
+                biome_fill: stats
+                    .biome_fill
+                    .iter()
+                    .map(|(biome, percent, chunks)| BiomeFill {
+                        biome: biome.to_string(),
+                        percent: *percent,
+                        chunks: *chunks,
+                    })
+                    .collect(),
                 loaded_base_plants: stats.loaded_base_plants,
                 loaded_visible_plants: stats.loaded_visible_plants,
                 loaded_visible_seedlings: stats.loaded_visible_seedlings,
