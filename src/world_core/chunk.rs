@@ -36,6 +36,31 @@ pub fn canonical_chunk(coord: IVec2) -> IVec2 {
     )
 }
 
+/// Rebase a stored world position into the world span of `raw_coord`.
+///
+/// Persisted plant state (the delta layer) is keyed by *canonical* chunk and so
+/// is shared by every raw chunk a whole number of world laps apart. Its plant
+/// positions are absolute, frozen at whatever raw location they were created.
+/// When that canonical chunk is later loaded at a different raw position (e.g.
+/// after flying a full lap), this maps each stored position into the loaded
+/// chunk's lap so it lines up with the raw-positioned base plants and renders
+/// next to the camera instead of a lap away.
+///
+/// Reduces the position modulo the world side to its canonical span, then adds
+/// the loaded chunk's lap offset. Idempotent: rebasing an already-correct
+/// position is a no-op.
+pub fn rebase_position_to_chunk(position: Vec3, raw_coord: IVec2) -> Vec3 {
+    let world = WORLD_SIZE_METERS as f32;
+    let canon = canonical_chunk(raw_coord);
+    let lap_x = (raw_coord.x - canon.x) as f32 * CHUNK_SIZE_METERS;
+    let lap_z = (raw_coord.y - canon.y) as f32 * CHUNK_SIZE_METERS;
+    Vec3::new(
+        position.x.rem_euclid(world) + lap_x,
+        position.y,
+        position.z.rem_euclid(world) + lap_z,
+    )
+}
+
 #[derive(Clone, PartialEq)]
 pub struct PlantInstance {
     pub position: Vec3,
@@ -112,4 +137,60 @@ pub struct ChunkData {
     pub coord: IVec2,
     pub terrain: ChunkTerrain,
     pub content: ChunkContent,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebase_position_is_a_noop_within_the_canonical_span() {
+        // A position already in its canonical chunk's span is unchanged.
+        let coord = IVec2::new(3, 7);
+        let pos = Vec3::new(
+            coord.x as f32 * CHUNK_SIZE_METERS + 12.0,
+            80.0,
+            coord.y as f32 * CHUNK_SIZE_METERS + 200.0,
+        );
+        let rebased = rebase_position_to_chunk(pos, coord);
+        assert!((rebased - pos).length() < 1e-3);
+    }
+
+    #[test]
+    fn rebase_position_shifts_a_stored_position_into_the_loaded_lap() {
+        // A delta plant created at canonical chunk (3, 7), viewed at the same
+        // canonical chunk one full world lap east, lands one lap further along x
+        // and keeps its chunk-local offset and height.
+        let canon = IVec2::new(3, 7);
+        let stored = Vec3::new(
+            canon.x as f32 * CHUNK_SIZE_METERS + 12.0,
+            80.0,
+            canon.y as f32 * CHUNK_SIZE_METERS + 200.0,
+        );
+        let raw = IVec2::new(canon.x + WORLD_SIZE_CHUNKS, canon.y);
+        let lap = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
+
+        let rebased = rebase_position_to_chunk(stored, raw);
+
+        assert!((rebased.x - (stored.x + lap)).abs() < 1e-2);
+        assert!((rebased.z - stored.z).abs() < 1e-2);
+        assert!((rebased.y - stored.y).abs() < 1e-3);
+        assert_eq!(canonical_chunk(world_chunk_of(rebased)), canon);
+    }
+
+    #[test]
+    fn rebase_position_is_idempotent() {
+        let raw = IVec2::new(-1, 4);
+        let stored = Vec3::new(-244.0, 50.0, 1080.0);
+        let once = rebase_position_to_chunk(stored, raw);
+        let twice = rebase_position_to_chunk(once, raw);
+        assert!((once - twice).length() < 1e-3);
+    }
+
+    fn world_chunk_of(pos: Vec3) -> IVec2 {
+        IVec2::new(
+            (pos.x / CHUNK_SIZE_METERS).floor() as i32,
+            (pos.z / CHUNK_SIZE_METERS).floor() as i32,
+        )
+    }
 }

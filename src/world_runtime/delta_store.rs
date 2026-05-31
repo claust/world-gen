@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use glam::IVec2;
 use serde::{Deserialize, Serialize};
 
+use crate::world_core::chunk::canonical_chunk;
 use crate::world_core::lifecycle::ChunkDelta;
 use crate::world_core::storage::Storage;
 
@@ -23,16 +24,19 @@ pub struct DeltaStore {
 }
 
 impl DeltaStore {
+    // Every accessor keys by the canonical chunk id, so raw chunks a whole
+    // number of world laps apart share one delta — the persisted plant state is
+    // a property of the canonical chunk, not the raw load position.
     pub fn get(&self, coord: &IVec2) -> Option<&ChunkDelta> {
-        self.deltas.get(coord)
+        self.deltas.get(&canonical_chunk(*coord))
     }
 
     pub fn get_or_create(&mut self, coord: IVec2) -> &mut ChunkDelta {
-        self.deltas.entry(coord).or_default()
+        self.deltas.entry(canonical_chunk(coord)).or_default()
     }
 
     pub fn remove(&mut self, coord: &IVec2) -> Option<ChunkDelta> {
-        self.deltas.remove(coord)
+        self.deltas.remove(&canonical_chunk(*coord))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -43,7 +47,10 @@ impl DeltaStore {
     where
         I: IntoIterator<Item = IVec2>,
     {
-        let loaded_coords: std::collections::HashSet<_> = loaded_coords.into_iter().collect();
+        // Stored keys are canonical; canonicalize the loaded raw coords too so
+        // the loaded/total split lines up.
+        let loaded_coords: std::collections::HashSet<_> =
+            loaded_coords.into_iter().map(canonical_chunk).collect();
         let mut stats = DeltaStoreStats::default();
 
         for (coord, delta) in &self.deltas {
@@ -174,9 +181,11 @@ mod tests {
 
         store.save(&storage).unwrap();
         let json = storage.load("deltas").expect("deltas should be saved");
-        assert!(json.contains("\"2,-3\""));
+        // Keys are stored canonically: (2, -3) → (2, 253) at WORLD_SIZE_CHUNKS = 256.
+        assert!(json.contains("\"2,253\""));
         assert!(!json.contains("\"0,0\""));
 
+        // Lookups canonicalize too, so the raw coord still resolves.
         let loaded = DeltaStore::load(&storage);
         let delta = loaded.get(&IVec2::new(2, -3)).expect("delta should reload");
         assert_eq!(delta.removed_base, vec![1, 4]);
