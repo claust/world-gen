@@ -4,7 +4,7 @@ name: Native build
 # CI workflow (debug build — compile/link validation) and the Release workflow
 # (release build + packaged artifacts). Defining the matrix and runner pins in
 # ONE place keeps PR validation and the release build from drifting apart — the
-# drift that let a Windows-only break reach master undetected.
+# drift that let a Windows-only break reach main undetected.
 
 on:
   workflow_call:
