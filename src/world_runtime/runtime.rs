@@ -78,6 +78,41 @@ impl WorldRuntime {
         registry: Arc<PlantRegistry>,
         storage: &dyn Storage,
     ) -> anyhow::Result<Self> {
+        let spread_bytes = storage.load_bytes("plants");
+        Self::build(config, save, threads, registry, spread_bytes, None)
+    }
+
+    /// Build a world from fully-owned, `Send` inputs so the whole generation can
+    /// run on a worker thread off the event loop. `spread_bytes` is the persisted
+    /// spread blob, read from storage on the main thread (storage handles are not
+    /// `Send`); `progress` receives live per-chunk progress for the loading UI.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn generate(
+        config: GameConfig,
+        save: Option<SaveData>,
+        threads: usize,
+        registry: Arc<PlantRegistry>,
+        spread_bytes: Option<Vec<u8>>,
+        progress: &crate::world_runtime::GenerationProgress,
+    ) -> anyhow::Result<Self> {
+        Self::build(
+            &config,
+            save.as_ref(),
+            threads,
+            registry,
+            spread_bytes,
+            Some(progress),
+        )
+    }
+
+    fn build(
+        config: &GameConfig,
+        save: Option<&SaveData>,
+        threads: usize,
+        registry: Arc<PlantRegistry>,
+        spread_bytes: Option<Vec<u8>>,
+        progress: Option<&crate::world_runtime::GenerationProgress>,
+    ) -> anyhow::Result<Self> {
         let seed = save.map(|s| s.world.seed).unwrap_or(config.world.seed);
         let start_hour = save
             .map(|s| s.world.hour)
@@ -96,8 +131,8 @@ impl WorldRuntime {
         // chunk into the resident store (parallel; terrain discarded per chunk),
         // then re-apply any persisted spread state on top of the regenerable base.
         let mut plant_world =
-            PlantWorld::generate_base(seed, config, Arc::clone(&registry), threads);
-        let restored = plant_world.apply_saved_spread(storage);
+            PlantWorld::generate_base(seed, config, Arc::clone(&registry), threads, progress);
+        let restored = plant_world.apply_saved_spread_bytes(spread_bytes.as_deref());
         log::info!(
             "PlantWorld: {} plants across {} populated chunks ({restored} restored from save)",
             plant_world.population(),

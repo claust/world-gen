@@ -176,6 +176,7 @@ impl PlantWorld {
         config: &GameConfig,
         registry: Arc<PlantRegistry>,
         threads: usize,
+        progress: Option<&crate::world_runtime::gen_progress::GenerationProgress>,
     ) -> Self {
         // `Plant` packs the species index into a `u8`; guarantee the herbarium
         // fits before generating millions of plants (this is a long-lived store).
@@ -204,6 +205,7 @@ impl PlantWorld {
         // terrain/biome maps are transient.
         let centre =
             (CHUNK_GRID_RESOLUTION / 2) * CHUNK_GRID_RESOLUTION + CHUNK_GRID_RESOLUTION / 2;
+        let sea_level = config.sea_level;
         let build_one = |idx: usize| -> (Vec<Plant>, Biome) {
             let cx = (idx as i32) % n;
             let cz = (idx as i32) / n;
@@ -216,11 +218,16 @@ impl PlantWorld {
                 plants.push(Plant::pack(plant, origin_x, origin_z));
             }
             plants.shrink_to_fit();
-            let biome = classify(
-                data.terrain.heights[centre],
-                data.terrain.moisture[centre],
-                &config.biome,
-            );
+            let centre_height = data.terrain.heights[centre];
+            let biome = classify(centre_height, data.terrain.moisture[centre], &config.biome);
+            // Surface live progress for the loading visualization: store this
+            // chunk's cell color and bump the done counter (single relaxed atomic
+            // each — no lock on the generation hot path).
+            if let Some(p) = progress {
+                let byte =
+                    crate::world_runtime::gen_progress::cell_byte(biome, centre_height < sea_level);
+                p.record(idx, byte);
+            }
             (plants, biome)
         };
 
@@ -519,10 +526,17 @@ impl PlantWorld {
         &mut self,
         storage: &dyn crate::world_core::storage::Storage,
     ) -> usize {
-        let Some(buf) = storage.load_bytes("plants") else {
+        self.apply_saved_spread_bytes(storage.load_bytes("plants").as_deref())
+    }
+
+    /// As [`apply_saved_spread`], but from an already-loaded blob. The async
+    /// generation path reads the save bytes on the main thread (storage handles
+    /// are not `Send`) and hands them to the worker through this.
+    pub fn apply_saved_spread_bytes(&mut self, bytes: Option<&[u8]>) -> usize {
+        let Some(buf) = bytes else {
             return 0;
         };
-        match self.read_spread(&buf) {
+        match self.read_spread(buf) {
             Ok(added) => added,
             Err(err) => {
                 log::warn!("ignoring saved spread state: {err}");
