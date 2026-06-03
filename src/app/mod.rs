@@ -73,6 +73,16 @@ struct LoadingState {
     progress: f32,
 }
 
+/// Background world-generation worker. The heavy `WorldRuntime::generate` runs on
+/// this thread so the event loop keeps drawing the loading animation at 60fps;
+/// the result arrives over `result`. Dropping this struct drops the receiver,
+/// which detaches the thread — leaving the loading screen never blocks on a join.
+#[cfg(not(target_arch = "wasm32"))]
+struct WorldGenJob {
+    result: std::sync::mpsc::Receiver<anyhow::Result<WorldRuntime>>,
+    _handle: std::thread::JoinHandle<()>,
+}
+
 pub struct AppState {
     window: &'static Window,
     gpu: GpuContext,
@@ -111,6 +121,23 @@ pub struct AppState {
     ui_registry: UiRegistry,
     loading_state: Option<LoadingState>,
     loading_registry: Option<std::sync::Arc<crate::world_core::herbarium::PlantRegistry>>,
+    /// Live progress of the async world build, shared with the worker thread and
+    /// read each frame by the loading visualization.
+    world_gen_progress: Option<std::sync::Arc<crate::world_runtime::GenerationProgress>>,
+    /// Wall-clock start of the current world build, for the elapsed-time readout.
+    loading_started: Option<Instant>,
+    /// 256×256 biome map painted in as chunks finish; re-uploaded only when the
+    /// chunk-done count changes.
+    loading_map_tex: Option<egui::TextureHandle>,
+    /// Reused RGBA scratch for the biome map, so the per-frame texture refresh
+    /// doesn't allocate 256 KB every frame across the multi-second build.
+    loading_map_buf: Vec<u8>,
+    /// `done` count at the last map upload, to skip rebuilds when nothing changed.
+    loading_map_done: usize,
+    /// Handle to the background world-generation worker (native only). Polled each
+    /// frame; dropped (detaching the thread) if the user leaves the loading screen.
+    #[cfg(not(target_arch = "wasm32"))]
+    world_gen_job: Option<WorldGenJob>,
     thumbnail_renderer: Option<ThumbnailRenderer>,
     blur_pass: BlurPass,
     blur_capture_pending: bool,
@@ -221,6 +248,12 @@ impl AppState {
             ui_registry: UiRegistry::new(),
             loading_state: None,
             loading_registry: None,
+            world_gen_progress: None,
+            loading_started: None,
+            loading_map_tex: None,
+            loading_map_buf: Vec::new(),
+            loading_map_done: 0,
+            world_gen_job: None,
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
@@ -303,6 +336,11 @@ impl AppState {
             ui_registry: UiRegistry::new(),
             loading_state: None,
             loading_registry: None,
+            world_gen_progress: None,
+            loading_started: None,
+            loading_map_tex: None,
+            loading_map_buf: Vec::new(),
+            loading_map_done: 0,
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
@@ -495,6 +533,14 @@ impl AppState {
             resume,
             progress: 0.0,
         });
+        // Reset any leftover generation state from a previous build.
+        self.world_gen_progress = None;
+        self.loading_started = None;
+        self.loading_map_tex = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.world_gen_job = None;
+        }
     }
 
     fn tick_loading(&mut self) {
@@ -548,44 +594,7 @@ impl AppState {
                 }
             }
             LoadingPhase::CreateWorld => {
-                let save_ref = if resume { self.save.as_ref() } else { None };
-
-                #[cfg(not(target_arch = "wasm32"))]
-                let threads = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(4);
-                #[cfg(target_arch = "wasm32")]
-                let threads = 1;
-
-                let arc_registry = self.loading_registry.take().unwrap_or_else(|| {
-                    std::sync::Arc::new(
-                        crate::world_core::herbarium::PlantRegistry::from_herbarium(
-                            &self.herbarium,
-                        ),
-                    )
-                });
-                match WorldRuntime::new(
-                    &self.config,
-                    save_ref,
-                    threads,
-                    arc_registry,
-                    &*self.storage,
-                ) {
-                    Ok(world) => {
-                        self.world = Some(world);
-                    }
-                    Err(err) => {
-                        log::error!("failed to create world runtime: {err}");
-                        self.screen = Screen::StartMenu;
-                        self.loading_state = None;
-                        return;
-                    }
-                }
-
-                if let Some(s) = &mut self.loading_state {
-                    s.phase = LoadingPhase::DispatchChunks;
-                    s.progress = 0.30;
-                }
+                self.tick_create_world(resume);
             }
             LoadingPhase::DispatchChunks => {
                 if let Some(world) = &mut self.world {
@@ -674,7 +683,192 @@ impl AppState {
                     self.capture_cursor();
                 }
                 self.loading_state = None;
+                // Release the generation-visualization resources now that we're
+                // in-game; they're rebuilt fresh on the next load.
+                self.world_gen_progress = None;
+                self.loading_started = None;
+                self.loading_map_tex = None;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.world_gen_job = None;
+                }
             }
+        }
+    }
+
+    /// `CreateWorld` phase. On native, spawn the heavy `WorldRuntime::generate` on
+    /// a worker thread the first time through, then poll for its result on
+    /// subsequent frames so the event loop keeps animating. On wasm (no threads)
+    /// it runs inline — blocking is acceptable there.
+    fn tick_create_world(&mut self, resume: bool) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // First entry: kick off the worker.
+            if self.world_gen_job.is_none() {
+                let threads = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4);
+                let registry = self.loading_registry.take().unwrap_or_else(|| {
+                    std::sync::Arc::new(
+                        crate::world_core::herbarium::PlantRegistry::from_herbarium(
+                            &self.herbarium,
+                        ),
+                    )
+                });
+                let config = self.config.clone();
+                let save = if resume { self.save.clone() } else { None };
+                // Storage handles aren't `Send`; read the persisted spread blob
+                // here on the main thread and hand the owned bytes to the worker.
+                let spread_bytes = self.storage.load_bytes("plants");
+                let progress = std::sync::Arc::new(crate::world_runtime::GenerationProgress::new());
+                self.world_gen_progress = Some(std::sync::Arc::clone(&progress));
+                self.loading_started = Some(Instant::now());
+
+                let (tx, rx) = std::sync::mpsc::channel();
+                let spawned = std::thread::Builder::new()
+                    .name("world-gen".to_string())
+                    .spawn(move || {
+                        let result = WorldRuntime::generate(
+                            config,
+                            save,
+                            threads,
+                            registry,
+                            spread_bytes,
+                            &progress,
+                        );
+                        // Ignore send errors: if the receiver was dropped the user
+                        // left the loading screen and the result is no longer wanted.
+                        let _ = tx.send(result);
+                    });
+                match spawned {
+                    Ok(handle) => {
+                        self.world_gen_job = Some(WorldGenJob {
+                            result: rx,
+                            _handle: handle,
+                        });
+                    }
+                    Err(err) => {
+                        // Thread creation can fail under resource limits; bail back
+                        // to the menu instead of panicking.
+                        log::error!("failed to spawn world-gen thread: {err}");
+                        self.abort_loading();
+                    }
+                }
+                return;
+            }
+
+            // Subsequent frames: poll the worker without blocking.
+            let msg = self.world_gen_job.as_ref().map(|job| job.result.try_recv());
+            match msg {
+                Some(Ok(Ok(world))) => {
+                    self.world = Some(world);
+                    self.world_gen_job = None;
+                    if let Some(s) = &mut self.loading_state {
+                        s.phase = LoadingPhase::DispatchChunks;
+                        s.progress = 0.30;
+                    }
+                }
+                Some(Ok(Err(err))) => {
+                    log::error!("failed to create world runtime: {err}");
+                    self.abort_loading();
+                }
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                    log::error!("world-gen worker thread terminated unexpectedly");
+                    self.abort_loading();
+                }
+                Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {
+                    // Still generating: drive the progress bar from the live
+                    // fraction (CreateWorld owns the 0.15..0.30 band; the map
+                    // visualization shows the real per-chunk detail).
+                    if let Some(p) = &self.world_gen_progress {
+                        let frac = p.fraction();
+                        if let Some(s) = &mut self.loading_state {
+                            s.progress = 0.15 + frac * 0.15;
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            // No threads on wasm: generate synchronously (blocks, as before).
+            let save_ref = if resume { self.save.as_ref() } else { None };
+            let registry = self.loading_registry.take().unwrap_or_else(|| {
+                std::sync::Arc::new(crate::world_core::herbarium::PlantRegistry::from_herbarium(
+                    &self.herbarium,
+                ))
+            });
+            match WorldRuntime::new(&self.config, save_ref, 1, registry, &*self.storage) {
+                Ok(world) => {
+                    self.world = Some(world);
+                }
+                Err(err) => {
+                    log::error!("failed to create world runtime: {err}");
+                    self.abort_loading();
+                    return;
+                }
+            }
+            if let Some(s) = &mut self.loading_state {
+                s.phase = LoadingPhase::DispatchChunks;
+                s.progress = 0.30;
+            }
+        }
+    }
+
+    /// Rebuild the 256×256 biome map texture from the worker's per-chunk progress
+    /// buffer. Each cell is `cell_color(byte)`; ungenerated cells are transparent
+    /// so the unfilled map reads as empty over the background. The RGBA scratch is
+    /// reused and the GPU upload is skipped on frames where no new chunk finished,
+    /// so this stays cheap across the multi-second build.
+    fn update_loading_map_texture(&mut self) {
+        use crate::world_core::chunk::WORLD_SIZE_CHUNKS;
+        use crate::world_runtime::gen_progress::cell_color;
+
+        let Some(progress) = &self.world_gen_progress else {
+            return;
+        };
+        let done = progress.done();
+        // Nothing new finished since the last upload (and the texture already
+        // exists): keep the current one rather than re-uploading an identical map.
+        if self.loading_map_tex.is_some() && done == self.loading_map_done {
+            return;
+        }
+
+        let n = WORLD_SIZE_CHUNKS as usize;
+        self.loading_map_buf.resize(n * n * 4, 0);
+        for idx in 0..(n * n) {
+            let color = cell_color(progress.cell(idx));
+            let off = idx * 4;
+            self.loading_map_buf[off..off + 4].copy_from_slice(&color);
+        }
+        self.loading_map_done = done;
+
+        let image = egui::ColorImage::from_rgba_unmultiplied([n, n], &self.loading_map_buf);
+        match &mut self.loading_map_tex {
+            Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
+            None => {
+                let tex = self.egui_bridge.ctx().load_texture(
+                    "loading-world-map",
+                    image,
+                    egui::TextureOptions::NEAREST,
+                );
+                self.loading_map_tex = Some(tex);
+            }
+        }
+    }
+
+    /// Bail out of loading back to the start menu, releasing generation state.
+    fn abort_loading(&mut self) {
+        self.screen = Screen::StartMenu;
+        self.loading_state = None;
+        self.world_gen_progress = None;
+        self.loading_started = None;
+        self.loading_map_tex = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.world_gen_job = None;
         }
     }
 
@@ -1260,12 +1454,22 @@ impl AppState {
                 || self.config_panel.is_visible()
                 || is_editor;
             if show_egui {
+                // Refresh the biome map texture from the worker's live progress
+                // before egui runs (needs `ctx` + `&mut self`, which the run
+                // closure can't also hold).
+                if is_loading {
+                    self.update_loading_map_texture();
+                }
                 let raw_input = self.egui_bridge.take_raw_input();
                 let mut menu_action = None;
                 let loading_progress = self
                     .loading_state
                     .as_ref()
                     .map(|s| s.progress)
+                    .unwrap_or(0.0);
+                let loading_elapsed = self
+                    .loading_started
+                    .map(|t| t.elapsed().as_secs_f32())
                     .unwrap_or(0.0);
                 let full_output = self
                     .egui_bridge
@@ -1275,7 +1479,13 @@ impl AppState {
                             menu_action = self.start_menu.ui(ctx, &mut self.ui_registry);
                         }
                         Screen::Loading => {
-                            render_loading_ui(ctx, loading_progress);
+                            render_loading_ui(
+                                ctx,
+                                loading_progress,
+                                self.world_gen_progress.as_deref(),
+                                loading_elapsed,
+                                self.loading_map_tex.as_ref(),
+                            );
                         }
                         Screen::Herbarium => {
                             use crate::ui::herbarium_ui::HerbariumAction;
@@ -1407,32 +1617,143 @@ impl AppState {
     }
 }
 
-fn render_loading_ui(ctx: &egui::Context, progress: f32) {
-    let message = match progress {
-        p if p < 0.15 => "Preparing the soil...",
-        p if p < 0.35 => "Planting seeds...",
-        p if p < 0.65 => "Growing forests...",
+/// The "world being born" loading screen: a top-down biome map that paints
+/// itself in as generation sweeps through the canonical chunks, with a glowing
+/// frontier, themed status text, and a live `% • elapsed • chunks` readout. The
+/// map texture (`map_tex`) is updated each frame by `update_loading_map_texture`;
+/// `gen` carries the real per-chunk progress (None before/after the build).
+fn render_loading_ui(
+    ctx: &egui::Context,
+    progress: f32,
+    gen: Option<&crate::world_runtime::GenerationProgress>,
+    elapsed_s: f32,
+    map_tex: Option<&egui::TextureHandle>,
+) {
+    use egui::{Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, StrokeKind};
+
+    let (done, total, gen_frac) = match gen {
+        Some(g) => (g.done(), g.total(), g.fraction()),
+        None => (0, 0, progress),
+    };
+    // The bar and status track generation while it runs, then ride the (fast)
+    // post-gen sync phases to 100%.
+    let frac = if gen.is_some() && gen_frac < 1.0 {
+        gen_frac
+    } else {
+        progress.max(gen_frac)
+    };
+
+    let message = match frac {
+        p if p < 0.05 => "Preparing the soil...",
+        p if p < 0.30 => "Planting seeds...",
+        p if p < 0.60 => "Growing forests...",
         p if p < 0.85 => "Carving rivers...",
-        p if p < 0.95 => "Welcoming wildlife...",
+        p if p < 0.999 => "Welcoming wildlife...",
         _ => "World ready!",
     };
 
+    // Gentle pulse for the frontier glow (no per-cell timestamps needed).
+    let pulse = 0.5 + 0.5 * (elapsed_s * 3.5).sin();
+
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(egui::Color32::from_black_alpha(140)))
+        .frame(egui::Frame::NONE.fill(Color32::from_black_alpha(150)))
         .show(ctx, |ui| {
             let available = ui.available_size();
-            ui.add_space(available.y * 0.45);
+            // Square map sized to the smaller viewport dimension, leaving room
+            // for the title above and the status/readout/bar below.
+            let map_side = (available.x.min(available.y) * 0.55).clamp(180.0, 560.0);
+            let top_pad = ((available.y - map_side) * 0.5 - 70.0).max(20.0);
+            ui.add_space(top_pad);
 
             ui.vertical_centered(|ui| {
                 ui.label(
-                    egui::RichText::new(message)
-                        .size(22.0)
-                        .color(egui::Color32::WHITE),
+                    RichText::new("Breathing life into a new world")
+                        .size(26.0)
+                        .strong()
+                        .color(Color32::from_rgb(232, 240, 247)),
+                );
+                ui.add_space(16.0);
+
+                let (rect, _resp) =
+                    ui.allocate_exact_size(egui::vec2(map_side, map_side), Sense::hover());
+                if ui.is_rect_visible(rect) {
+                    let painter = ui.painter_at(rect);
+                    // Backdrop behind the (partly transparent) map.
+                    painter.rect_filled(
+                        rect,
+                        CornerRadius::same(8),
+                        Color32::from_black_alpha(130),
+                    );
+
+                    if let Some(tex) = map_tex {
+                        painter.image(
+                            tex.id(),
+                            rect,
+                            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    }
+
+                    // Glowing progress line at the completed-fraction row. The
+                    // rayon fan-out fills the map in parallel bands rather than a
+                    // clean top-to-bottom sweep, so this is a progress indicator,
+                    // not a literal generation frontier in map space.
+                    if gen.is_some() && gen_frac > 0.0 && gen_frac < 1.0 {
+                        let y = rect.top() + rect.height() * gen_frac;
+                        let glow_h = 5.0 + 7.0 * pulse;
+                        let glow = Rect::from_min_max(
+                            egui::pos2(rect.left(), (y - glow_h).max(rect.top())),
+                            egui::pos2(rect.right(), (y + glow_h).min(rect.bottom())),
+                        );
+                        painter.rect_filled(
+                            glow,
+                            CornerRadius::ZERO,
+                            Color32::from_rgba_unmultiplied(
+                                150,
+                                205,
+                                255,
+                                (50.0 + 70.0 * pulse) as u8,
+                            ),
+                        );
+                        painter.hline(
+                            rect.x_range(),
+                            y,
+                            Stroke::new(1.5, Color32::from_rgba_unmultiplied(220, 240, 255, 210)),
+                        );
+                    }
+
+                    // Crisp frame around the map.
+                    painter.rect_stroke(
+                        rect,
+                        CornerRadius::same(8),
+                        Stroke::new(1.0, Color32::from_white_alpha(36)),
+                        StrokeKind::Inside,
+                    );
+                }
+
+                ui.add_space(18.0);
+                ui.label(
+                    RichText::new(message)
+                        .size(20.0)
+                        .color(Color32::from_rgb(220, 230, 240)),
+                );
+                ui.add_space(6.0);
+
+                let pct = (frac * 100.0).round() as i32;
+                let readout = if total > 0 {
+                    format!("{pct}%   •   {elapsed_s:.0}s   •   {done} / {total} chunks")
+                } else {
+                    format!("{pct}%")
+                };
+                ui.label(
+                    RichText::new(readout)
+                        .font(FontId::monospace(13.0))
+                        .color(Color32::from_white_alpha(170)),
                 );
                 ui.add_space(12.0);
                 ui.add(
-                    egui::ProgressBar::new(progress)
-                        .desired_width(300.0)
+                    egui::ProgressBar::new(frac)
+                        .desired_width(map_side)
                         .animate(true),
                 );
             });
