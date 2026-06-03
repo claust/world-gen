@@ -126,8 +126,14 @@ pub struct AppState {
     world_gen_progress: Option<std::sync::Arc<crate::world_runtime::GenerationProgress>>,
     /// Wall-clock start of the current world build, for the elapsed-time readout.
     loading_started: Option<Instant>,
-    /// 256×256 biome map painted in as chunks finish; rebuilt each loading frame.
+    /// 256×256 biome map painted in as chunks finish; re-uploaded only when the
+    /// chunk-done count changes.
     loading_map_tex: Option<egui::TextureHandle>,
+    /// Reused RGBA scratch for the biome map, so the per-frame texture refresh
+    /// doesn't allocate 256 KB every frame across the multi-second build.
+    loading_map_buf: Vec<u8>,
+    /// `done` count at the last map upload, to skip rebuilds when nothing changed.
+    loading_map_done: usize,
     /// Handle to the background world-generation worker (native only). Polled each
     /// frame; dropped (detaching the thread) if the user leaves the loading screen.
     #[cfg(not(target_arch = "wasm32"))]
@@ -245,6 +251,8 @@ impl AppState {
             world_gen_progress: None,
             loading_started: None,
             loading_map_tex: None,
+            loading_map_buf: Vec::new(),
+            loading_map_done: 0,
             world_gen_job: None,
             thumbnail_renderer: None,
             blur_pass,
@@ -331,6 +339,8 @@ impl AppState {
             world_gen_progress: None,
             loading_started: None,
             loading_map_tex: None,
+            loading_map_buf: Vec::new(),
+            loading_map_done: 0,
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
@@ -715,7 +725,7 @@ impl AppState {
                 self.loading_started = Some(Instant::now());
 
                 let (tx, rx) = std::sync::mpsc::channel();
-                let handle = std::thread::Builder::new()
+                let spawned = std::thread::Builder::new()
                     .name("world-gen".to_string())
                     .spawn(move || {
                         let result = WorldRuntime::generate(
@@ -729,12 +739,21 @@ impl AppState {
                         // Ignore send errors: if the receiver was dropped the user
                         // left the loading screen and the result is no longer wanted.
                         let _ = tx.send(result);
-                    })
-                    .expect("failed to spawn world-gen thread");
-                self.world_gen_job = Some(WorldGenJob {
-                    result: rx,
-                    _handle: handle,
-                });
+                    });
+                match spawned {
+                    Ok(handle) => {
+                        self.world_gen_job = Some(WorldGenJob {
+                            result: rx,
+                            _handle: handle,
+                        });
+                    }
+                    Err(err) => {
+                        // Thread creation can fail under resource limits; bail back
+                        // to the menu instead of panicking.
+                        log::error!("failed to spawn world-gen thread: {err}");
+                        self.abort_loading();
+                    }
+                }
                 return;
             }
 
@@ -800,8 +819,9 @@ impl AppState {
 
     /// Rebuild the 256×256 biome map texture from the worker's per-chunk progress
     /// buffer. Each cell is `cell_color(byte)`; ungenerated cells are transparent
-    /// so the unfilled map reads as empty over the background. Cheap: one 256 KB
-    /// RGBA upload per frame while loading.
+    /// so the unfilled map reads as empty over the background. The RGBA scratch is
+    /// reused and the GPU upload is skipped on frames where no new chunk finished,
+    /// so this stays cheap across the multi-second build.
     fn update_loading_map_texture(&mut self) {
         use crate::world_core::chunk::WORLD_SIZE_CHUNKS;
         use crate::world_runtime::gen_progress::cell_color;
@@ -809,14 +829,23 @@ impl AppState {
         let Some(progress) = &self.world_gen_progress else {
             return;
         };
+        let done = progress.done();
+        // Nothing new finished since the last upload (and the texture already
+        // exists): keep the current one rather than re-uploading an identical map.
+        if self.loading_map_tex.is_some() && done == self.loading_map_done {
+            return;
+        }
+
         let n = WORLD_SIZE_CHUNKS as usize;
-        let mut rgba = vec![0u8; n * n * 4];
+        self.loading_map_buf.resize(n * n * 4, 0);
         for idx in 0..(n * n) {
             let color = cell_color(progress.cell(idx));
             let off = idx * 4;
-            rgba[off..off + 4].copy_from_slice(&color);
+            self.loading_map_buf[off..off + 4].copy_from_slice(&color);
         }
-        let image = egui::ColorImage::from_rgba_unmultiplied([n, n], &rgba);
+        self.loading_map_done = done;
+
+        let image = egui::ColorImage::from_rgba_unmultiplied([n, n], &self.loading_map_buf);
         match &mut self.loading_map_tex {
             Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
             None => {
@@ -1665,7 +1694,10 @@ fn render_loading_ui(
                         );
                     }
 
-                    // Glowing scan frontier at the average generation row.
+                    // Glowing progress line at the completed-fraction row. The
+                    // rayon fan-out fills the map in parallel bands rather than a
+                    // clean top-to-bottom sweep, so this is a progress indicator,
+                    // not a literal generation frontier in map space.
                     if gen.is_some() && gen_frac > 0.0 && gen_frac < 1.0 {
                         let y = rect.top() + rect.height() * gen_frac;
                         let glow_h = 5.0 + 7.0 * pulse;

@@ -80,10 +80,15 @@ impl GenerationProgress {
     /// Record a finished chunk: store its cell byte and bump the done counter.
     /// Called once per chunk from the (parallel) generation closure.
     pub fn record(&self, idx: usize, byte: u8) {
-        if let Some(cell) = self.cells.get(idx) {
-            cell.store(byte, Ordering::Relaxed);
+        match self.cells.get(idx) {
+            Some(cell) => {
+                cell.store(byte, Ordering::Relaxed);
+                // Only count a chunk done when its cell was actually written, so
+                // `done/total` can't drift past `total` on a bad index.
+                self.done.fetch_add(1, Ordering::Relaxed);
+            }
+            None => debug_assert!(false, "GenerationProgress::record index {idx} out of range"),
         }
-        self.done.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn done(&self) -> usize {
