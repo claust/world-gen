@@ -27,7 +27,13 @@ fn main() -> anyhow::Result<()> {
     use world_gen::app::{self, AppState};
     use world_gen::debug_api::DebugApiConfig;
 
-    env_logger::init();
+    // Default to info for our crate (so world-generation progress and other
+    // status logs show) while keeping the chatty GPU/windowing deps at warn.
+    // RUST_LOG, if set, overrides this entirely.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,world_gen=info"),
+    )
+    .init();
     let debug_api = DebugApiConfig::from_env_args()?;
     log::info!(
         "debug api enabled: {}, bind: {}",
