@@ -172,10 +172,14 @@ pub fn fetch_base_world() -> Option<Vec<u8>> {
     }
 
     // Short timeouts so a dead or slow host can't stall the loading screen for
-    // long before we fall back to generating locally.
+    // long before we fall back to generating locally. `redirects` is explicit
+    // (it already defaults to 5) so a redirecting host — e.g. a GitHub release
+    // asset URL 302s to objects.githubusercontent.com — is followed to the real
+    // bytes rather than handing us a redirect page.
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(10))
+        .redirects(5)
         .build();
 
     let resp = match agent.get(BASE_WORLD_URL).call() {
@@ -185,6 +189,18 @@ pub fn fetch_base_world() -> Option<Vec<u8>> {
             return None;
         }
     };
+
+    // `.call()` only errors on 4xx/5xx; a 3xx that outran the redirect limit, or
+    // a 2xx that isn't `200` (204/206/…), comes back as `Ok` with a body that
+    // isn't the snapshot. Require exactly `200` so anything else falls back to
+    // local generation instead of feeding junk to `from_base_snapshot`.
+    if resp.status() != 200 {
+        log::warn!(
+            "base world: download from {BASE_WORLD_URL} returned status {}; ignoring",
+            resp.status()
+        );
+        return None;
+    }
 
     let mut bytes = Vec::new();
     if let Err(err) = resp
