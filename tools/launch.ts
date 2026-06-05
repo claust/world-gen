@@ -116,7 +116,7 @@ function cmdList(): void {
 
 function uniqueName(): string {
   // Short, sortable, collision-resistant without needing to read the dir.
-  return `inst-${Date.now().toString(36)}`;
+  return `inst-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function seedAssets(instanceDir: string): void {
