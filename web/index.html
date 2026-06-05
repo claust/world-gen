@@ -18,7 +18,7 @@
     <meta name="theme-color" content="#0a1f0a">
     <link
         rel="icon"
-        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3Crect x='29' y='34' width='6' height='18' fill='%235c4033'/%3E%3C/svg%3E"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3C/svg%3E"
     >
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -140,38 +140,14 @@
             letter-spacing: 0.04em;
         }
 
+        /* App icon: same flat two-tier conifer mark used by the favicon and
+           the macOS app icon, so the brand is consistent everywhere. */
         .brand-mark {
             width: 2.4rem;
             height: 2.4rem;
-            border-radius: 999px;
-            background:
-                radial-gradient(circle at 35% 35%, rgba(124, 255, 159, 0.95), transparent 32%),
-                linear-gradient(180deg, #1f5f30, #0c2611);
-            box-shadow: inset 0 0 0 1px rgba(124, 255, 159, 0.22), 0 0 22px rgba(62, 207, 110, 0.18);
-            position: relative;
-        }
-
-        .brand-mark::before,
-        .brand-mark::after {
-            content: "";
-            position: absolute;
-            background: rgba(240, 237, 228, 0.9);
-            border-radius: 999px;
-        }
-
-        .brand-mark::before {
-            width: 0.2rem;
-            height: 1.05rem;
-            left: 1.1rem;
-            top: 0.85rem;
-        }
-
-        .brand-mark::after {
-            width: 0.85rem;
-            height: 0.36rem;
-            left: 0.78rem;
-            top: 1.22rem;
-            transform: rotate(-24deg);
+            border-radius: 0.6rem;
+            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3C/svg%3E") center / cover no-repeat;
+            box-shadow: 0 0 22px rgba(62, 207, 110, 0.18);
         }
 
         .top-links {
