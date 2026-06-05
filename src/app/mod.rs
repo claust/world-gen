@@ -13,7 +13,9 @@ use crate::renderer_wgpu::gpu_context::GpuContext;
 use crate::renderer_wgpu::thumbnail::ThumbnailRenderer;
 use crate::renderer_wgpu::world::WorldRenderer;
 use crate::ui::plant_editor_panel::PlantParams;
-use crate::ui::{ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, StartMenu, UiRegistry};
+use crate::ui::{
+    ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, SettingsPanel, StartMenu, UiRegistry,
+};
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::Herbarium;
 use crate::world_core::save::{CameraSave, SaveData, WorldSave};
@@ -122,6 +124,7 @@ pub struct AppState {
     egui_bridge: EguiBridge,
     egui_pass: EguiPass,
     config_panel: ConfigPanel,
+    settings_panel: SettingsPanel,
     plant_editor_panel: PlantEditorPanel,
     plant_editor: Option<plant_editor::PlantEditorState>,
     screen: Screen,
@@ -261,6 +264,7 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
+            settings_panel: SettingsPanel::new(),
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
@@ -351,6 +355,7 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
+            settings_panel: SettingsPanel::new(),
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
@@ -996,9 +1001,15 @@ impl AppState {
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
         self.elapsed_seconds += dt;
 
-        // Ambient sound only plays in the world; pause it on every other screen.
+        // Ambient sound plays in the world and on the start menu (so volume
+        // changes in Settings are audible while adjusting them); it stays paused
+        // on the other non-playing screens (loading, herbarium, plant editor).
         #[cfg(not(target_arch = "wasm32"))]
-        if self.is_loading() || self.is_on_menu() || self.is_on_herbarium() || self.is_on_editor() {
+        if self.is_on_menu() {
+            if let Some(audio) = self.audio.as_mut() {
+                audio.update_menu(dt, &self.config.audio);
+            }
+        } else if self.is_loading() || self.is_on_herbarium() || self.is_on_editor() {
             if let Some(audio) = &self.audio {
                 audio.pause();
             }
@@ -1589,6 +1600,7 @@ impl AppState {
                 }
                 let raw_input = self.egui_bridge.take_raw_input();
                 let mut menu_action = None;
+                let mut settings_closed = false;
                 let loading_progress = self
                     .loading_state
                     .as_ref()
@@ -1604,6 +1616,11 @@ impl AppState {
                     .run(raw_input, |ctx| match self.screen {
                         Screen::StartMenu => {
                             menu_action = self.start_menu.ui(ctx, &mut self.ui_registry);
+                            settings_closed = self.settings_panel.ui(
+                                ctx,
+                                &mut self.ui_registry,
+                                &mut self.config.audio,
+                            );
                         }
                         Screen::Loading => {
                             render_loading_ui(
@@ -1674,6 +1691,11 @@ impl AppState {
                 );
 
                 self.pending_menu_action = menu_action;
+
+                // Persist audio/settings changes once the dialog is dismissed.
+                if settings_closed {
+                    self.persist_config();
+                }
             }
         }
 
@@ -1697,6 +1719,19 @@ impl AppState {
 
         output.present();
         Ok(())
+    }
+
+    /// Write the current `GameConfig` to storage (`config.json`). Used to make
+    /// settings changes (e.g. audio volume) survive a restart.
+    fn persist_config(&self) {
+        match serde_json::to_string_pretty(&self.config) {
+            Ok(json) => {
+                if let Err(e) = self.storage.save("config", &json) {
+                    log::warn!("failed to save config: {e}");
+                }
+            }
+            Err(e) => log::warn!("failed to serialize config: {e}"),
+        }
     }
 
     fn save_game(&self) {
