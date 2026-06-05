@@ -6,6 +6,18 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# Fast debug builds (e.g. VS Code F5 → target/debug). World generation is
+# dominated by 4D OpenSimplex sampling in the `noise` crate; at the default
+# dev opt-level (0) that runs unoptimized and full-world gen takes ~24 min
+# instead of ~50s. Fully optimize dependencies (rarely stepped through) while
+# keeping our own crate lightly optimized so it stays debuggable and quick to
+# rebuild incrementally.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [dependencies]
 anyhow = "1.0"
 bytemuck = { version = "1.16", features = ["derive"] }
