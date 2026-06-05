@@ -108,6 +108,11 @@ pub struct AppState {
     last_telemetry_emit: Instant,
     #[cfg(not(target_arch = "wasm32"))]
     screenshot_pending: Option<String>,
+    /// Directory screenshots are written to: `captures` by default, or
+    /// `instances/<name>/captures` when running as a named instance, so
+    /// concurrent instances don't overwrite each other's `latest.png`.
+    #[cfg(not(target_arch = "wasm32"))]
+    captures_dir: std::path::PathBuf,
     #[cfg(not(target_arch = "wasm32"))]
     asset_watcher: Option<AssetWatcher>,
     egui_bridge: EguiBridge,
@@ -168,8 +173,11 @@ impl AppState {
         debug_api_config: DebugApiConfig,
         _cursor_captured: bool,
         benchmark_path: Option<std::path::PathBuf>,
+        instance: Option<String>,
     ) -> Result<Self> {
-        let storage = create_storage();
+        let storage = create_storage(instance.as_deref());
+        let captures_dir =
+            crate::world_core::storage::instance_root(instance.as_deref()).join("captures");
         let config = GameConfig::load(&*storage);
         let save = SaveData::load(&*storage);
 
@@ -241,6 +249,7 @@ impl AppState {
             last_autosave_seconds: 0.0,
             frame_index: 0,
             screenshot_pending: None,
+            captures_dir,
             asset_watcher,
             benchmark,
             update_cpu_ms: 0.0,
@@ -285,7 +294,7 @@ impl AppState {
 
     #[cfg(target_arch = "wasm32")]
     pub async fn new_web(window: &'static Window, _cursor_captured: bool) -> Result<Self> {
-        let storage = create_storage();
+        let storage = create_storage(None);
         let config = GameConfig::load(&*storage);
         let save = SaveData::load(&*storage);
 

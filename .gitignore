@@ -23,3 +23,6 @@ save.json
 deltas.json
 plants.bin
 world_base.bin
+
+# Per-instance state from the multi-instance launcher (tools/launch.ts)
+/instances/

@@ -49,6 +49,42 @@ bun tools/debug-cli/cli.ts move --key w --duration 500
 bun tools/debug-cli/cli.ts save                                # save camera + plant state
 ```
 
+### Multiple instances (`tools/launch.ts`)
+
+By default the game can't run twice on one machine: the debug API port (7777)
+and the on-disk state (`save.json`, `config.json`, `plants.bin`, `captures/`)
+collide. The launcher fixes both.
+
+```bash
+bun tools/launch.ts                 # build + launch a uniquely-named instance
+bun tools/launch.ts --name alpha    # launch the named instance "alpha"
+bun tools/launch.ts --no-build      # reuse the existing release binary
+bun tools/launch.ts -- --benchmark benchmarks/smoke.json  # pass args to the game
+bun tools/launch.ts list            # list live instances (prunes dead records)
+```
+
+- **Port:** the game is started with `--debug-api-bind 127.0.0.1:0`, so the OS
+  assigns a free port (no scan, no race). The launcher reads the real port back
+  from the `debug api listening on …` startup log and prints a handshake line:
+  `[launch] ready {"name":…,"port":…,"api":…}`.
+- **State:** `--instance-name <name>` roots all on-disk state under
+  `instances/<name>/` (gitignored). `herbarium.json`/`config.json` are seeded
+  from the repo root on first launch so a new instance isn't a blank slate.
+- **Discovery:** each running instance is recorded at
+  `instances/<name>/instance.json` (name, pid, port, dirs). The record is pruned
+  when the instance exits or is found dead; the state dir is kept.
+
+The game also takes `--instance-name <name>` directly (or the `WORLD_GEN_INSTANCE`
+env var) without the launcher, if you want to assign the port yourself.
+
+`tools/debug-cli/cli.ts` accepts `--name <name>` to resolve a running instance's
+port from its registry file, so you don't have to track ports by hand:
+
+```bash
+bun tools/debug-cli/cli.ts state --name alpha       # target instance "alpha"
+bun tools/debug-cli/cli.ts screenshot --name beta   # → instances/beta/captures/
+```
+
 ### FPS benchmark (`src/app/benchmark.rs`, `tools/bench.ts`)
 
 Deterministic FPS benchmark mode. The camera replays a scripted flythrough on a

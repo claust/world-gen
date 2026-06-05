@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import { readFileSync } from "node:fs";
+
 const DEFAULT_API = "http://127.0.0.1:7777";
 const TIMEOUT_MS = 5000;
 
@@ -300,11 +302,63 @@ Commands:
   ui_set_value    --element <id> --value <v>  Set slider/combo/checkbox value
 
 Options:
-  --api <url>    API base URL (default: ${DEFAULT_API})`;
+  --api <url>    API base URL (default: ${DEFAULT_API})
+  --name <name>  Target a launcher instance by name (resolves its port from
+                 instances/<name>/instance.json; overridden by --api)`;
+
+/**
+ * Resolves the API base URL for a named instance from its launcher-written
+ * registry file (`instances/<name>/instance.json`). Lets callers target a
+ * specific running instance without knowing its (OS-assigned) port.
+ */
+function apiForInstance(name: string): string {
+  // Reject names that could traverse out of instances/ (matches the game's
+  // validate_instance_name rules) before using one in a filesystem path.
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    die(`invalid instance name '${name}' (use letters, digits, '_' or '-')`);
+  }
+  const file = `instances/${name}/instance.json`;
+  let meta: { api?: unknown; pid?: unknown };
+  try {
+    meta = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    die(`no instance '${name}' found (expected ${file}) — is it running?`);
+  }
+  // Guard against a corrupt/hand-edited registry: api must be a non-empty string.
+  if (typeof meta.api !== "string" || meta.api.length === 0) {
+    die(`instance '${name}' has no valid api url in ${file}`);
+  }
+  // The launcher always records an integer pid; if it's missing or non-integer
+  // the registry is corrupt, so fail fast rather than trusting a possibly-stale
+  // api. And if the launcher was killed abruptly it couldn't prune the file, so
+  // a dead pid means the entry is stale — say so instead of failing later with
+  // an opaque connection error.
+  if (typeof meta.pid !== "number" || !Number.isInteger(meta.pid)) {
+    die(`instance '${name}' registry is missing a valid pid in ${file} — delete it or relaunch`);
+  }
+  if (!isProcessAlive(meta.pid)) {
+    die(
+      `instance '${name}' is stale (pid ${meta.pid} not running) — ` +
+        `delete ${file} or relaunch with: bun tools/launch.ts --name ${name}`,
+    );
+  }
+  return meta.api;
+}
+
+/** Whether a pid is still running (mirrors the launcher's liveness check). */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means the process exists but we can't signal it — still alive.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
 
 async function main() {
   const { command, flags } = parseArgs(process.argv);
-  const apiBase = flags.api ?? DEFAULT_API;
+  const apiBase = flags.api ?? (flags.name ? apiForInstance(flags.name) : DEFAULT_API);
 
   try {
     switch (command) {
