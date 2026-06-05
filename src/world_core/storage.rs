@@ -205,7 +205,11 @@ pub fn instance_root(instance: Option<&str>) -> std::path::PathBuf {
         Some(name) => match validate_instance_name(name) {
             Ok(()) => std::path::Path::new("instances").join(name),
             Err(err) => {
-                eprintln!("Warning: {err}; using default storage root");
+                // Silent under `cargo test` (the traversal test feeds invalid
+                // names on purpose) so test output stays clean; warns otherwise.
+                if cfg!(not(test)) {
+                    eprintln!("Warning: {err}; using default storage root");
+                }
                 std::path::PathBuf::from(".")
             }
         },

@@ -318,7 +318,7 @@ function apiForInstance(name: string): string {
     die(`invalid instance name '${name}' (use letters, digits, '_' or '-')`);
   }
   const file = `instances/${name}/instance.json`;
-  let meta: { api?: unknown };
+  let meta: { api?: unknown; pid?: unknown };
   try {
     meta = JSON.parse(readFileSync(file, "utf8"));
   } catch {
@@ -328,7 +328,27 @@ function apiForInstance(name: string): string {
   if (typeof meta.api !== "string" || meta.api.length === 0) {
     die(`instance '${name}' has no valid api url in ${file}`);
   }
+  // If the launcher was killed abruptly it can't prune the registry, leaving a
+  // stale file. Detect a dead pid here and say so, instead of failing later
+  // with an opaque connection error.
+  if (typeof meta.pid === "number" && !isProcessAlive(meta.pid)) {
+    die(
+      `instance '${name}' is stale (pid ${meta.pid} not running) — ` +
+        `delete ${file} or relaunch with: bun tools/launch.ts --name ${name}`,
+    );
+  }
   return meta.api;
+}
+
+/** Whether a pid is still running (mirrors the launcher's liveness check). */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means the process exists but we can't signal it — still alive.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 async function main() {
