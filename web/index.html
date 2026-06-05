@@ -799,7 +799,7 @@
                     <article class="concept-card">
                         <h3>Procedural Biomes</h3>
                         <p>
-                            Terrain, chunk streaming, and climate-driven placement work together so vegetation feels embedded
+                            Terrain, <button class="term" data-term="chunk-streaming">chunk streaming</button>, and climate-driven placement work together so vegetation feels embedded
                             in the landscape instead of stamped onto it.
                         </p>
                     </article>
@@ -831,14 +831,14 @@
                         <h3>Generate</h3>
                         <p>
                             The engine assembles terrain, streams chunks around the camera, and distributes plants through
-                            a procedural world clock and biome rules.
+                            a <button class="term" data-term="procedural-generation">procedural</button> world clock and biome rules.
                         </p>
                     </article>
                     <article class="how-step">
                         <div class="how-step-num">03</div>
                         <h3>Explore</h3>
                         <p>
-                            Launch the WebAssembly build, capture the cursor, and move through a living prototype running
+                            Launch the <button class="term" data-term="webassembly">WebAssembly</button> build, capture the cursor, and move through a living prototype running
                             entirely in the browser.
                         </p>
                     </article>
@@ -904,6 +904,7 @@
         <canvas id="world-gen-canvas" hidden></canvas>
     </section>
 
+    <script src="./glossary.js" defer></script>
     <script type="module">
         const body = document.body;
         const canvas = document.getElementById("world-gen-canvas");
