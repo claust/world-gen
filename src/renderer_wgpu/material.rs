@@ -6,7 +6,13 @@ use wgpu::util::DeviceExt;
 #[derive(Clone, Copy, Zeroable, Pod)]
 pub struct FrameUniform {
     pub view_proj: [[f32; 4]; 4],
-    pub inv_view_proj: [[f32; 4]; 4],
+    /// Inverse of the *translation-free* view-projection (camera placed at the
+    /// origin). The sky pass reconstructs view rays from this and normalizes the
+    /// result directly — no `- camera_position` subtraction. Building it without
+    /// the camera translation avoids catastrophic f32 cancellation when the
+    /// camera is far from the world origin, which otherwise makes the sky, sun,
+    /// and clouds jitter wildly while the camera moves.
+    pub inv_view_proj_no_translation: [[f32; 4]; 4],
     pub light_view_proj: [[f32; 4]; 4],
     pub camera_position: [f32; 4],
     /// x = elapsed seconds, y = hour-of-day, z = underwater submerge factor
@@ -49,9 +55,18 @@ impl FrameUniform {
         shadow_enabled: f32,
         submerge: f32,
     ) -> Self {
+        // Strip the camera translation before inverting: `view_proj` maps
+        // world→clip with the camera at `camera_position`, so multiplying by a
+        // translate(+camera_position) on the right cancels the view's
+        // translate(-camera_position), leaving the camera at the origin. The
+        // sky pass then reconstructs ray directions from the origin, avoiding
+        // the huge-minus-huge subtraction that caused motion jitter.
+        let inv_view_proj_no_translation =
+            (view_proj * Mat4::from_translation(camera_position)).inverse();
+
         Self {
             view_proj: view_proj.to_cols_array_2d(),
-            inv_view_proj: view_proj.inverse().to_cols_array_2d(),
+            inv_view_proj_no_translation: inv_view_proj_no_translation.to_cols_array_2d(),
             light_view_proj: light_view_proj.to_cols_array_2d(),
             camera_position: [camera_position.x, camera_position.y, camera_position.z, 0.0],
             time: [elapsed, hour, submerge, 0.0],
