@@ -209,14 +209,20 @@ impl Heightmap {
 
         let (_, cx, cz, (ux, uz)) = best?;
 
-        // Walk from the chunk centre toward the water, keeping the last point
-        // that is still comfortably on land, so the spawn ends up by the shore.
+        // Walk from the chunk centre toward the water in small steps, keeping the
+        // last point that is still dry land, so the spawn ends up right at the
+        // waterline. The water neighbour's centre is one chunk away, so the
+        // land/water crossing lies within a full chunk — walk that far in fine
+        // steps so even a distant or gently sloped crossing is reached, and stop
+        // at the last point above sea level rather than a fixed margin (a gentle
+        // coast would otherwise dip below a margin while still on dry land).
         let (mut sx, mut sz) = (chunk_centre(cx), chunk_centre(cz));
-        let step = 16.0;
-        for i in 1..=8 {
+        let step = 8.0;
+        let max_steps = (CHUNK_SIZE_METERS / step) as i32;
+        for i in 1..=max_steps {
             let px = chunk_centre(cx) + ux * step * i as f32;
             let pz = chunk_centre(cz) + uz * step * i as f32;
-            if self.sample_height(px, pz) > sea_level + 2.0 {
+            if self.sample_height(px, pz) > sea_level {
                 sx = px;
                 sz = pz;
             } else {
