@@ -10,6 +10,7 @@ pub struct GameConfig {
     pub biome: BiomeConfig,
     pub heightmap: HeightmapConfig,
     pub houses: HousesConfig,
+    pub audio: AudioConfig,
 }
 
 impl Default for GameConfig {
@@ -20,6 +21,7 @@ impl Default for GameConfig {
             biome: BiomeConfig::default(),
             heightmap: HeightmapConfig::default(),
             houses: HousesConfig::default(),
+            audio: AudioConfig::default(),
         }
     }
 }
@@ -41,6 +43,29 @@ impl GameConfig {
                 log::info!("no config found, using defaults");
                 Self::default()
             }
+        }
+    }
+}
+
+/// Ambient sound mix. Per-layer gains multiply `master_volume`; all in `0..1`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioConfig {
+    pub enabled: bool,
+    pub master_volume: f32,
+    pub bird_volume: f32,
+    pub sea_volume: f32,
+    pub underwater_volume: f32,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            master_volume: 1.0,
+            bird_volume: 1.0,
+            sea_volume: 1.0,
+            underwater_volume: 1.0,
         }
     }
 }
