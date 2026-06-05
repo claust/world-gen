@@ -1602,7 +1602,15 @@ impl AppState {
                     .ctx()
                     .run(raw_input, |ctx| match self.screen {
                         Screen::StartMenu => {
-                            menu_action = self.start_menu.ui(ctx, &mut self.ui_registry);
+                            // Capture before drawing: when the settings dialog is
+                            // open it's modal, so start-menu buttons must not act
+                            // (egui z-orders mouse clicks, but the debug API's
+                            // consume_click bypasses that, so gate here too).
+                            let settings_open = self.settings_panel.is_open();
+                            let menu = self.start_menu.ui(ctx, &mut self.ui_registry);
+                            if !settings_open {
+                                menu_action = menu;
+                            }
                             settings_closed = self.settings_panel.ui(
                                 ctx,
                                 &mut self.ui_registry,
