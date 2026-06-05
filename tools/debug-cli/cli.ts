@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import { readFileSync } from "node:fs";
+
 const DEFAULT_API = "http://127.0.0.1:7777";
 const TIMEOUT_MS = 5000;
 
@@ -300,11 +302,30 @@ Commands:
   ui_set_value    --element <id> --value <v>  Set slider/combo/checkbox value
 
 Options:
-  --api <url>    API base URL (default: ${DEFAULT_API})`;
+  --api <url>    API base URL (default: ${DEFAULT_API})
+  --name <name>  Target a launcher instance by name (resolves its port from
+                 instances/<name>/instance.json; overridden by --api)`;
+
+/**
+ * Resolves the API base URL for a named instance from its launcher-written
+ * registry file (`instances/<name>/instance.json`). Lets callers target a
+ * specific running instance without knowing its (OS-assigned) port.
+ */
+function apiForInstance(name: string): string {
+  const file = `instances/${name}/instance.json`;
+  let meta: { api?: string };
+  try {
+    meta = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    die(`no instance '${name}' found (expected ${file}) — is it running?`);
+  }
+  if (!meta.api) die(`instance '${name}' has no api url in ${file}`);
+  return meta.api;
+}
 
 async function main() {
   const { command, flags } = parseArgs(process.argv);
-  const apiBase = flags.api ?? DEFAULT_API;
+  const apiBase = flags.api ?? (flags.name ? apiForInstance(flags.name) : DEFAULT_API);
 
   try {
     switch (command) {

@@ -25,10 +25,19 @@ pub trait Storage {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub struct FileStorage;
+pub struct FileStorage {
+    /// Directory all storage files live under. `.` for the default (single
+    /// instance) layout; `instances/<name>` when an instance name is set so
+    /// concurrent instances don't clobber each other's save/config/plants.
+    base: std::path::PathBuf,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl FileStorage {
+    pub fn new(base: std::path::PathBuf) -> Self {
+        Self { base }
+    }
+
     fn validate_key(key: &str) -> anyhow::Result<()> {
         if key.is_empty()
             || key.contains("..")
@@ -41,22 +50,24 @@ impl FileStorage {
         Ok(())
     }
 
-    fn path_for(key: &str) -> anyhow::Result<String> {
+    fn path_for(&self, key: &str) -> anyhow::Result<std::path::PathBuf> {
         Self::validate_key(key)?;
-        Ok(format!("{key}.json"))
+        Ok(self.base.join(format!("{key}.json")))
     }
 
-    fn bin_path_for(key: &str) -> anyhow::Result<String> {
+    fn bin_path_for(&self, key: &str) -> anyhow::Result<std::path::PathBuf> {
         Self::validate_key(key)?;
-        Ok(format!("{key}.bin"))
+        Ok(self.base.join(format!("{key}.bin")))
     }
 
     /// Write `data` to `path` atomically: a full write to `path.tmp` followed by
     /// a rename, so a crash or full disk mid-write can't truncate or corrupt the
     /// existing file (the rename is atomic on the same filesystem). Important for
     /// the large `plants.bin`.
-    fn atomic_write(path: &str, data: &[u8]) -> anyhow::Result<()> {
-        let tmp = format!("{path}.tmp");
+    fn atomic_write(path: &std::path::Path, data: &[u8]) -> anyhow::Result<()> {
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
         std::fs::write(&tmp, data)?;
         if let Err(err) = std::fs::rename(&tmp, path) {
             // Windows refuses to rename onto an existing file; remove it and
@@ -78,7 +89,7 @@ impl FileStorage {
 #[cfg(not(target_arch = "wasm32"))]
 impl Storage for FileStorage {
     fn load(&self, key: &str) -> Option<String> {
-        let path = match FileStorage::path_for(key) {
+        let path = match self.path_for(key) {
             Ok(p) => p,
             Err(_) => return None,
         };
@@ -86,7 +97,11 @@ impl Storage for FileStorage {
             Ok(contents) => Some(contents),
             Err(err) => {
                 if err.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("Warning: failed to read storage file '{}': {}", path, err);
+                    eprintln!(
+                        "Warning: failed to read storage file '{}': {}",
+                        path.display(),
+                        err
+                    );
                 }
                 None
             }
@@ -94,17 +109,21 @@ impl Storage for FileStorage {
     }
 
     fn save(&self, key: &str, data: &str) -> anyhow::Result<()> {
-        let path = FileStorage::path_for(key)?;
+        let path = self.path_for(key)?;
         FileStorage::atomic_write(&path, data.as_bytes())
     }
 
     fn load_bytes(&self, key: &str) -> Option<Vec<u8>> {
-        let path = FileStorage::bin_path_for(key).ok()?;
+        let path = self.bin_path_for(key).ok()?;
         match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
                 if err.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("Warning: failed to read storage file '{}': {}", path, err);
+                    eprintln!(
+                        "Warning: failed to read storage file '{}': {}",
+                        path.display(),
+                        err
+                    );
                 }
                 None
             }
@@ -112,7 +131,7 @@ impl Storage for FileStorage {
     }
 
     fn save_bytes(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
-        let path = FileStorage::bin_path_for(key)?;
+        let path = self.bin_path_for(key)?;
         FileStorage::atomic_write(&path, data)
     }
 
@@ -154,13 +173,55 @@ impl Storage for WebStorage {
     }
 }
 
-pub fn create_storage() -> Box<dyn Storage> {
+/// Validates an instance name used to namespace on-disk state. Same character
+/// rules as a storage key (alphanumeric, `_`, `-`; no `..`) so it can't escape
+/// the `instances/` directory.
+pub fn validate_instance_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty()
+        || name.contains("..")
+        || name
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    {
+        return Err(anyhow::anyhow!(
+            "invalid instance name '{name}' (use letters, digits, '_' or '-')"
+        ));
+    }
+    Ok(())
+}
+
+/// Root directory for an instance's on-disk state. `.` for the unnamed default
+/// (current single-instance layout); `instances/<name>` otherwise. Callers that
+/// also write non-storage files (e.g. screenshots) join their own subdir onto
+/// this so every instance's output stays together.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn instance_root(instance: Option<&str>) -> std::path::PathBuf {
+    match instance {
+        Some(name) => std::path::Path::new("instances").join(name),
+        None => std::path::PathBuf::from("."),
+    }
+}
+
+/// Creates the storage backend for the given optional instance name. On native
+/// builds a named instance roots all files under `instances/<name>/`, which is
+/// created if missing; the unnamed default keeps the working-directory layout.
+/// Web builds are single-instance and ignore the name.
+pub fn create_storage(instance: Option<&str>) -> Box<dyn Storage> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        Box::new(FileStorage)
+        let base = instance_root(instance);
+        if let Err(err) = std::fs::create_dir_all(&base) {
+            eprintln!(
+                "Warning: failed to create instance dir '{}': {}",
+                base.display(),
+                err
+            );
+        }
+        Box::new(FileStorage::new(base))
     }
     #[cfg(target_arch = "wasm32")]
     {
+        let _ = instance;
         Box::new(WebStorage)
     }
 }
