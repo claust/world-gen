@@ -1155,19 +1155,6 @@ impl AppState {
 
         #[cfg(not(target_arch = "wasm32"))]
         self.publish_telemetry_if_due(&stats);
-
-        let day_speed = self.world.as_ref().unwrap().day_speed();
-        self.window.set_title(&format!(
-            "FloraForge | {:.1}ms ({:.0}fps) | chunks: {}/{} | center: {},{} | hour: {:.1} | day_speed: {:.2}",
-            self.frame_time_ms,
-            1000.0 / self.frame_time_ms.max(0.01),
-            stats.loaded_chunks,
-            stats.loaded_chunks + stats.pending_chunks,
-            stats.center_chunk.x,
-            stats.center_chunk.y,
-            stats.hour,
-            day_speed,
-        ));
     }
 
     fn update_editor(&mut self, dt: f32) {
