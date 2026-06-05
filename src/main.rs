@@ -179,8 +179,8 @@ fn generate_base_world(out_path: &str) -> anyhow::Result<()> {
     log::info!("generating base world (seed {seed}, gen_key {gen_key:#018x}, {threads} threads)…");
     let world = PlantWorld::generate_base(seed, &config, registry, threads, None);
     // This is the snapshot shipped on GitHub and downloaded by clients, so use
-    // the highest quality to minimize the download (the encode cost is paid here
-    // in CI, never on a player's machine).
+    // the high download quality to minimize the download (the encode cost is
+    // paid here in CI, never on a player's machine).
     let bytes = world.serialize_base(gen_key, PlantWorld::DOWNLOAD_QUALITY);
     std::fs::write(out_path, &bytes)?;
     log::info!(

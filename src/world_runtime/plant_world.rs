@@ -631,8 +631,9 @@ impl PlantWorld {
     }
 
     /// Brotli quality for the snapshot shipped on GitHub and downloaded by
-    /// clients: the smallest file (~31 MiB), at ~1 min to encode — paid once in
-    /// CI, never on a player's machine. See [`serialize_base`](Self::serialize_base).
+    /// clients: a high level (~31 MiB, near the practical size floor — q11 saves
+    /// only ~1 MiB for ~20 s more) at ~1 min to encode, paid once in CI and
+    /// never on a player's machine. See [`serialize_base`](Self::serialize_base).
     pub const DOWNLOAD_QUALITY: u32 = 10;
     /// Brotli quality for a locally generated cache: ~30% smaller than raw
     /// (~67→47 MiB) in well under a second, so a New Game pays no perceptible
@@ -658,11 +659,12 @@ impl PlantWorld {
     ///
     /// `quality` is the Brotli level (0–11) for each section. The prebuilt
     /// snapshot shipped on GitHub uses [`Self::DOWNLOAD_QUALITY`] (q10) so the
-    /// once-in-CI encode buys the smallest download; a locally generated cache
-    /// uses [`Self::LOCAL_QUALITY`] (q1), which is ~30% smaller than raw for a
-    /// fraction of a second — q10 would add ~minutes to every New Game for a
-    /// file that never leaves the disk. Brotli decode is quality-agnostic, so
-    /// both produce the identical v2 layout and either loads the same way.
+    /// once-in-CI encode buys the smallest practical download; a locally
+    /// generated cache uses [`Self::LOCAL_QUALITY`] (q1), which is ~30% smaller
+    /// than raw for a fraction of a second — q10 would add ~minutes to every New
+    /// Game for a file that never leaves the disk. Brotli decode is
+    /// quality-agnostic, so every quality yields the same v2 layout (only the
+    /// compressed bytes differ) and loads through the identical path.
     pub fn serialize_base(&self, gen_key: u64, quality: u32) -> Vec<u8> {
         let total = self.chunks.len();
 
