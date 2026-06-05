@@ -48,6 +48,12 @@ const SUBMERGE_RAMP: f32 = 1.5;
 /// Time constant (seconds) for the exponential volume smoothing.
 const SMOOTH_TAU: f32 = 0.6;
 
+/// Fixed birdsong / surf gains for the start-menu ambient bed (`0..1`). The menu
+/// has no loaded world to drive the proximity mix, so a gentle constant bed
+/// plays instead — enough that master-volume changes in Settings are audible.
+const MENU_BIRD_GAIN: f32 = 0.5;
+const MENU_SEA_GAIN: f32 = 0.45;
+
 pub struct AudioSystem {
     // The stream and its handle must stay alive for playback to continue.
     _stream: OutputStream,
@@ -131,6 +137,31 @@ impl AudioSystem {
             .set_volume(self.sea_gain * cfg.sea_volume * cfg.master_volume * duck_sea);
         self.underwater
             .set_volume(self.underwater_gain * cfg.underwater_volume * cfg.master_volume);
+    }
+
+    /// Play a gentle, fixed ambient bed for the start menu (surf + birdsong, no
+    /// underwater drone) so master-volume changes in Settings are audible before
+    /// entering the world. Eases in from silence like [`update`].
+    pub fn update_menu(&mut self, dt: f32, cfg: &AudioConfig) {
+        self.sea.play();
+        self.birds.play();
+
+        let (bird_target, sea_target) = if cfg.enabled {
+            (MENU_BIRD_GAIN, MENU_SEA_GAIN)
+        } else {
+            (0.0, 0.0)
+        };
+
+        let k = 1.0 - (-dt / SMOOTH_TAU).exp();
+        self.birds_gain += (bird_target - self.birds_gain) * k;
+        self.sea_gain += (sea_target - self.sea_gain) * k;
+        self.underwater_gain += (0.0 - self.underwater_gain) * k;
+
+        self.birds
+            .set_volume(self.birds_gain * cfg.bird_volume * cfg.master_volume);
+        self.sea
+            .set_volume(self.sea_gain * cfg.sea_volume * cfg.master_volume);
+        self.underwater.set_volume(0.0);
     }
 
     /// Pause all beds (used when not in the playing screen).

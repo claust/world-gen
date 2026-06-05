@@ -193,6 +193,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                                 MenuAction::NewGame => app.begin_loading(false),
                                 MenuAction::ResumeGame => app.begin_loading(true),
                                 MenuAction::Herbarium => app.enter_herbarium(),
+                                MenuAction::OpenSettings => app.settings_panel.open(),
                                 MenuAction::OpenPlantEditor(i) => {
                                     app.enter_plant_editor_for_entry(i)
                                 }
@@ -426,6 +427,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                                 MenuAction::NewGame => app.begin_loading(false),
                                 MenuAction::ResumeGame => app.begin_loading(true),
                                 MenuAction::Herbarium => app.enter_herbarium(),
+                                MenuAction::OpenSettings => app.settings_panel.open(),
                                 MenuAction::OpenPlantEditor(i) => {
                                     app.enter_plant_editor_for_entry(i)
                                 }
