@@ -587,7 +587,24 @@ impl AppState {
                         s.camera.yaw,
                         s.camera.pitch,
                     ),
-                    None => (Vec3::new(158.0, 72.0, -51.0), 4.0, -0.23),
+                    // Fresh world: scan the generated terrain for a coastline and
+                    // drop the player on land beside the sea, looking out over the
+                    // water — far nicer than the fixed corner the world used to
+                    // start in. Falls back to a fixed pose if there's no coast.
+                    None => {
+                        let hm = crate::world_core::heightmap::Heightmap::new(
+                            self.config.world.seed,
+                            self.config.heightmap.clone(),
+                        );
+                        match hm.find_coastal_spawn(self.config.sea_level) {
+                            Some(s) => (
+                                Vec3::new(s.x, s.ground + 3.0, s.z),
+                                s.water_dir.1.atan2(s.water_dir.0),
+                                -0.12,
+                            ),
+                            None => (Vec3::new(158.0, 72.0, -51.0), 4.0, -0.23),
+                        }
+                    }
                 };
                 self.camera = FlyCamera::new(cam_pos);
                 self.camera.yaw = cam_yaw;
