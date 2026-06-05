@@ -420,13 +420,15 @@ impl AppState {
     }
 
     /// Toggle the full-world map overlay (`M`). Releases the cursor while open and
-    /// recaptures it on close, mirroring the config panel. Only meaningful during
-    /// play; callers gate on the active screen before invoking this.
+    /// recaptures it on close — but only when normal gameplay actually wants the
+    /// cursor captured (`Playing`, no config panel). The keyboard path already
+    /// gates on the screen, but the debug API can toggle this from any screen, so
+    /// guard the recapture here too rather than locking the cursor on a menu.
     fn toggle_map_overlay(&mut self) {
         self.map_open = !self.map_open;
         if self.map_open {
             self.release_cursor();
-        } else {
+        } else if matches!(self.screen, Screen::Playing) && !self.config_panel.is_visible() {
             self.capture_cursor();
         }
     }
@@ -1820,8 +1822,11 @@ fn render_map_ui(
         .show(ctx, |ui| {
             let available = ui.available_size();
             // Square map (the world is square) at ~80% of the smaller viewport
-            // dimension, leaving room for the title above and the hint below.
-            let map_side = (available.x.min(available.y) * 0.8).clamp(200.0, 900.0);
+            // dimension, leaving room for the title above and the hint below. The
+            // final `.min(avail_min)` keeps the 200px floor from overflowing a tiny
+            // window/viewport, which would clip the map and overlap the chrome.
+            let avail_min = available.x.min(available.y);
+            let map_side = (avail_min * 0.8).clamp(200.0, 900.0).min(avail_min);
             let top_pad = ((available.y - map_side) * 0.5 - 48.0).max(16.0);
             ui.add_space(top_pad);
 
