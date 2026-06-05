@@ -212,7 +212,7 @@ async function cmdLaunch(name: string, noBuild: boolean, extra: string[]): Promi
 
   if (port < 0) {
     await teeing;
-    console.error("game exited before the debug API came up");
+    console.error("failed to detect debug API port from startup logs (game may have exited or logging format changed)");
     return proc.exitCode ?? 1;
   }
 
