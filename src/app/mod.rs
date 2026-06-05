@@ -1103,6 +1103,7 @@ impl AppState {
             self.camera.yaw,
             stats.hour,
             1000.0 / self.frame_time_ms.max(0.01),
+            stats.loaded_visible_plants,
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );
