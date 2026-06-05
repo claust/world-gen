@@ -186,19 +186,64 @@ impl WorldRuntime {
                 (world, None)
             }
             None => {
-                let world = PlantWorld::generate_base(
-                    seed,
-                    config,
-                    Arc::clone(&registry),
-                    threads,
-                    progress,
-                );
-                let pending = if save.is_none() {
-                    Some(world.serialize_base(gen_key))
+                // Cache miss. On a New Game, try downloading a prebuilt base
+                // before generating from scratch. The download is validated by
+                // the same `from_base_snapshot` path as a local cache hit, so a
+                // mismatched (wrong seed/gen_key) or corrupt download is rejected
+                // and we fall through to local generation.
+                let downloaded = if save.is_none() {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        crate::world_core::storage::fetch_base_world()
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        None::<Vec<u8>>
+                    }
                 } else {
                     None
                 };
-                (world, pending)
+
+                match downloaded.and_then(|bytes| {
+                    PlantWorld::from_base_snapshot(
+                        &bytes,
+                        gen_key,
+                        seed,
+                        config,
+                        Arc::clone(&registry),
+                    )
+                    .map(|world| (world, bytes))
+                }) {
+                    Some((world, bytes)) => {
+                        // Repaint the loading map the generation pass would have filled.
+                        if let Some(p) = progress {
+                            world.paint_progress(p);
+                        }
+                        log::info!(
+                            "base world: downloaded {} plants across {} populated chunks",
+                            world.population(),
+                            world.populated_chunks(),
+                        );
+                        // Persist the downloaded bytes locally so the next New
+                        // Game loads them offline instead of re-downloading.
+                        (world, Some(bytes))
+                    }
+                    None => {
+                        let world = PlantWorld::generate_base(
+                            seed,
+                            config,
+                            Arc::clone(&registry),
+                            threads,
+                            progress,
+                        );
+                        let pending = if save.is_none() {
+                            Some(world.serialize_base(gen_key))
+                        } else {
+                            None
+                        };
+                        (world, pending)
+                    }
+                }
             }
         };
         let restored = plant_world.apply_saved_spread_bytes(spread_bytes.as_deref());
