@@ -328,10 +328,15 @@ function apiForInstance(name: string): string {
   if (typeof meta.api !== "string" || meta.api.length === 0) {
     die(`instance '${name}' has no valid api url in ${file}`);
   }
-  // If the launcher was killed abruptly it can't prune the registry, leaving a
-  // stale file. Detect a dead pid here and say so, instead of failing later
-  // with an opaque connection error.
-  if (typeof meta.pid === "number" && !isProcessAlive(meta.pid)) {
+  // The launcher always records an integer pid; if it's missing or non-integer
+  // the registry is corrupt, so fail fast rather than trusting a possibly-stale
+  // api. And if the launcher was killed abruptly it couldn't prune the file, so
+  // a dead pid means the entry is stale — say so instead of failing later with
+  // an opaque connection error.
+  if (typeof meta.pid !== "number" || !Number.isInteger(meta.pid)) {
+    die(`instance '${name}' registry is missing a valid pid in ${file} — delete it or relaunch`);
+  }
+  if (!isProcessAlive(meta.pid)) {
     die(
       `instance '${name}' is stale (pid ${meta.pid} not running) — ` +
         `delete ${file} or relaunch with: bun tools/launch.ts --name ${name}`,

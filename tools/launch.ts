@@ -105,14 +105,12 @@ function listInstances(): Array<InstanceMeta & { alive: boolean }> {
 
 function cmdList(): void {
   const instances = listInstances();
-  if (instances.length === 0) {
-    console.log("no live instances");
-    return;
-  }
   for (const i of instances) {
     console.log(`${i.name}\tpid=${i.pid}\t${i.api}\t${i.instanceDir}`);
   }
-  // Also emit machine-readable JSON for programmatic discovery.
+  if (instances.length === 0) console.log("no live instances");
+  // Always emit machine-readable JSON (an empty array when none) as the final
+  // line, so programmatic callers can parse it unconditionally.
   console.log(JSON.stringify(instances));
 }
 
@@ -228,8 +226,21 @@ async function cmdLaunch(name: string, noBuild: boolean, extra: string[]): Promi
     // the port (timeout). Kill it so it doesn't linger as an orphan holding a
     // port with no registry entry — and so the streams close and `teeing`
     // below can resolve instead of hanging on the still-open pipes.
-    proc.kill();
-    await teeing;
+    proc.kill(); // SIGTERM
+    // Escalate to SIGKILL if it ignores SIGTERM, and bound the pipe wait so a
+    // child that never closes its streams can't hang the launcher forever.
+    const sigkill = setTimeout(() => {
+      try {
+        proc.kill(9);
+      } catch {
+        /* already gone */
+      }
+    }, 3000);
+    await Promise.race([
+      teeing,
+      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+    ]);
+    clearTimeout(sigkill);
     console.error(
       "failed to detect debug API port from startup logs (game exited, or its logging format changed)",
     );
