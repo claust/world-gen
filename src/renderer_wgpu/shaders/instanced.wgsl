@@ -1,6 +1,6 @@
 struct FrameUniform {
     view_proj: mat4x4<f32>,
-    inv_view_proj: mat4x4<f32>,
+    inv_view_proj_no_translation: mat4x4<f32>,
     light_view_proj: mat4x4<f32>,
     camera_position: vec4<f32>,
     time: vec4<f32>,

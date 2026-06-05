@@ -1,6 +1,10 @@
 struct FrameUniform {
     view_proj: mat4x4<f32>,
-    inv_view_proj: mat4x4<f32>,
+    // Inverse of the view-projection built with the camera at the origin (no
+    // translation). Reconstructing ray directions from this and normalizing
+    // avoids subtracting the camera world position — a huge-minus-huge f32
+    // operation that made the sky/sun/clouds jitter while the camera moved.
+    inv_view_proj_no_translation: mat4x4<f32>,
     light_view_proj: mat4x4<f32>,
     camera_position: vec4<f32>,
     time: vec4<f32>,
@@ -72,10 +76,14 @@ fn fbm(p: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Reconstruct world-space ray direction from NDC
+    // Reconstruct the world-space ray direction from NDC. The inverse matrix is
+    // built with the camera at the origin, so the unprojected point already lies
+    // along the view ray from the camera — normalizing it gives the direction
+    // directly, with no camera-position subtraction (which would cancel two large
+    // numbers in f32 and make the sky jitter as the camera moves).
     let clip_far = vec4<f32>(input.ndc, 1.0, 1.0);
-    let world_far = frame.inv_view_proj * clip_far;
-    let ray_dir = normalize(world_far.xyz / world_far.w - frame.camera_position.xyz);
+    let world_far = frame.inv_view_proj_no_translation * clip_far;
+    let ray_dir = normalize(world_far.xyz / world_far.w);
 
     // Elevation: positive above horizon, negative below
     let elevation = ray_dir.y;
