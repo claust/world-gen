@@ -23,3 +23,7 @@ save.json
 deltas.json
 plants.bin
 world_base.bin
+# Runtime artifact: written from the default_seeded() presets on first run and by
+# the in-app herbarium editor. Canonical species data lives in code
+# (src/world_core/plant_gen/species/*.json), so this local copy isn't tracked.
+herbarium.json

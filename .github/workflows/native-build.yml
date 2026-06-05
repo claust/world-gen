@@ -13,6 +13,16 @@ on:
         description: "Build optimized binaries and upload packaged artifacts"
         type: boolean
         default: false
+      world_base_url:
+        description: >-
+          Compile-time URL the shipped binary downloads its prebuilt
+          world_base.bin from (baked in via the WORLD_BASE_URL env var, read by
+          option_env! in src/world_core/storage.rs). Empty (the default, used by
+          PR CI) disables the download so those builds generate the world
+          locally. The Release workflow passes the pinned per-tag release-asset
+          URL.
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -53,6 +63,10 @@ jobs:
       # Debug build on PRs (faster, still links the binary so linker/cfg/platform
       # errors surface); optimized build for releases.
       - name: Build executable
+        env:
+          # Baked into the binary at compile time (option_env! in storage.rs).
+          # Empty for PR CI → those builds generate the world locally.
+          WORLD_BASE_URL: ${{ inputs.world_base_url }}
         run: cargo build ${{ inputs.release && '--release' || '' }} --target ${{ matrix.target }} --bin world-gen
 
       - name: Package (macOS)
