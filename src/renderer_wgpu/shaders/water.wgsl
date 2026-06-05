@@ -107,12 +107,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let water_color = vec3<f32>(0.12, 0.30, 0.45) * shade
         + material.sun_color.rgb * spec * shadow * 0.6;
 
-    // Apply fog to RGB only, preserve alpha
-    let dist = distance(input.world_position, frame.camera_position.xyz);
-    let fog_start = material.fog_params.x;
-    let fog_end = material.fog_params.y;
-    let fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
-    let final_color = mix(water_color, material.fog_color.rgb, fog_factor);
+    // Apply fog to RGB only, preserve alpha.
+    let final_color = scene_fog(water_color, input.world_position);
 
     return vec4<f32>(final_color, alpha);
 }

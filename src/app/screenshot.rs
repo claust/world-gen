@@ -72,7 +72,15 @@ impl AppState {
                     self.gpu.config.format,
                     wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
                 );
-                match save_screenshot(&data, width, height, padded_row, unpadded_row, is_bgra) {
+                match save_screenshot(
+                    &self.captures_dir,
+                    &data,
+                    width,
+                    height,
+                    padded_row,
+                    unpadded_row,
+                    is_bgra,
+                ) {
                     Ok(filename) => (true, format!("screenshot saved: {filename}")),
                     Err(e) => (false, format!("screenshot save failed: {e}")),
                 }
@@ -96,6 +104,7 @@ impl AppState {
 }
 
 fn save_screenshot(
+    dir: &std::path::Path,
     data: &[u8],
     width: u32,
     height: u32,
@@ -118,7 +127,7 @@ fn save_screenshot(
         }
     }
 
-    std::fs::create_dir_all("captures").context("failed to create captures dir")?;
+    std::fs::create_dir_all(dir).context("failed to create captures dir")?;
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -145,8 +154,8 @@ fn save_screenshot(
         "floraforge-{:04}{:02}{:02}-{:02}{:02}{:02}.png",
         y, m, d, hours, minutes, seconds,
     );
-    let path = std::path::Path::new("captures").join(&filename);
-    let latest = std::path::Path::new("captures").join("latest.png");
+    let path = dir.join(&filename);
+    let latest = dir.join("latest.png");
 
     image::save_buffer(&path, &pixels, width, height, image::ColorType::Rgba8)
         .context("failed to encode PNG")?;

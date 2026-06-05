@@ -58,6 +58,12 @@ fn main() -> anyhow::Result<()> {
 
     let benchmark_path = parse_benchmark_arg();
 
+    let instance = parse_instance_arg()?;
+    if let Some(name) = &instance {
+        world_gen::world_core::storage::validate_instance_name(name)?;
+        log::info!("instance name: {name}");
+    }
+
     let event_loop = EventLoop::new()?;
 
     #[cfg(target_os = "macos")]
@@ -72,9 +78,37 @@ fn main() -> anyhow::Result<()> {
     ));
 
     // Don't capture cursor at startup — start screen needs a free cursor
-    let app = pollster::block_on(AppState::new(window, debug_api, false, benchmark_path))?;
+    let app = pollster::block_on(AppState::new(
+        window,
+        debug_api,
+        false,
+        benchmark_path,
+        instance,
+    ))?;
 
     app::run_event_loop(app, event_loop)
+}
+
+/// Parses `--instance-name <name>`, falling back to the `WORLD_GEN_INSTANCE`
+/// env var. A named instance namespaces all on-disk state (save, config,
+/// plants, captures) under `instances/<name>/` so multiple copies of the game
+/// can run on one machine without clobbering each other. Returns `None` for the
+/// default single-instance layout.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_instance_arg() -> anyhow::Result<Option<String>> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--instance-name" {
+            let value = args
+                .next()
+                .filter(|s| !s.starts_with("--"))
+                .ok_or_else(|| anyhow::anyhow!("--instance-name requires a value"))?;
+            return Ok(Some(value));
+        }
+    }
+    Ok(std::env::var("WORLD_GEN_INSTANCE")
+        .ok()
+        .filter(|s| !s.is_empty()))
 }
 
 /// Parses `--benchmark [path]`. The path is optional and defaults to
@@ -122,12 +156,15 @@ fn generate_base_world(out_path: &str) -> anyhow::Result<()> {
     use std::sync::Arc;
     use world_gen::world_core::config::GameConfig;
     use world_gen::world_core::herbarium::{Herbarium, PlantRegistry};
-    use world_gen::world_core::storage::FileStorage;
+    use world_gen::world_core::storage::create_storage;
     use world_gen::world_runtime::PlantWorld;
 
-    let storage = FileStorage;
-    let config = GameConfig::load(&storage);
-    let herbarium = Herbarium::load(&storage);
+    // Default (unnamed) storage layout: roots at the working directory, matching a
+    // fresh first-time New Game — so the generated snapshot's seed and generation
+    // key line up with what a shipped client validates the download against.
+    let storage = create_storage(None);
+    let config = GameConfig::load(&*storage);
+    let herbarium = Herbarium::load(&*storage);
     let registry = Arc::new(PlantRegistry::from_herbarium(&herbarium));
     let gen_key = herbarium.generation_key(&config);
     let seed = config.world.seed;

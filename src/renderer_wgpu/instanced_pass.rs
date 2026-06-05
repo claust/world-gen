@@ -140,7 +140,13 @@ impl InstancedPass {
 
         let billboard_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shrub-billboard-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shrub_billboard.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/lighting.wgsl"),
+                    include_str!("shaders/shrub_billboard.wgsl")
+                )
+                .into(),
+            ),
         });
         let billboard_pipeline = create_billboard_pipeline(
             device,

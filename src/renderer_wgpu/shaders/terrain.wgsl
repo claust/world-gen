@@ -113,11 +113,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = albedo * hemisphere_ambient(n)
         + albedo * direct * shadow * 0.82 * material.sun_color.rgb;
 
-    let dist = distance(input.world_position, frame.camera_position.xyz);
-    let fog_start = material.fog_params.x;
-    let fog_end = material.fog_params.y;
-    let fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
-    let final_color = mix(color, material.fog_color.rgb, fog_factor);
+    let final_color = scene_fog(color, input.world_position);
 
     return vec4<f32>(final_color, 1.0);
 }

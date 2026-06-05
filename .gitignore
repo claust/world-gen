@@ -27,3 +27,6 @@ world_base.bin
 # the in-app herbarium editor. Canonical species data lives in code
 # (src/world_core/plant_gen/species/*.json), so this local copy isn't tracked.
 herbarium.json
+
+# Per-instance state from the multi-instance launcher (tools/launch.ts)
+/instances/
