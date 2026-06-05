@@ -203,9 +203,11 @@ async function cmdLaunch(name: string, noBuild: boolean, extra: string[]): Promi
   process.on("SIGTERM", () => forward("SIGTERM"));
 
   // Race the port log against early exit (e.g. bind failure or a crash).
+  // Race the port log against early exit (e.g. bind failure or a crash).
   const port = await Promise.race([
     portFound,
     proc.exited.then(() => -1),
+    new Promise<number>((resolve) => setTimeout(() => resolve(-1), 15_000)),
   ]);
 
   if (port < 0) {
