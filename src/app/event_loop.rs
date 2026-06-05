@@ -6,7 +6,30 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 
 use super::AppState;
 
+// Set the macOS dock icon to the app icon. Must run *after* the app has
+// finished launching — winit only promotes an un-bundled binary to a regular
+// dock app (activation policy + dock tile) once the event loop is running, so
+// calling this before then silently leaves the generic "exec" icon. We invoke
+// it once on the first redraw.
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    use objc::runtime::{Class, Object};
+    use objc::{msg_send, sel, sel_impl};
+
+    let icon_data = include_bytes!("../../assets/icon/icon_1024.png");
+    unsafe {
+        let ns_data: *mut Object = msg_send![Class::get("NSData").unwrap(), dataWithBytes:icon_data.as_ptr() length:icon_data.len()];
+        let alloc: *mut Object = msg_send![Class::get("NSImage").unwrap(), alloc];
+        let ns_image: *mut Object = msg_send![alloc, initWithData: ns_data];
+        let app: *mut Object = msg_send![Class::get("NSApplication").unwrap(), sharedApplication];
+        let _: () = msg_send![app, setApplicationIconImage: ns_image];
+    }
+}
+
 pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut dock_icon_set = false;
+
     event_loop.run(move |event, target| {
         target.set_control_flow(ControlFlow::Poll);
 
@@ -163,6 +186,14 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     }
                     WindowEvent::Resized(size) => app.resize(size),
                     WindowEvent::RedrawRequested => {
+                        // First redraw: the app is now a launched, active dock
+                        // app, so the icon override sticks (see fn comment).
+                        #[cfg(target_os = "macos")]
+                        if !dock_icon_set {
+                            set_macos_dock_icon();
+                            dock_icon_set = true;
+                        }
+
                         #[cfg(not(target_arch = "wasm32"))]
                         let t_update = std::time::Instant::now();
                         app.update();
