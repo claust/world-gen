@@ -282,11 +282,20 @@ impl WorldRenderer {
         camera_yaw: f32,
         hour: f32,
         fps: f32,
+        plant_count: usize,
         screen_w: f32,
         screen_h: f32,
     ) {
         self.hud.update(
-            queue, device, camera_pos, camera_yaw, hour, fps, screen_w, screen_h,
+            queue,
+            device,
+            camera_pos,
+            camera_yaw,
+            hour,
+            fps,
+            plant_count,
+            screen_w,
+            screen_h,
         );
     }
 
