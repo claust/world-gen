@@ -21,7 +21,7 @@
  *
  * Discovery: each running instance is recorded at `instances/<name>/instance.json`
  * with its name, pid, port, and dirs. Other tools (and other LLMs) read those to
- * find what's live — e.g. `bun tools/debug-cli/cli.ts --name alpha state`.
+ * find what's live — e.g. `bun tools/debug-cli/cli.ts state --name alpha`.
  */
 import {
   mkdirSync,
