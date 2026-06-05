@@ -231,7 +231,7 @@ async function cmdLaunch(name: string, noBuild: boolean, extra: string[]): Promi
   // Machine-readable handshake line so a calling LLM/tool learns the port.
   console.log(`[launch] ready ${JSON.stringify(meta)}`);
   console.log(
-    `[launch] '${name}' on ${api} — e.g. bun tools/debug-cli/cli.ts --name ${name} state`,
+    `[launch] '${name}' on ${api} — e.g. bun tools/debug-cli/cli.ts state --name ${name}`,
   );
 
   await proc.exited;
