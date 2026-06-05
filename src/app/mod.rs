@@ -115,8 +115,8 @@ pub struct AppState {
     captures_dir: std::path::PathBuf,
     #[cfg(not(target_arch = "wasm32"))]
     asset_watcher: Option<AssetWatcher>,
-    /// Ambient sound (procedural surf + birdsong). `None` if no audio device is
-    /// available; native only.
+    /// Ambient sound (procedural surf + birdsong + underwater drone). `None` if
+    /// no audio device is available; native only.
     #[cfg(not(target_arch = "wasm32"))]
     audio: Option<crate::audio::AudioSystem>,
     egui_bridge: EguiBridge,

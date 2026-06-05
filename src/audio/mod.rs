@@ -23,6 +23,10 @@ use crate::world_core::config::AudioConfig;
 
 /// Horizontal radius within which trees contribute to the bird volume.
 const BIRD_RADIUS: f32 = 60.0;
+/// Minimum plant height (m) to count as a tree for birdsong. Trees are 8–25 m
+/// while shrubs are ~1.5–2.5 m, so this cleanly excludes dense shrub cover from
+/// boosting the chorus.
+const BIRD_MIN_TREE_HEIGHT: f32 = 4.0;
 /// Weighted tree count at which birds reach full volume.
 const BIRD_SCORE_FULL: f32 = 6.0;
 /// Height above ground (m) below which birds are at full volume.
@@ -57,7 +61,7 @@ pub struct AudioSystem {
 }
 
 impl AudioSystem {
-    /// Open the default output device and start both beds (silent). Returns
+    /// Open the default output device and start all three beds (silent). Returns
     /// `None` if no audio device is available — the game runs fine without sound.
     pub fn new() -> Option<Self> {
         let (stream, handle) = match OutputStream::try_default() {
@@ -179,6 +183,9 @@ fn bird_target(camera: Vec3, chunks: &HashMap<IVec2, ChunkData>) -> f32 {
                 .iter()
                 .chain(chunk.content.plants.iter())
             {
+                if plant.height < BIRD_MIN_TREE_HEIGHT {
+                    continue; // shrubs don't host the dawn chorus
+                }
                 let dxp = plant.position.x - camera.x;
                 let dzp = plant.position.z - camera.z;
                 let d2 = dxp * dxp + dzp * dzp;
