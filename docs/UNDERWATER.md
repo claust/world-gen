@@ -58,7 +58,8 @@ seabed, subtle screen-distortion wobble, bubbles. Pure juice — do last.
 
 ## Recommended phasing
 
-1. **A + B + C1** — all shader-side, one new uniform, no assets. This is where the
+1. **A + B + C1** — all shader-side, one new per-frame value (packed into an
+   existing uniform slot, no layout change), no assets. This is where the
    "I'm actually underwater" feeling comes from.
 2. **D** — close the sky/surface gaps.
 3. **C2** — a genuinely different seabed, if desired.

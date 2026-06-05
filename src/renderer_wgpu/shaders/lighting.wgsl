@@ -29,6 +29,11 @@ fn hemisphere_ambient(normal: vec3<f32>) -> vec3<f32> {
 
 // Distance fog shared by terrain, water, and instanced/billboard fragments.
 //
+// Like the hemisphere helpers above this reads the `material` uniform, and it
+// additionally depends on the `frame` uniform: `frame.camera_position` for the
+// fog distance and `frame.time.z` for the submerge factor. Any shader that calls
+// it must declare both `frame` and `material`.
+//
 // Above water it is the original sky-colored fog over the chunk-load radius.
 // When the camera is submerged (`frame.time.z`, the per-frame submerge factor)
 // it crossfades to a short-range blue-green murk: the lit color is pulled toward
