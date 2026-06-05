@@ -34,6 +34,9 @@ pub struct WorldRenderer {
     fog_color: [f32; 3],
     fog_start: f32,
     fog_end: f32,
+    /// Water surface height; used to derive the per-frame underwater submerge
+    /// factor uploaded in `FrameUniform.time.z`.
+    sea_level: f32,
     registry: PlantRegistry,
     view_proj: Mat4,
     camera_position: Vec3,
@@ -123,6 +126,7 @@ impl WorldRenderer {
             fog_color,
             fog_start,
             fog_end,
+            sea_level,
             registry,
             view_proj: Mat4::IDENTITY,
             camera_position: Vec3::ZERO,
@@ -138,6 +142,7 @@ impl WorldRenderer {
     }
 
     pub fn set_sea_level(&mut self, _queue: &wgpu::Queue, sea_level: f32) {
+        self.sea_level = sea_level;
         self.water.set_sea_level(sea_level);
     }
 
@@ -168,6 +173,11 @@ impl WorldRenderer {
         self.light_view_proj = light_view_proj;
         self.shadow_enabled = shadow_enabled;
 
+        // Underwater submerge factor: 0 above the surface, ramping to 1 over the
+        // ~1.5 m below sea level so crossing the surface fades smoothly.
+        const SUBMERGE_RAMP: f32 = 1.5;
+        let submerge = ((self.sea_level - camera_position.y) / SUBMERGE_RAMP).clamp(0.0, 1.0);
+
         self.frame_bg.update(
             queue,
             &FrameUniform::with_shadow(
@@ -177,6 +187,7 @@ impl WorldRenderer {
                 hour,
                 light_view_proj,
                 shadow_enabled,
+                submerge,
             ),
         );
     }

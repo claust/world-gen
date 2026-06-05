@@ -95,6 +95,12 @@ pub struct AppState {
     last_frame: Instant,
     frame_time_ms: f32,
     elapsed_seconds: f32,
+    /// Value of `elapsed_seconds` at the last periodic autosave, so the playing
+    /// loop persists progress on a fixed cadence between explicit saves (ESC /
+    /// window close). Native only — the desktop build is where an unexpected exit
+    /// would otherwise lose progress.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_autosave_seconds: f32,
     frame_index: u64,
     #[cfg(not(target_arch = "wasm32"))]
     debug_api: Option<DebugApiHandle>,
@@ -102,6 +108,11 @@ pub struct AppState {
     last_telemetry_emit: Instant,
     #[cfg(not(target_arch = "wasm32"))]
     screenshot_pending: Option<String>,
+    /// Directory screenshots are written to: `captures` by default, or
+    /// `instances/<name>/captures` when running as a named instance, so
+    /// concurrent instances don't overwrite each other's `latest.png`.
+    #[cfg(not(target_arch = "wasm32"))]
+    captures_dir: std::path::PathBuf,
     #[cfg(not(target_arch = "wasm32"))]
     asset_watcher: Option<AssetWatcher>,
     egui_bridge: EguiBridge,
@@ -134,6 +145,12 @@ pub struct AppState {
     loading_map_buf: Vec<u8>,
     /// `done` count at the last map upload, to skip rebuilds when nothing changed.
     loading_map_done: usize,
+    /// Full-world biome map retained after generation for the `M`-key map overlay.
+    /// Adopted from `loading_map_tex` when the build finishes, so it covers every
+    /// canonical chunk — not just the streamed-in ones in `world.chunks()`.
+    world_map_tex: Option<egui::TextureHandle>,
+    /// Whether the full-world map overlay (toggled with `M`) is currently shown.
+    map_open: bool,
     /// Handle to the background world-generation worker (native only). Polled each
     /// frame; dropped (detaching the thread) if the user leaves the loading screen.
     #[cfg(not(target_arch = "wasm32"))]
@@ -156,8 +173,11 @@ impl AppState {
         debug_api_config: DebugApiConfig,
         _cursor_captured: bool,
         benchmark_path: Option<std::path::PathBuf>,
+        instance: Option<String>,
     ) -> Result<Self> {
-        let storage = create_storage();
+        let storage = create_storage(instance.as_deref());
+        let captures_dir =
+            crate::world_core::storage::instance_root(instance.as_deref()).join("captures");
         let config = GameConfig::load(&*storage);
         let save = SaveData::load(&*storage);
 
@@ -226,8 +246,10 @@ impl AppState {
             last_telemetry_emit: Instant::now() - Duration::from_secs(1),
             frame_time_ms: 0.0,
             elapsed_seconds: 0.0,
+            last_autosave_seconds: 0.0,
             frame_index: 0,
             screenshot_pending: None,
+            captures_dir,
             asset_watcher,
             benchmark,
             update_cpu_ms: 0.0,
@@ -253,6 +275,8 @@ impl AppState {
             loading_map_tex: None,
             loading_map_buf: Vec::new(),
             loading_map_done: 0,
+            world_map_tex: None,
+            map_open: false,
             world_gen_job: None,
             thumbnail_renderer: None,
             blur_pass,
@@ -270,7 +294,7 @@ impl AppState {
 
     #[cfg(target_arch = "wasm32")]
     pub async fn new_web(window: &'static Window, _cursor_captured: bool) -> Result<Self> {
-        let storage = create_storage();
+        let storage = create_storage(None);
         let config = GameConfig::load(&*storage);
         let save = SaveData::load(&*storage);
 
@@ -341,6 +365,8 @@ impl AppState {
             loading_map_tex: None,
             loading_map_buf: Vec::new(),
             loading_map_done: 0,
+            world_map_tex: None,
+            map_open: false,
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
@@ -407,6 +433,20 @@ impl AppState {
 
     fn is_on_herbarium(&self) -> bool {
         matches!(self.screen, Screen::Herbarium)
+    }
+
+    /// Toggle the full-world map overlay (`M`). Releases the cursor while open and
+    /// recaptures it on close — but only when normal gameplay actually wants the
+    /// cursor captured (`Playing`, no config panel). The keyboard path already
+    /// gates on the screen, but the debug API can toggle this from any screen, so
+    /// guard the recapture here too rather than locking the cursor on a menu.
+    fn toggle_map_overlay(&mut self) {
+        self.map_open = !self.map_open;
+        if self.map_open {
+            self.release_cursor();
+        } else if matches!(self.screen, Screen::Playing) && !self.config_panel.is_visible() {
+            self.capture_cursor();
+        }
     }
 
     fn return_to_menu(&mut self) {
@@ -563,7 +603,24 @@ impl AppState {
                         s.camera.yaw,
                         s.camera.pitch,
                     ),
-                    None => (Vec3::new(158.0, 72.0, -51.0), 4.0, -0.23),
+                    // Fresh world: scan the generated terrain for a coastline and
+                    // drop the player on land beside the sea, looking out over the
+                    // water — far nicer than the fixed corner the world used to
+                    // start in. Falls back to a fixed pose if there's no coast.
+                    None => {
+                        let hm = crate::world_core::heightmap::Heightmap::new(
+                            self.config.world.seed,
+                            self.config.heightmap.clone(),
+                        );
+                        match hm.find_coastal_spawn(self.config.sea_level) {
+                            Some(s) => (
+                                Vec3::new(s.x, s.ground + 3.0, s.z),
+                                s.water_dir.1.atan2(s.water_dir.0),
+                                -0.12,
+                            ),
+                            None => (Vec3::new(158.0, 72.0, -51.0), 4.0, -0.23),
+                        }
+                    }
                 };
                 self.camera = FlyCamera::new(cam_pos);
                 self.camera.yaw = cam_yaw;
@@ -675,6 +732,14 @@ impl AppState {
             }
             LoadingPhase::Done => {
                 self.screen = Screen::Playing;
+                // Anchor the autosave cadence to when gameplay actually starts,
+                // not app launch — `elapsed_seconds` also accrues in the menu and
+                // during the (multi-second) load, which would otherwise trip an
+                // autosave on the very first playing frame.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.last_autosave_seconds = self.elapsed_seconds;
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 let skip_capture = self.benchmark.is_some();
                 #[cfg(target_arch = "wasm32")]
@@ -683,6 +748,11 @@ impl AppState {
                     self.capture_cursor();
                 }
                 self.loading_state = None;
+                // Adopt the finished biome map for the in-game map overlay (M key)
+                // before releasing loading state. The refresh guarantees the texture
+                // reflects the final (fully-generated) cells even on a fast build.
+                self.update_loading_map_texture();
+                self.world_map_tex = self.loading_map_tex.take();
                 // Release the generation-visualization resources now that we're
                 // in-game; they're rebuilt fresh on the next load.
                 self.world_gen_progress = None;
@@ -717,9 +787,14 @@ impl AppState {
                 });
                 let config = self.config.clone();
                 let save = if resume { self.save.clone() } else { None };
-                // Storage handles aren't `Send`; read the persisted spread blob
-                // here on the main thread and hand the owned bytes to the worker.
+                // Storage handles aren't `Send`; read the persisted blobs here on
+                // the main thread and hand the owned bytes to the worker. The
+                // `world_base` cache lets a New Game skip regeneration; `gen_key`
+                // keys it to the current generation rules so a stale cache is
+                // rejected.
                 let spread_bytes = self.storage.load_bytes("plants");
+                let base_bytes = self.storage.load_bytes("world_base");
+                let gen_key = self.herbarium.generation_key(&self.config);
                 let progress = std::sync::Arc::new(crate::world_runtime::GenerationProgress::new());
                 self.world_gen_progress = Some(std::sync::Arc::clone(&progress));
                 self.loading_started = Some(Instant::now());
@@ -734,6 +809,8 @@ impl AppState {
                             threads,
                             registry,
                             spread_bytes,
+                            base_bytes,
+                            gen_key,
                             &progress,
                         );
                         // Ignore send errors: if the receiver was dropped the user
@@ -760,7 +837,16 @@ impl AppState {
             // Subsequent frames: poll the worker without blocking.
             let msg = self.world_gen_job.as_ref().map(|job| job.result.try_recv());
             match msg {
-                Some(Ok(Ok(world))) => {
+                Some(Ok(Ok(mut world))) => {
+                    // A New Game that regenerated the base stages a snapshot to
+                    // persist; write it here (off the generation thread, which
+                    // can't touch the non-`Send` storage handle) so the next New
+                    // Game loads it instead of regenerating.
+                    if let Some(bytes) = world.take_pending_base_snapshot() {
+                        if let Err(err) = self.storage.save_bytes("world_base", &bytes) {
+                            log::warn!("failed to cache base world: {err}");
+                        }
+                    }
                     self.world = Some(world);
                     self.world_gen_job = None;
                     if let Some(s) = &mut self.loading_state {
@@ -800,7 +886,8 @@ impl AppState {
                     &self.herbarium,
                 ))
             });
-            match WorldRuntime::new(&self.config, save_ref, 1, registry, &*self.storage) {
+            let gen_key = self.herbarium.generation_key(&self.config);
+            match WorldRuntime::new(&self.config, save_ref, 1, registry, &*self.storage, gen_key) {
                 Ok(world) => {
                     self.world = Some(world);
                 }
@@ -1014,6 +1101,19 @@ impl AppState {
             self.world_renderer
                 .set_load_radius(new_config.world.load_radius);
             let _ = world.set_day_speed(new_config.world.day_speed);
+        }
+
+        // Periodic autosave so an unexpected exit (crash, power loss) between
+        // explicit saves doesn't lose progress. Best-effort and cheap — only the
+        // camera metadata and the plant spread delta are written, not the
+        // regenerable base world. Skipped in benchmark mode so the scripted
+        // flythrough isn't perturbed by disk I/O.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.benchmark.is_none()
+            && self.elapsed_seconds - self.last_autosave_seconds >= AUTOSAVE_INTERVAL_SECONDS
+        {
+            self.last_autosave_seconds = self.elapsed_seconds;
+            let _ = self.save_and_update();
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1452,7 +1552,8 @@ impl AppState {
                 || is_loading
                 || is_herbarium
                 || self.config_panel.is_visible()
-                || is_editor;
+                || is_editor
+                || self.map_open;
             if show_egui {
                 // Refresh the biome map texture from the worker's live progress
                 // before egui runs (needs `ctx` + `&mut self`, which the run
@@ -1504,6 +1605,15 @@ impl AppState {
                         }
                         Screen::Playing => {
                             self.config_panel.ui(ctx, &mut self.ui_registry);
+                            if self.map_open {
+                                render_map_ui(
+                                    ctx,
+                                    self.camera.position.x,
+                                    self.camera.position.z,
+                                    self.camera.yaw,
+                                    self.world_map_tex.as_ref(),
+                                );
+                            }
                         }
                         Screen::PlantEditor => {
                             if let Some(ea) = self.plant_editor_panel.ui(ctx, &mut self.ui_registry)
@@ -1760,6 +1870,138 @@ fn render_loading_ui(
         });
 }
 
+/// The full-world map overlay (toggled with `M`): a dimmed modal showing the
+/// retained biome map of every canonical chunk, with the player drawn as an arrow
+/// at their wrapped world position pointing along the camera heading. Static view
+/// — no panning or interaction; `M`/`Esc` closes it (handled by the event loop).
+fn render_map_ui(
+    ctx: &egui::Context,
+    cam_x: f32,
+    cam_z: f32,
+    cam_yaw: f32,
+    map_tex: Option<&egui::TextureHandle>,
+) {
+    use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
+    use egui::{
+        epaint, Align2, Color32, CornerRadius, FontId, RichText, Sense, Shape, Stroke, StrokeKind,
+    };
+
+    let world_size_m = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(Color32::from_black_alpha(190)))
+        .show(ctx, |ui| {
+            let available = ui.available_size();
+            // Square map (the world is square) at ~80% of the smaller viewport
+            // dimension, leaving room for the title above and the hint below. The
+            // final `.min(avail_min)` keeps the 200px floor from overflowing a tiny
+            // window/viewport, which would clip the map and overlap the chrome.
+            let avail_min = available.x.min(available.y);
+            let map_side = (avail_min * 0.8).clamp(200.0, 900.0).min(avail_min);
+            let top_pad = ((available.y - map_side) * 0.5 - 48.0).max(16.0);
+            ui.add_space(top_pad);
+
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("World Map")
+                        .size(26.0)
+                        .strong()
+                        .color(Color32::from_rgb(232, 240, 247)),
+                );
+                ui.add_space(12.0);
+
+                let (rect, _resp) =
+                    ui.allocate_exact_size(egui::vec2(map_side, map_side), Sense::hover());
+                if ui.is_rect_visible(rect) {
+                    let painter = ui.painter_at(rect);
+                    painter.rect_filled(
+                        rect,
+                        CornerRadius::same(8),
+                        Color32::from_black_alpha(150),
+                    );
+
+                    match map_tex {
+                        Some(tex) => {
+                            // The texture is laid out world +x → column (texU) and
+                            // world +z → row (texV). The compass and minimap put
+                            // North (world +x) up and East (world +z) right, so the
+                            // map must be transposed/flipped to match: screen-up =
+                            // +x, screen-right = +z. egui's `image()` only does
+                            // axis-aligned UV mapping, so we draw a mesh and assign
+                            // each rect corner the UV that lands the right world cell
+                            // there (e.g. top-left = max-x/min-z → uv (1, 0)).
+                            let mut mesh = egui::Mesh::with_texture(tex.id());
+                            let v = |pos: egui::Pos2, uv: egui::Pos2| epaint::Vertex {
+                                pos,
+                                uv,
+                                color: Color32::WHITE,
+                            };
+                            mesh.vertices.push(v(rect.left_top(), egui::pos2(1.0, 0.0)));
+                            mesh.vertices
+                                .push(v(rect.right_top(), egui::pos2(1.0, 1.0)));
+                            mesh.vertices
+                                .push(v(rect.left_bottom(), egui::pos2(0.0, 0.0)));
+                            mesh.vertices
+                                .push(v(rect.right_bottom(), egui::pos2(0.0, 1.0)));
+                            mesh.indices.extend_from_slice(&[0, 1, 2, 2, 1, 3]);
+                            painter.add(Shape::mesh(mesh));
+                        }
+                        None => {
+                            painter.text(
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                "Map unavailable",
+                                FontId::proportional(18.0),
+                                Color32::from_white_alpha(160),
+                            );
+                        }
+                    }
+
+                    // Player marker: an arrow at the wrapped world position pointing
+                    // along the camera heading. Matching the compass/minimap, North
+                    // (world +x) is up and East (world +z) is right: screen-right
+                    // tracks +z, screen-down tracks -x.
+                    let u = cam_z.rem_euclid(world_size_m) / world_size_m;
+                    let v = 1.0 - cam_x.rem_euclid(world_size_m) / world_size_m;
+                    let center = egui::pos2(
+                        rect.left() + u * rect.width(),
+                        rect.top() + v * rect.height(),
+                    );
+                    // Camera horizontal forward is (cos yaw, sin yaw) in world (x, z);
+                    // mapped to screen that is (sin yaw, -cos yaw).
+                    let dir = egui::vec2(cam_yaw.sin(), -cam_yaw.cos());
+                    let perp = egui::vec2(-dir.y, dir.x);
+                    let s = (map_side * 0.018).clamp(7.0, 16.0);
+                    let tip = center + dir * s;
+                    let back = center - dir * (s * 0.55);
+                    let left = back + perp * (s * 0.7);
+                    let right = back - perp * (s * 0.7);
+                    // Bright fill with a dark outline so the marker reads over any
+                    // biome color underneath it.
+                    painter.add(Shape::convex_polygon(
+                        vec![tip, left, right],
+                        Color32::from_rgb(255, 64, 64),
+                        Stroke::new(2.0, Color32::from_black_alpha(220)),
+                    ));
+
+                    painter.rect_stroke(
+                        rect,
+                        CornerRadius::same(8),
+                        Stroke::new(1.0, Color32::from_white_alpha(40)),
+                        StrokeKind::Inside,
+                    );
+                }
+
+                ui.add_space(14.0);
+                ui.label(
+                    RichText::new("M / Esc to close")
+                        .font(FontId::monospace(13.0))
+                        .color(Color32::from_white_alpha(150)),
+                );
+            });
+        });
+}
+
 pub fn try_grab_window_cursor(window: &Window) -> bool {
     let grabbed = window
         .set_cursor_grab(CursorGrabMode::Locked)
@@ -1776,6 +2018,13 @@ fn release_window_cursor(window: &Window) {
 }
 
 const MIN_HEIGHT_ABOVE_GROUND: f32 = 2.0;
+
+/// Sim/wall-clock seconds between periodic autosaves while playing, so a crash
+/// or power loss between explicit saves loses at most this much progress. The
+/// write is cheap (camera metadata + plant spread delta only), so a tight
+/// cadence is affordable.
+#[cfg(not(target_arch = "wasm32"))]
+const AUTOSAVE_INTERVAL_SECONDS: f32 = 30.0;
 
 fn clamp_camera_to_terrain(
     camera: &mut FlyCamera,

@@ -14,6 +14,63 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Compute the release tag once, up front, so every downstream job agrees on it.
+  # The native build needs it *before compiling* to bake the per-tag world_base.bin
+  # download URL into the binary, and the release publishes the asset at exactly
+  # that URL — a release asset's URL is fully determined by repo + tag + filename,
+  # so it's known before the asset exists.
+  version:
+    name: Compute version tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate version tag
+        id: version
+        run: echo "tag=v$(date +%Y%m%d)-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+
+  # Generate the prebuilt base world on a cheap Linux runner and upload it as an
+  # artifact. The release attaches it so first-time players download it instead of
+  # spending ~minutes generating it locally. Platform doesn't matter: the client
+  # accepts any snapshot whose embedded seed + generation key match, regardless of
+  # which OS produced it (and a mismatch just falls back to local generation).
+  generate-base:
+    name: Generate base world
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.1
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: generate-base
+
+      - name: Build generator
+        run: cargo build --release --bin world-gen
+
+      - name: Generate world_base.bin
+        run: |
+          # Match a fresh end-user install: with no herbarium.json / config.json in
+          # the working directory the generator uses the default (default_seeded)
+          # herbarium and default config — the same ones a first-time client loads
+          # and validates the download against. Both are gitignored runtime
+          # artifacts (not in the checkout); this rm is a guard against a stray copy
+          # producing a generation key no shipped client would match.
+          rm -f herbarium.json config.json
+          ./target/release/world-gen --generate-base world_base.bin
+
+      - name: Upload world-base artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: floraforge-world-base
+          path: world_base.bin
+
   build-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
@@ -54,10 +111,6 @@ jobs:
             --out-name world_gen \
             target/wasm32-unknown-unknown/release/world_gen.wasm
 
-      - name: Generate version tag
-        id: version
-        run: echo "tag=v$(date +%Y%m%d)-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-
       - name: Create release zip
         run: cd web && zip -r ../floraforge-web.zip .
 
@@ -72,16 +125,18 @@ jobs:
         with:
           path: web/
 
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
-
   # Same matrix the PR CI validates (native-build.yml), here with release=true to
   # produce optimized, packaged binaries. Single source of truth → no drift.
   build-native:
     name: Build native
+    needs: version
     uses: ./.github/workflows/native-build.yml
     with:
       release: true
+      # Pinned, per-tag release-asset URL. Deterministic from repo + tag, so it's
+      # safe to bake into the binary now even though the asset is uploaded later
+      # in this same run (see the `version` and `release` jobs).
+      world_base_url: https://github.com/${{ github.repository }}/releases/download/${{ needs.version.outputs.tag }}/world_base.bin
 
   deploy-pages:
     name: Deploy to GitHub Pages
@@ -98,7 +153,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build-wasm, build-native]
+    needs: [version, build-wasm, build-native, generate-base]
     runs-on: ubuntu-latest
 
     steps:
@@ -114,9 +169,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ needs.build-wasm.outputs.tag }}" \
+          # world_base.bin is published here at exactly the URL baked into the
+          # native binaries (see build-native), so first-time players download it.
+          gh release create "${{ needs.version.outputs.tag }}" \
             --generate-notes \
-            --title "${{ needs.build-wasm.outputs.tag }}" \
+            --title "${{ needs.version.outputs.tag }}" \
             artifacts/floraforge-web-zip/floraforge-web.zip \
             artifacts/floraforge-macos-aarch64/floraforge-macos-aarch64.zip \
-            artifacts/floraforge-windows-x86_64/floraforge-windows-x86_64.zip
+            artifacts/floraforge-windows-x86_64/floraforge-windows-x86_64.exe \
+            artifacts/floraforge-world-base/world_base.bin

@@ -298,13 +298,24 @@ impl AppState {
                             }
                         }
                         PressableKey::Escape => {
-                            if self.config_panel.is_visible() {
+                            if self.map_open {
+                                self.toggle_map_overlay();
+                                "map overlay closed".to_string()
+                            } else if self.config_panel.is_visible() {
                                 self.config_panel.toggle();
                                 self.capture_cursor();
                                 "config panel closed".to_string()
                             } else {
                                 self.release_cursor();
                                 "cursor released".to_string()
+                            }
+                        }
+                        PressableKey::M => {
+                            self.toggle_map_overlay();
+                            if self.map_open {
+                                "map overlay opened".to_string()
+                            } else {
+                                "map overlay closed".to_string()
                             }
                         }
                     };

@@ -61,6 +61,12 @@ pub struct WorldRuntime {
     last_spread_hour: f64,
     /// Wall-clock ms of the most recent growth/spread tick (telemetry).
     last_tick_ms: f32,
+    /// Serialized base-world snapshot awaiting persistence, set when a New Game
+    /// generated the base fresh (cache miss). The caller drains it via
+    /// [`take_pending_base_snapshot`] and writes it to storage on the main
+    /// thread; `None` when the base was loaded from an existing cache or this is
+    /// a resume (the cache is only authored from a New Game).
+    pending_base_snapshot: Option<Vec<u8>>,
 }
 
 /// Sim-hours between global growth ticks. Growth is analytic, so a coarse
@@ -77,9 +83,32 @@ impl WorldRuntime {
         threads: usize,
         registry: Arc<PlantRegistry>,
         storage: &dyn Storage,
+        gen_key: u64,
     ) -> anyhow::Result<Self> {
         let spread_bytes = storage.load_bytes("plants");
-        Self::build(config, save, threads, registry, spread_bytes, None)
+        let base_bytes = storage.load_bytes("world_base");
+        let mut world = Self::build(
+            config,
+            save,
+            threads,
+            registry,
+            spread_bytes,
+            base_bytes,
+            gen_key,
+            None,
+        )?;
+        // Persist a freshly generated base world so the next New Game loads it
+        // instead of regenerating. Skipped on backends without binary storage
+        // (web localStorage), where a write could never succeed — taking the
+        // pending bytes still clears them.
+        if let Some(bytes) = world.take_pending_base_snapshot() {
+            if storage.supports_bytes() {
+                if let Err(err) = storage.save_bytes("world_base", &bytes) {
+                    log::warn!("failed to cache base world: {err}");
+                }
+            }
+        }
+        Ok(world)
     }
 
     /// Build a world from fully-owned, `Send` inputs so the whole generation can
@@ -87,12 +116,15 @@ impl WorldRuntime {
     /// spread blob, read from storage on the main thread (storage handles are not
     /// `Send`); `progress` receives live per-chunk progress for the loading UI.
     #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         config: GameConfig,
         save: Option<SaveData>,
         threads: usize,
         registry: Arc<PlantRegistry>,
         spread_bytes: Option<Vec<u8>>,
+        base_bytes: Option<Vec<u8>>,
+        gen_key: u64,
         progress: &crate::world_runtime::GenerationProgress,
     ) -> anyhow::Result<Self> {
         Self::build(
@@ -101,16 +133,21 @@ impl WorldRuntime {
             threads,
             registry,
             spread_bytes,
+            base_bytes,
+            gen_key,
             Some(progress),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         config: &GameConfig,
         save: Option<&SaveData>,
         threads: usize,
         registry: Arc<PlantRegistry>,
         spread_bytes: Option<Vec<u8>>,
+        base_bytes: Option<Vec<u8>>,
+        gen_key: u64,
         progress: Option<&crate::world_runtime::GenerationProgress>,
     ) -> anyhow::Result<Self> {
         let seed = save.map(|s| s.world.seed).unwrap_or(config.world.seed);
@@ -127,11 +164,88 @@ impl WorldRuntime {
 
         let arc_config = Arc::new(config.clone());
 
-        // One-time world-creation cost: generate base flora for every canonical
-        // chunk into the resident store (parallel; terrain discarded per chunk),
-        // then re-apply any persisted spread state on top of the regenerable base.
-        let mut plant_world =
-            PlantWorld::generate_base(seed, config, Arc::clone(&registry), threads, progress);
+        // Base flora for every canonical chunk. The one-time world-creation cost
+        // is generating it from the seed (parallel; terrain discarded per chunk),
+        // so a New Game caches the result: try that cache first, keyed by the
+        // generation inputs and seed, and only regenerate on a miss. The cache is
+        // authored from a New Game (`save.is_none()`) — a resume reuses it when
+        // its seed matches but never overwrites it.
+        let (mut plant_world, pending_base_snapshot) = match base_bytes.as_deref().and_then(|b| {
+            PlantWorld::from_base_snapshot(b, gen_key, seed, config, Arc::clone(&registry))
+        }) {
+            Some(world) => {
+                // Repaint the loading map the generation pass would have filled.
+                if let Some(p) = progress {
+                    world.paint_progress(p);
+                }
+                log::info!(
+                    "base world: loaded {} plants across {} populated chunks from cache",
+                    world.population(),
+                    world.populated_chunks(),
+                );
+                (world, None)
+            }
+            None => {
+                // Cache miss. On a New Game, try downloading a prebuilt base
+                // before generating from scratch. The download is validated by
+                // the same `from_base_snapshot` path as a local cache hit, so a
+                // mismatched (wrong seed/gen_key) or corrupt download is rejected
+                // and we fall through to local generation.
+                let downloaded = if save.is_none() {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        crate::world_core::storage::fetch_base_world()
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        None::<Vec<u8>>
+                    }
+                } else {
+                    None
+                };
+
+                match downloaded.and_then(|bytes| {
+                    PlantWorld::from_base_snapshot(
+                        &bytes,
+                        gen_key,
+                        seed,
+                        config,
+                        Arc::clone(&registry),
+                    )
+                    .map(|world| (world, bytes))
+                }) {
+                    Some((world, bytes)) => {
+                        // Repaint the loading map the generation pass would have filled.
+                        if let Some(p) = progress {
+                            world.paint_progress(p);
+                        }
+                        log::info!(
+                            "base world: downloaded {} plants across {} populated chunks",
+                            world.population(),
+                            world.populated_chunks(),
+                        );
+                        // Persist the downloaded bytes locally so the next New
+                        // Game loads them offline instead of re-downloading.
+                        (world, Some(bytes))
+                    }
+                    None => {
+                        let world = PlantWorld::generate_base(
+                            seed,
+                            config,
+                            Arc::clone(&registry),
+                            threads,
+                            progress,
+                        );
+                        let pending = if save.is_none() {
+                            Some(world.serialize_base(gen_key))
+                        } else {
+                            None
+                        };
+                        (world, pending)
+                    }
+                }
+            }
+        };
         let restored = plant_world.apply_saved_spread_bytes(spread_bytes.as_deref());
         log::info!(
             "PlantWorld: {} plants across {} populated chunks ({restored} restored from save)",
@@ -146,7 +260,16 @@ impl WorldRuntime {
             last_growth_hour: total_hours,
             last_spread_hour: total_hours,
             last_tick_ms: 0.0,
+            pending_base_snapshot,
         })
+    }
+
+    /// Take the serialized base-world snapshot staged by a New Game cache miss,
+    /// for the caller to persist on the main thread (storage handles are not
+    /// `Send`, so generation can't write it directly). `None` after a cache hit,
+    /// a resume, or once already taken.
+    pub fn take_pending_base_snapshot(&mut self) -> Option<Vec<u8>> {
+        self.pending_base_snapshot.take()
     }
 
     pub fn reload_config(&mut self, config: &GameConfig) {

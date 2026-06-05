@@ -504,8 +504,8 @@
             <h1>One frame, <span class="accent">many times a second.</span></h1>
             <p>
                 FloraForge is a from-scratch terrain engine written in Rust with the
-                <code>wgpu</code> graphics API. There is no game-engine framework underneath — just a
-                single loop that runs every frame: read input, simulate the world, draw it, repeat.
+                <button class="term" data-term="webgpu"><code>wgpu</code></button> graphics API. There is no game-engine framework underneath — just a
+                single <button class="term" data-term="game-loop">loop that runs every frame</button>: read input, simulate the world, draw it, repeat.
                 This page is a tour of that loop and the systems hanging off it.
             </p>
             <div class="hero-meta">
@@ -526,7 +526,7 @@
             <p class="lead">
                 The window library (<code>winit</code>) runs in <code>Poll</code> mode: as soon as the
                 engine finishes a frame it immediately asks for the next one. Each lap of the loop
-                collects input, runs a single <code>update()</code> to advance the simulation, then a
+                collects input, runs a single <button class="term" data-term="update-render"><code>update()</code></button> to advance the simulation, then a
                 single <code>render()</code> to draw it to the screen — and presents the result.
             </p>
 
@@ -648,7 +648,7 @@
                             <span class="note">The camera controller turns held keys and mouse deltas into a new fly-camera position, then clamps it above the terrain.</span></li>
                         <li><strong>Advance the world clock</strong>
                             <span class="note">Time of day ticks forward, which drives the sun direction and ambient light.</span></li>
-                        <li><strong>Stream chunks</strong>
+                        <li><strong><button class="term" data-term="chunk-streaming">Stream chunks</button></strong>
                             <span class="note">Load chunks entering the camera's radius, drop ones that left, and collect terrain finished by background worker threads.</span></li>
                         <li><strong>Grow plants</strong>
                             <span class="note">Plant lifecycle advances; chunks whose vegetation changed are reassembled.</span></li>
@@ -661,12 +661,12 @@
                     <h3>Draw <code>render()</code></h3>
                     <p class="sub">Records GPU commands into one encoder, then submits and presents.</p>
                     <ol class="steps">
-                        <li><strong>Acquire the frame</strong>
+                        <li><strong><button class="term" data-term="swapchain">Acquire the frame</button></strong>
                             <span class="note">Grab the next swapchain texture. This call blocks until the GPU is ready — that wait is how the engine measures whether it is GPU-bound.</span></li>
                         <li><strong>Open a render pass</strong>
                             <span class="note">Clear the colour and depth buffers (or blit a pre-blurred background for the menu).</span></li>
                         <li><strong>Draw the scene, in order</strong>
-                            <span class="note">Each pass below appends draw calls. Terrain, plants and water are frustum-culled so off-screen chunks cost nothing.</span></li>
+                            <span class="note">Each pass below appends draw calls. Terrain, plants and water are <button class="term" data-term="frustum-culling">frustum-culled</button> so off-screen chunks cost nothing.</span></li>
                         <li><strong>Overlay the UI</strong>
                             <span class="note">An <code>egui</code> pass paints menus, the config panel and the plant editor on top of the 3D scene.</span></li>
                         <li><strong>Submit &amp; present</strong>
@@ -676,7 +676,7 @@
                     <div class="passes" aria-label="Render passes in draw order">
                         <div class="pass-chip"><b>Sky</b><small>gradient + sun by time of day</small></div>
                         <div class="pass-chip"><b>Terrain</b><small>129×129 grid per chunk</small></div>
-                        <div class="pass-chip"><b>Instanced</b><small>trees, shrubs, houses</small></div>
+                        <div class="pass-chip"><b><button class="term" data-term="instanced-rendering">Instanced</button></b><small>trees, shrubs, houses</small></div>
                         <div class="pass-chip"><b>Water</b><small>sea-level surface</small></div>
                         <div class="pass-chip"><b>HUD + Minimap</b><small>2D overlays</small></div>
                     </div>
@@ -787,7 +787,7 @@
                     </div>
                     <p>
                         All <code>wgpu</code> code: the device/surface context, per-frame and
-                        per-material bind groups, the compute shader that builds terrain meshes, instanced
+                        per-material <button class="term" data-term="bind-group">bind groups</button>, the <button class="term" data-term="compute-shader">compute shader</button> that builds terrain meshes, instanced
                         rendering, water, sky, HUD and the <code>egui</code> overlay.
                     </p>
                 </div>
@@ -805,7 +805,7 @@
         <section class="cta wrap">
             <h2>See it running</h2>
             <p>
-                The whole loop compiles to WebAssembly and runs in your browser over WebGPU — the same
+                The whole loop compiles to <button class="term" data-term="webassembly">WebAssembly</button> and runs in your browser over <button class="term" data-term="webgpu">WebGPU</button> — the same
                 Rust code as the desktop build.
             </p>
             <a class="button button-primary" href="./index.html">Launch FloraForge</a>
@@ -819,5 +819,6 @@
             </div>
         </footer>
     </div>
+    <script src="./glossary.js" defer></script>
 </body>
 </html>
