@@ -63,6 +63,10 @@ fn main() -> anyhow::Result<()> {
         world_gen::world_core::storage::validate_instance_name(name)?;
         log::info!("instance name: {name}");
     }
+    let window_title = match &instance {
+        Some(name) => format!("[{name}] FloraForge"),
+        None => "FloraForge".to_string(),
+    };
 
     let event_loop = EventLoop::new()?;
 
@@ -71,7 +75,7 @@ fn main() -> anyhow::Result<()> {
 
     let window = Box::leak(Box::new(
         WindowBuilder::new()
-            .with_title("FloraForge")
+            .with_title(&window_title)
             .with_inner_size(PhysicalSize::new(1600, 900))
             .build(&event_loop)
             .context("failed to create window")?,
