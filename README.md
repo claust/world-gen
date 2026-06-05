@@ -1,4 +1,8 @@
-# FloraForge
+<p align="center">
+  <img src="assets/icon/floraforge-logo.svg" alt="FloraForge logo" width="160">
+</p>
+
+<h1 align="center">FloraForge</h1>
 
 ## Project Overview
 A procedurally generated 3D world with mountains, forests, rivers, and other natural landscapes — built entirely from scratch in Rust using `wgpu`. FloraForge focuses on plant-first world building: shape vegetation, generate the surrounding terrain, and explore the resulting landscape in real time.
