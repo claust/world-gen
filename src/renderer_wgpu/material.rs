@@ -9,6 +9,8 @@ pub struct FrameUniform {
     pub inv_view_proj: [[f32; 4]; 4],
     pub light_view_proj: [[f32; 4]; 4],
     pub camera_position: [f32; 4],
+    /// x = elapsed seconds, y = hour-of-day, z = underwater submerge factor
+    /// (0.0 above water → 1.0 fully submerged), w = unused.
     pub time: [f32; 4],
     /// Shadow controls: x = 1/shadow_map_size (texel), y = depth bias,
     /// z = shadow strength, w = enabled (1.0 = on, 0.0 = off).
@@ -29,11 +31,15 @@ impl FrameUniform {
             hour,
             Mat4::IDENTITY,
             0.0,
+            0.0,
         )
     }
 
     /// Build frame uniforms including the sun's light view-projection matrix.
-    /// `shadow_enabled` is 1.0 during the day and 0.0 at night.
+    /// `shadow_enabled` is 1.0 during the day and 0.0 at night. `submerge` is the
+    /// underwater factor (0.0 above water, ramping to 1.0 just below sea level);
+    /// it is packed into `time.z` and read by the shared `scene_fog` helper.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_shadow(
         view_proj: Mat4,
         camera_position: Vec3,
@@ -41,13 +47,14 @@ impl FrameUniform {
         hour: f32,
         light_view_proj: Mat4,
         shadow_enabled: f32,
+        submerge: f32,
     ) -> Self {
         Self {
             view_proj: view_proj.to_cols_array_2d(),
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             light_view_proj: light_view_proj.to_cols_array_2d(),
             camera_position: [camera_position.x, camera_position.y, camera_position.z, 0.0],
-            time: [elapsed, hour, 0.0, 0.0],
+            time: [elapsed, hour, submerge, 0.0],
             shadow_params: [
                 1.0 / super::pipeline::SHADOW_SIZE as f32,
                 SHADOW_DEPTH_BIAS,
