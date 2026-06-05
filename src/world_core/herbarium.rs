@@ -92,6 +92,42 @@ pub struct Herbarium {
     pub plants: Vec<HerbariumEntry>,
 }
 
+impl Herbarium {
+    /// Deterministic 64-bit hash of the inputs that determine base-world
+    /// generation: this herbarium plus the game config (which carries the seed,
+    /// heightmap, and biome rules). Used as the validity key for the cached
+    /// base-world snapshot, so editing any generation rule invalidates a stale
+    /// cache.
+    ///
+    /// Deterministic *within a build*: both types serialize to a field-ordered
+    /// JSON byte image (no `HashMap`s) hashed through a fixed-keyed
+    /// `DefaultHasher`. It is **not** guaranteed stable across `rustc` /
+    /// `serde_json` upgrades — a toolchain bump may change the key and simply
+    /// invalidate the on-disk cache, which then regenerates harmlessly.
+    pub fn generation_key(&self, config: &super::config::GameConfig) -> u64 {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // A serialization failure must not silently drop an input from the key —
+        // that could let a snapshot built from different inputs validate. Hash a
+        // distinct marker instead (so the key changes) and warn loudly.
+        match serde_json::to_vec(self) {
+            Ok(bytes) => hasher.write(&bytes),
+            Err(e) => {
+                log::warn!("herbarium did not serialize for the generation key: {e}");
+                hasher.write(b"\0herbarium-serialize-error\0");
+            }
+        }
+        match serde_json::to_vec(config) {
+            Ok(bytes) => hasher.write(&bytes),
+            Err(e) => {
+                log::warn!("config did not serialize for the generation key: {e}");
+                hasher.write(b"\0config-serialize-error\0");
+            }
+        }
+        hasher.finish()
+    }
+}
+
 /// A deduplicated, indexed view of the herbarium for world generation.
 /// Each species appears once; `species_index` values in `PlantInstance` refer
 /// to indices in `species`.

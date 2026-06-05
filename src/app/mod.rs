@@ -95,6 +95,12 @@ pub struct AppState {
     last_frame: Instant,
     frame_time_ms: f32,
     elapsed_seconds: f32,
+    /// Value of `elapsed_seconds` at the last periodic autosave, so the playing
+    /// loop persists progress on a fixed cadence between explicit saves (ESC /
+    /// window close). Native only — the desktop build is where an unexpected exit
+    /// would otherwise lose progress.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_autosave_seconds: f32,
     frame_index: u64,
     #[cfg(not(target_arch = "wasm32"))]
     debug_api: Option<DebugApiHandle>,
@@ -232,6 +238,7 @@ impl AppState {
             last_telemetry_emit: Instant::now() - Duration::from_secs(1),
             frame_time_ms: 0.0,
             elapsed_seconds: 0.0,
+            last_autosave_seconds: 0.0,
             frame_index: 0,
             screenshot_pending: None,
             asset_watcher,
@@ -716,6 +723,14 @@ impl AppState {
             }
             LoadingPhase::Done => {
                 self.screen = Screen::Playing;
+                // Anchor the autosave cadence to when gameplay actually starts,
+                // not app launch — `elapsed_seconds` also accrues in the menu and
+                // during the (multi-second) load, which would otherwise trip an
+                // autosave on the very first playing frame.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.last_autosave_seconds = self.elapsed_seconds;
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 let skip_capture = self.benchmark.is_some();
                 #[cfg(target_arch = "wasm32")]
@@ -763,9 +778,14 @@ impl AppState {
                 });
                 let config = self.config.clone();
                 let save = if resume { self.save.clone() } else { None };
-                // Storage handles aren't `Send`; read the persisted spread blob
-                // here on the main thread and hand the owned bytes to the worker.
+                // Storage handles aren't `Send`; read the persisted blobs here on
+                // the main thread and hand the owned bytes to the worker. The
+                // `world_base` cache lets a New Game skip regeneration; `gen_key`
+                // keys it to the current generation rules so a stale cache is
+                // rejected.
                 let spread_bytes = self.storage.load_bytes("plants");
+                let base_bytes = self.storage.load_bytes("world_base");
+                let gen_key = self.herbarium.generation_key(&self.config);
                 let progress = std::sync::Arc::new(crate::world_runtime::GenerationProgress::new());
                 self.world_gen_progress = Some(std::sync::Arc::clone(&progress));
                 self.loading_started = Some(Instant::now());
@@ -780,6 +800,8 @@ impl AppState {
                             threads,
                             registry,
                             spread_bytes,
+                            base_bytes,
+                            gen_key,
                             &progress,
                         );
                         // Ignore send errors: if the receiver was dropped the user
@@ -806,7 +828,16 @@ impl AppState {
             // Subsequent frames: poll the worker without blocking.
             let msg = self.world_gen_job.as_ref().map(|job| job.result.try_recv());
             match msg {
-                Some(Ok(Ok(world))) => {
+                Some(Ok(Ok(mut world))) => {
+                    // A New Game that regenerated the base stages a snapshot to
+                    // persist; write it here (off the generation thread, which
+                    // can't touch the non-`Send` storage handle) so the next New
+                    // Game loads it instead of regenerating.
+                    if let Some(bytes) = world.take_pending_base_snapshot() {
+                        if let Err(err) = self.storage.save_bytes("world_base", &bytes) {
+                            log::warn!("failed to cache base world: {err}");
+                        }
+                    }
                     self.world = Some(world);
                     self.world_gen_job = None;
                     if let Some(s) = &mut self.loading_state {
@@ -846,7 +877,8 @@ impl AppState {
                     &self.herbarium,
                 ))
             });
-            match WorldRuntime::new(&self.config, save_ref, 1, registry, &*self.storage) {
+            let gen_key = self.herbarium.generation_key(&self.config);
+            match WorldRuntime::new(&self.config, save_ref, 1, registry, &*self.storage, gen_key) {
                 Ok(world) => {
                     self.world = Some(world);
                 }
@@ -1060,6 +1092,19 @@ impl AppState {
             self.world_renderer
                 .set_load_radius(new_config.world.load_radius);
             let _ = world.set_day_speed(new_config.world.day_speed);
+        }
+
+        // Periodic autosave so an unexpected exit (crash, power loss) between
+        // explicit saves doesn't lose progress. Best-effort and cheap — only the
+        // camera metadata and the plant spread delta are written, not the
+        // regenerable base world. Skipped in benchmark mode so the scripted
+        // flythrough isn't perturbed by disk I/O.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.benchmark.is_none()
+            && self.elapsed_seconds - self.last_autosave_seconds >= AUTOSAVE_INTERVAL_SECONDS
+        {
+            self.last_autosave_seconds = self.elapsed_seconds;
+            let _ = self.save_and_update();
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1829,7 +1874,7 @@ fn render_map_ui(
 ) {
     use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
     use egui::{
-        Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Shape, Stroke, StrokeKind,
+        epaint, Align2, Color32, CornerRadius, FontId, RichText, Sense, Shape, Stroke, StrokeKind,
     };
 
     let world_size_m = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
@@ -1868,12 +1913,29 @@ fn render_map_ui(
 
                     match map_tex {
                         Some(tex) => {
-                            painter.image(
-                                tex.id(),
-                                rect,
-                                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
+                            // The texture is laid out world +x → column (texU) and
+                            // world +z → row (texV). The compass and minimap put
+                            // North (world +x) up and East (world +z) right, so the
+                            // map must be transposed/flipped to match: screen-up =
+                            // +x, screen-right = +z. egui's `image()` only does
+                            // axis-aligned UV mapping, so we draw a mesh and assign
+                            // each rect corner the UV that lands the right world cell
+                            // there (e.g. top-left = max-x/min-z → uv (1, 0)).
+                            let mut mesh = egui::Mesh::with_texture(tex.id());
+                            let v = |pos: egui::Pos2, uv: egui::Pos2| epaint::Vertex {
+                                pos,
+                                uv,
+                                color: Color32::WHITE,
+                            };
+                            mesh.vertices.push(v(rect.left_top(), egui::pos2(1.0, 0.0)));
+                            mesh.vertices
+                                .push(v(rect.right_top(), egui::pos2(1.0, 1.0)));
+                            mesh.vertices
+                                .push(v(rect.left_bottom(), egui::pos2(0.0, 0.0)));
+                            mesh.vertices
+                                .push(v(rect.right_bottom(), egui::pos2(0.0, 1.0)));
+                            mesh.indices.extend_from_slice(&[0, 1, 2, 2, 1, 3]);
+                            painter.add(Shape::mesh(mesh));
                         }
                         None => {
                             painter.text(
@@ -1887,16 +1949,18 @@ fn render_map_ui(
                     }
 
                     // Player marker: an arrow at the wrapped world position pointing
-                    // along the camera heading. World +x → screen right and world +z
-                    // → screen down (row index grows with z), so the on-screen heading
-                    // angle is `yaw` directly.
-                    let u = cam_x.rem_euclid(world_size_m) / world_size_m;
-                    let v = cam_z.rem_euclid(world_size_m) / world_size_m;
+                    // along the camera heading. Matching the compass/minimap, North
+                    // (world +x) is up and East (world +z) is right: screen-right
+                    // tracks +z, screen-down tracks -x.
+                    let u = cam_z.rem_euclid(world_size_m) / world_size_m;
+                    let v = 1.0 - cam_x.rem_euclid(world_size_m) / world_size_m;
                     let center = egui::pos2(
                         rect.left() + u * rect.width(),
                         rect.top() + v * rect.height(),
                     );
-                    let dir = egui::vec2(cam_yaw.cos(), cam_yaw.sin());
+                    // Camera horizontal forward is (cos yaw, sin yaw) in world (x, z);
+                    // mapped to screen that is (sin yaw, -cos yaw).
+                    let dir = egui::vec2(cam_yaw.sin(), -cam_yaw.cos());
                     let perp = egui::vec2(-dir.y, dir.x);
                     let s = (map_side * 0.018).clamp(7.0, 16.0);
                     let tip = center + dir * s;
@@ -1945,6 +2009,13 @@ fn release_window_cursor(window: &Window) {
 }
 
 const MIN_HEIGHT_ABOVE_GROUND: f32 = 2.0;
+
+/// Sim/wall-clock seconds between periodic autosaves while playing, so a crash
+/// or power loss between explicit saves loses at most this much progress. The
+/// write is cheap (camera metadata + plant spread delta only), so a tight
+/// cadence is affordable.
+#[cfg(not(target_arch = "wasm32"))]
+const AUTOSAVE_INTERVAL_SECONDS: f32 = 30.0;
 
 fn clamp_camera_to_terrain(
     camera: &mut FlyCamera,

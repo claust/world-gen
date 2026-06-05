@@ -145,6 +145,10 @@ pub struct PlantWorld {
     base_count: Vec<u32>,
     /// Biome at each chunk's centre, for per-biome telemetry.
     biome: Vec<Biome>,
+    /// Per-chunk overview-map cell byte (biome + water override), the same value
+    /// fed to the loading visualization. Retained so the base-world snapshot can
+    /// repaint the map on a cache load without regenerating terrain.
+    cell_bytes: Vec<u8>,
     registry: Arc<PlantRegistry>,
     /// Terrain + rules for validating spread landings without the full per-chunk
     /// grid: the heightmap is point-sampled at each seedling position.
@@ -206,7 +210,7 @@ impl PlantWorld {
         let centre =
             (CHUNK_GRID_RESOLUTION / 2) * CHUNK_GRID_RESOLUTION + CHUNK_GRID_RESOLUTION / 2;
         let sea_level = config.sea_level;
-        let build_one = |idx: usize| -> (Vec<Plant>, Biome) {
+        let build_one = |idx: usize| -> (Vec<Plant>, Biome, u8) {
             let cx = (idx as i32) % n;
             let cz = (idx as i32) / n;
             let coord = IVec2::new(cx, cz);
@@ -220,19 +224,19 @@ impl PlantWorld {
             plants.shrink_to_fit();
             let centre_height = data.terrain.heights[centre];
             let biome = classify(centre_height, data.terrain.moisture[centre], &config.biome);
+            let cell =
+                crate::world_runtime::gen_progress::cell_byte(biome, centre_height < sea_level);
             // Surface live progress for the loading visualization: store this
             // chunk's cell color and bump the done counter (single relaxed atomic
             // each — no lock on the generation hot path).
             if let Some(p) = progress {
-                let byte =
-                    crate::world_runtime::gen_progress::cell_byte(biome, centre_height < sea_level);
-                p.record(idx, byte);
+                p.record(idx, cell);
             }
-            (plants, biome)
+            (plants, biome, cell)
         };
 
         #[cfg(not(target_arch = "wasm32"))]
-        let built: Vec<(Vec<Plant>, Biome)> = {
+        let built: Vec<(Vec<Plant>, Biome, u8)> = {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads.max(1))
                 .build()
@@ -249,16 +253,18 @@ impl PlantWorld {
             }
         };
         #[cfg(target_arch = "wasm32")]
-        let built: Vec<(Vec<Plant>, Biome)> = {
+        let built: Vec<(Vec<Plant>, Biome, u8)> = {
             let _ = threads;
             (0..total).map(build_one).collect()
         };
 
         let mut chunks = Vec::with_capacity(total);
         let mut biome = Vec::with_capacity(total);
-        for (plants, b) in built {
+        let mut cell_bytes = Vec::with_capacity(total);
+        for (plants, b, cell) in built {
             chunks.push(plants);
             biome.push(b);
+            cell_bytes.push(cell);
         }
 
         let population = chunks.iter().map(Vec::len).sum();
@@ -276,6 +282,7 @@ impl PlantWorld {
             saturated,
             base_count,
             biome,
+            cell_bytes,
             registry,
             heightmap: Heightmap::new(seed, config.heightmap.clone()),
             biome_config: config.biome.clone(),
@@ -288,6 +295,18 @@ impl PlantWorld {
         };
         world.recompute_biome_fill();
         world
+    }
+
+    /// Repaint a [`GenerationProgress`] map from this world's stored cell bytes
+    /// and mark every chunk done. Used on the base-snapshot cache path, where the
+    /// per-chunk map was loaded rather than recomputed during generation.
+    pub fn paint_progress(
+        &self,
+        progress: &crate::world_runtime::gen_progress::GenerationProgress,
+    ) {
+        for (idx, &byte) in self.cell_bytes.iter().enumerate() {
+            progress.record(idx, byte);
+        }
     }
 
     /// Total plants across the whole world (loaded or not). O(1).
@@ -595,6 +614,133 @@ impl PlantWorld {
         self.recompute_biome_fill();
         Ok(added)
     }
+
+    /// Serialize the whole base world — every canonical chunk's full plant list
+    /// plus its biome and overview-map cell — as a compact binary blob, tagged
+    /// with `gen_key` (a hash of the generation inputs) and the seed. This is the
+    /// expensive [`generate_base`] output cached so a later New Game can skip
+    /// regeneration. Distinct from [`save_spread`], which persists only the
+    /// per-game spread delta on top of a regenerable base.
+    pub fn serialize_base(&self, gen_key: u64) -> Vec<u8> {
+        let total = self.chunks.len();
+        let plant_total: usize = self.chunks.iter().map(Vec::len).sum();
+        let mut buf = Vec::with_capacity(BASE_HEADER_BYTES + total * 6 + plant_total * PLANT_BYTES);
+        buf.extend_from_slice(&BASE_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&BASE_VERSION.to_le_bytes());
+        buf.extend_from_slice(&gen_key.to_le_bytes());
+        buf.extend_from_slice(&self.seed.to_le_bytes());
+        buf.extend_from_slice(&(WORLD_SIZE_CHUNKS as u32).to_le_bytes());
+        for idx in 0..total {
+            buf.push(biome_slot(self.biome[idx]) as u8);
+            buf.push(self.cell_bytes[idx]);
+            let plants = &self.chunks[idx];
+            buf.extend_from_slice(&(plants.len() as u32).to_le_bytes());
+            for plant in plants {
+                write_plant(&mut buf, plant);
+            }
+        }
+        buf
+    }
+
+    /// Reconstruct a base world from a [`serialize_base`] blob, rebuilding the
+    /// derived indices (immature counts, base counts, totals, biome fill). The
+    /// snapshot is accepted only when its magic, version, generation key, seed,
+    /// and world size all match the current world; on any mismatch or corruption
+    /// it returns `None` (with a warning) so the caller falls back to generation.
+    pub fn from_base_snapshot(
+        bytes: &[u8],
+        gen_key: u64,
+        expected_seed: u32,
+        config: &GameConfig,
+        registry: Arc<PlantRegistry>,
+    ) -> Option<Self> {
+        match Self::read_base(bytes, gen_key, expected_seed, config, registry) {
+            Ok(world) => Some(world),
+            Err(err) => {
+                log::warn!("ignoring cached base world: {err}");
+                None
+            }
+        }
+    }
+
+    fn read_base(
+        buf: &[u8],
+        gen_key: u64,
+        expected_seed: u32,
+        config: &GameConfig,
+        registry: Arc<PlantRegistry>,
+    ) -> anyhow::Result<Self> {
+        let mut cur = Cursor::new(buf);
+        if cur.read_u32()? != BASE_MAGIC {
+            anyhow::bail!("bad magic");
+        }
+        if cur.read_u32()? != BASE_VERSION {
+            anyhow::bail!("unsupported version");
+        }
+        let key = cur.read_u64()?;
+        if key != gen_key {
+            anyhow::bail!("generation key {key:#018x} does not match {gen_key:#018x}");
+        }
+        let seed = cur.read_u32()?;
+        if seed != expected_seed {
+            anyhow::bail!("seed {seed} does not match world seed {expected_seed}");
+        }
+        let n = cur.read_u32()?;
+        if n != WORLD_SIZE_CHUNKS as u32 {
+            anyhow::bail!("world size {n} does not match {WORLD_SIZE_CHUNKS}");
+        }
+        let total = (n as usize) * (n as usize);
+
+        let mut chunks: Vec<Vec<Plant>> = Vec::with_capacity(total);
+        let mut biome = Vec::with_capacity(total);
+        let mut cell_bytes = Vec::with_capacity(total);
+        for _ in 0..total {
+            let biome_code = cur.read_u8()?;
+            let cell = cur.read_u8()?;
+            let count = cur.read_u32()? as usize;
+            // Bound `count` by the bytes actually left before reserving, so a
+            // corrupted length can't trigger a huge allocation ahead of EOF.
+            if count.saturating_mul(PLANT_BYTES) > cur.remaining() {
+                anyhow::bail!("declared {count} plants exceed the remaining data");
+            }
+            let mut plants = Vec::with_capacity(count);
+            for _ in 0..count {
+                plants.push(read_plant(&mut cur)?);
+            }
+            chunks.push(plants);
+            biome.push(biome_from_slot(biome_code));
+            cell_bytes.push(cell);
+        }
+
+        let population = chunks.iter().map(Vec::len).sum();
+        let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
+        let immature = chunks
+            .iter()
+            .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
+            .collect();
+        let base_count = chunks.iter().map(|c| c.len() as u32).collect();
+        let saturated = vec![false; chunks.len()];
+
+        let mut world = Self {
+            chunks,
+            immature,
+            saturated,
+            base_count,
+            biome,
+            cell_bytes,
+            registry,
+            heightmap: Heightmap::new(seed, config.heightmap.clone()),
+            biome_config: config.biome.clone(),
+            sea_level: config.sea_level,
+            seed,
+            population,
+            populated_chunks,
+            last_spread_added: 0,
+            biome_fill: Vec::new(),
+        };
+        world.recompute_biome_fill();
+        Ok(world)
+    }
 }
 
 /// True when chunk `idx` and all eight of its (wrapped) neighbours are saturated,
@@ -896,6 +1042,18 @@ fn biome_slot(biome: Biome) -> usize {
     }
 }
 
+/// Inverse of [`biome_slot`], for decoding the base-world snapshot. Unknown codes
+/// fall back to `Snow` rather than panicking on a corrupt byte.
+fn biome_from_slot(slot: u8) -> Biome {
+    match slot {
+        0 => Biome::Forest,
+        1 => Biome::Grassland,
+        2 => Biome::Desert,
+        3 => Biome::Rock,
+        _ => Biome::Snow,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Spread persistence — compact little-endian blob of the per-chunk spread suffix
 // ---------------------------------------------------------------------------
@@ -904,6 +1062,16 @@ const SPREAD_MAGIC: u32 = 0x504c_4e54; // "PLNT"
 const SPREAD_VERSION: u32 = 1;
 /// Serialized size of one plant: u16×4 + u8×2 + f32.
 const PLANT_BYTES: usize = 14;
+
+// ---------------------------------------------------------------------------
+// Base-world snapshot — full per-chunk base flora + biome/map, a cache of the
+// expensive `generate_base` pass keyed by the generation inputs.
+// ---------------------------------------------------------------------------
+
+const BASE_MAGIC: u32 = 0x5742_4153; // "WBAS"
+const BASE_VERSION: u32 = 1;
+/// magic(4) + version(4) + gen_key(8) + seed(4) + world_size(4).
+const BASE_HEADER_BYTES: usize = 24;
 
 fn write_plant(buf: &mut Vec<u8>, p: &Plant) {
     buf.extend_from_slice(&p.local_x.to_le_bytes());
@@ -966,6 +1134,13 @@ impl<'a> Cursor<'a> {
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
+    fn read_u64(&mut self) -> anyhow::Result<u64> {
+        let b = self.take(8)?;
+        Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
+    }
+
     fn read_f32(&mut self) -> anyhow::Result<f32> {
         let b = self.take(4)?;
         Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -1012,12 +1187,14 @@ mod tests {
         let saturated = vec![false; chunks.len()];
         let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let biome = vec![Biome::Forest; chunks.len()];
+        let cell_bytes = vec![0u8; chunks.len()];
         PlantWorld {
             chunks,
             immature,
             saturated,
             base_count,
             biome,
+            cell_bytes,
             registry: reg,
             heightmap: Heightmap::new(7, config.heightmap.clone()),
             biome_config: config.biome.clone(),
@@ -1098,6 +1275,51 @@ mod tests {
         assert!(reloaded.saturated[0]);
         assert!(!reloaded.saturated[1]);
         assert!(reloaded.saturated[2]);
+    }
+
+    #[test]
+    fn base_snapshot_round_trips_and_rebuilds_indices() {
+        let reg = registry();
+        // A full-size world (the snapshot format is fixed to WORLD_SIZE_CHUNKS²)
+        // with a few populated chunks.
+        let total = (WORLD_SIZE_CHUNKS as usize) * (WORLD_SIZE_CHUNKS as usize);
+        let mut chunks = vec![Vec::new(); total];
+        let mature = Plant {
+            stage: MATURE,
+            ..seedling(10.0, 0.0)
+        };
+        chunks[5].push(mature);
+        chunks[5].push(seedling(20.0, 24.0)); // one immature in chunk 5
+        chunks[total - 1].push(mature);
+        let world = test_world(chunks, Arc::clone(&reg));
+
+        let config = GameConfig::default();
+        let gen_key = 0xABCD_1234_5678_9A00u64;
+        let bytes = world.serialize_base(gen_key);
+
+        let restored =
+            PlantWorld::from_base_snapshot(&bytes, gen_key, world.seed, &config, Arc::clone(&reg))
+                .expect("a matching snapshot loads");
+        assert_eq!(restored.population(), world.population());
+        assert_eq!(restored.populated_chunks(), world.populated_chunks());
+        // Plant lists round-trip byte-for-byte; derived indices are rebuilt.
+        assert_eq!(restored.chunks[5], world.chunks[5]);
+        assert_eq!(restored.base_count[5], 2);
+        assert_eq!(restored.immature[5], 1);
+        assert_eq!(restored.chunks[total - 1], world.chunks[total - 1]);
+
+        // A snapshot is rejected (falls back to generation) when the generation
+        // key or the seed does not match.
+        assert!(
+            PlantWorld::from_base_snapshot(&bytes, gen_key ^ 1, world.seed, &config, registry())
+                .is_none(),
+            "a changed generation key must invalidate the cache"
+        );
+        assert!(
+            PlantWorld::from_base_snapshot(&bytes, gen_key, world.seed + 1, &config, registry())
+                .is_none(),
+            "a different seed must invalidate the cache"
+        );
     }
 
     #[test]

@@ -14,6 +14,14 @@ pub trait Storage {
             "binary storage is not supported by this backend"
         ))
     }
+
+    /// Whether this backend can persist binary blobs. Defaults to `false`; the
+    /// native file store overrides it. Lets callers skip binary-only features
+    /// (the base-world cache) on backends like web localStorage instead of
+    /// attempting a write that always fails and logs.
+    fn supports_bytes(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -106,6 +114,10 @@ impl Storage for FileStorage {
     fn save_bytes(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
         let path = FileStorage::bin_path_for(key)?;
         FileStorage::atomic_write(&path, data)
+    }
+
+    fn supports_bytes(&self) -> bool {
+        true
     }
 }
 
