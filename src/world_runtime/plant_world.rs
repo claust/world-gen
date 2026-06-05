@@ -630,6 +630,17 @@ impl PlantWorld {
         Ok(added)
     }
 
+    /// Brotli quality for the snapshot shipped on GitHub and downloaded by
+    /// clients: a high level (~31 MiB, near the practical size floor — q11 saves
+    /// only ~1 MiB for ~20 s more) at ~1 min to encode, paid once in CI and
+    /// never on a player's machine. See [`serialize_base`](Self::serialize_base).
+    pub const DOWNLOAD_QUALITY: u32 = 10;
+    /// Brotli quality for a locally generated cache: ~30% smaller than raw
+    /// (~67→47 MiB) in well under a second, so a New Game pays no perceptible
+    /// compression cost. Higher levels hit sharp diminishing returns — matching
+    /// the download's size would cost the full ~1 min encode for ~16 MiB more.
+    pub const LOCAL_QUALITY: u32 = 1;
+
     /// Serialize the whole base world — every canonical chunk's full plant list
     /// plus its biome and overview-map cell — as a compact binary blob, tagged
     /// with `gen_key` (a hash of the generation inputs) and the seed. This is the
@@ -645,7 +656,16 @@ impl PlantWorld {
     /// chunk and storing varint deltas of the sorted codes. Plants are assumed to
     /// already be in canonical Morton order (generation and load both sort), so
     /// deltas are non-negative.
-    pub fn serialize_base(&self, gen_key: u64) -> Vec<u8> {
+    ///
+    /// `quality` is the Brotli level (0–11) for each section. The prebuilt
+    /// snapshot shipped on GitHub uses [`Self::DOWNLOAD_QUALITY`] (q10) so the
+    /// once-in-CI encode buys the smallest practical download; a locally
+    /// generated cache uses [`Self::LOCAL_QUALITY`] (q1), which is ~30% smaller
+    /// than raw for a fraction of a second — q10 would add ~minutes to every New
+    /// Game for a file that never leaves the disk. Brotli decode is
+    /// quality-agnostic, so every quality yields the same v2 layout (only the
+    /// compressed bytes differ) and loads through the identical path.
+    pub fn serialize_base(&self, gen_key: u64, quality: u32) -> Vec<u8> {
         let total = self.chunks.len();
 
         let mut meta = Vec::with_capacity(total * 6);
@@ -679,9 +699,9 @@ impl PlantWorld {
         buf.extend_from_slice(&(WORLD_SIZE_CHUNKS as u32).to_le_bytes());
         buf.push(POS_BITS as u8);
         buf.extend_from_slice(&[0u8; 3]); // reserved (keeps the header word-aligned)
-        write_section(&mut buf, &meta);
-        write_section(&mut buf, &pos);
-        write_section(&mut buf, &attr);
+        write_section(&mut buf, &meta, quality);
+        write_section(&mut buf, &pos, quality);
+        write_section(&mut buf, &attr, quality);
         buf
     }
 
@@ -741,7 +761,8 @@ impl PlantWorld {
 
         // Three Brotli sections, decompressed into their own buffers and walked
         // in lockstep: `meta` drives the per-chunk loop, `pos`/`attr` feed each
-        // plant. Section lengths are bounded inside `read_section`.
+        // plant. Section lengths are bounded inside `read_section`. Decode is
+        // independent of the quality each was written at.
         let meta = read_section(&mut cur)?;
         let pos = read_section(&mut cur)?;
         let attr = read_section(&mut cur)?;
@@ -1182,10 +1203,9 @@ const MORTON_CELLS: usize = 1 << (2 * POS_BITS);
 /// taller plant would clamp (cosmetic only — height never feeds spread).
 const HEIGHT_RANGE_M: f32 = 32.0;
 
-/// Brotli quality (0–11) and window (`lgwin`, 10–24) for the snapshot sections.
-/// q10/w24 was the chosen size/speed point: ~31 MiB, ~2 min to encode (paid once
-/// in CI and on the first local generation), ~0.7 s to decode.
-const BASE_BROTLI_QUALITY: u32 = 10;
+/// Brotli window (`lgwin`, 10–24) for the snapshot sections; 24 (16 MiB) lets the
+/// compressor reach back across a whole column. Quality is chosen per call —
+/// see [`PlantWorld::DOWNLOAD_QUALITY`] / [`PlantWorld::LOCAL_QUALITY`].
 const BASE_BROTLI_LGWIN: u32 = 24;
 
 /// Cap on a single decompressed section, to bound allocation from a corrupt or
@@ -1276,12 +1296,11 @@ fn read_varint(cur: &mut Cursor<'_>) -> anyhow::Result<u32> {
 
 /// Brotli-compress a section body. Writing to a `Vec` is infallible, so this
 /// can't error.
-fn brotli_compress(data: &[u8]) -> Vec<u8> {
+fn brotli_compress(data: &[u8], quality: u32) -> Vec<u8> {
     use std::io::Write;
     let mut out = Vec::new();
     {
-        let mut writer =
-            brotli::CompressorWriter::new(&mut out, 4096, BASE_BROTLI_QUALITY, BASE_BROTLI_LGWIN);
+        let mut writer = brotli::CompressorWriter::new(&mut out, 4096, quality, BASE_BROTLI_LGWIN);
         writer
             .write_all(data)
             .expect("brotli compression into a Vec is infallible");
@@ -1303,10 +1322,10 @@ fn brotli_decompress(data: &[u8], max_len: usize) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Append a length-framed, Brotli-compressed section: `uncompressed_len(u32)`,
-/// `compressed_len(u32)`, then the compressed bytes.
-fn write_section(buf: &mut Vec<u8>, data: &[u8]) {
-    let comp = brotli_compress(data);
+/// Append a length-framed, Brotli-compressed section at the given `quality`:
+/// `uncompressed_len(u32)`, `compressed_len(u32)`, then the compressed bytes.
+fn write_section(buf: &mut Vec<u8>, data: &[u8], quality: u32) {
+    let comp = brotli_compress(data, quality);
     buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
     buf.extend_from_slice(&(comp.len() as u32).to_le_bytes());
     buf.extend_from_slice(&comp);
@@ -1578,35 +1597,57 @@ mod tests {
 
         let config = GameConfig::default();
         let gen_key = 0xABCD_1234_5678_9A00u64;
-        let bytes = world.serialize_base(gen_key);
-        // The blob is the v2 compressed format, not a flat plant dump.
-        assert_eq!(&bytes[0..4], &BASE_MAGIC.to_le_bytes());
-        assert_eq!(&bytes[4..8], &BASE_VERSION.to_le_bytes());
 
-        let restored =
-            PlantWorld::from_base_snapshot(&bytes, gen_key, world.seed, &config, Arc::clone(&reg))
-                .expect("a matching snapshot loads");
-        assert_eq!(restored.population(), world.population());
-        assert_eq!(restored.populated_chunks(), world.populated_chunks());
-        // Plant lists round-trip byte-for-byte; derived indices are rebuilt. Base
-        // plants are all mature, so nothing is immature after a base load.
-        assert_eq!(restored.chunks[5], world.chunks[5]);
-        assert_eq!(restored.base_count[5], 2);
-        assert_eq!(restored.immature[5], 0);
-        assert_eq!(restored.chunks[total - 1], world.chunks[total - 1]);
+        // Brotli decode is quality-agnostic, so a fast local cache (q1) and the
+        // shipped download (q10) share the v2 layout and round-trip identically.
+        for quality in [PlantWorld::LOCAL_QUALITY, PlantWorld::DOWNLOAD_QUALITY] {
+            let bytes = world.serialize_base(gen_key, quality);
+            // The blob is the v2 compressed format, not a flat plant dump.
+            assert_eq!(&bytes[0..4], &BASE_MAGIC.to_le_bytes());
+            assert_eq!(&bytes[4..8], &BASE_VERSION.to_le_bytes());
 
-        // A snapshot is rejected (falls back to generation) when the generation
-        // key or the seed does not match.
-        assert!(
-            PlantWorld::from_base_snapshot(&bytes, gen_key ^ 1, world.seed, &config, registry())
+            let restored = PlantWorld::from_base_snapshot(
+                &bytes,
+                gen_key,
+                world.seed,
+                &config,
+                Arc::clone(&reg),
+            )
+            .expect("a matching snapshot loads");
+            assert_eq!(restored.population(), world.population());
+            assert_eq!(restored.populated_chunks(), world.populated_chunks());
+            // Plant lists round-trip byte-for-byte; derived indices are rebuilt.
+            // Base plants are all mature, so nothing is immature after a load.
+            assert_eq!(restored.chunks[5], world.chunks[5]);
+            assert_eq!(restored.base_count[5], 2);
+            assert_eq!(restored.immature[5], 0);
+            assert_eq!(restored.chunks[total - 1], world.chunks[total - 1]);
+
+            // A snapshot is rejected (falls back to generation) when the
+            // generation key or the seed does not match.
+            assert!(
+                PlantWorld::from_base_snapshot(
+                    &bytes,
+                    gen_key ^ 1,
+                    world.seed,
+                    &config,
+                    registry()
+                )
                 .is_none(),
-            "a changed generation key must invalidate the cache"
-        );
-        assert!(
-            PlantWorld::from_base_snapshot(&bytes, gen_key, world.seed + 1, &config, registry())
+                "a changed generation key must invalidate the cache"
+            );
+            assert!(
+                PlantWorld::from_base_snapshot(
+                    &bytes,
+                    gen_key,
+                    world.seed + 1,
+                    &config,
+                    registry()
+                )
                 .is_none(),
-            "a different seed must invalidate the cache"
-        );
+                "a different seed must invalidate the cache"
+            );
+        }
     }
 
     #[test]

@@ -236,8 +236,11 @@ impl WorldRuntime {
                             threads,
                             progress,
                         );
+                        // Local cache only — never uploaded — so use fast Brotli:
+                        // ~30% smaller than raw in well under a second, where the
+                        // download's q10 would add ~1 min to every New Game.
                         let pending = if save.is_none() {
-                            Some(world.serialize_base(gen_key))
+                            Some(world.serialize_base(gen_key, PlantWorld::LOCAL_QUALITY))
                         } else {
                             None
                         };
