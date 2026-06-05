@@ -723,6 +723,14 @@ impl AppState {
             }
             LoadingPhase::Done => {
                 self.screen = Screen::Playing;
+                // Anchor the autosave cadence to when gameplay actually starts,
+                // not app launch — `elapsed_seconds` also accrues in the menu and
+                // during the (multi-second) load, which would otherwise trip an
+                // autosave on the very first playing frame.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.last_autosave_seconds = self.elapsed_seconds;
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 let skip_capture = self.benchmark.is_some();
                 #[cfg(target_arch = "wasm32")]

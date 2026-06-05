@@ -98,11 +98,14 @@ impl WorldRuntime {
             None,
         )?;
         // Persist a freshly generated base world so the next New Game loads it
-        // instead of regenerating. Best-effort: a backend without binary storage
-        // (web localStorage) just warns and carries on.
+        // instead of regenerating. Skipped on backends without binary storage
+        // (web localStorage), where a write could never succeed — taking the
+        // pending bytes still clears them.
         if let Some(bytes) = world.take_pending_base_snapshot() {
-            if let Err(err) = storage.save_bytes("world_base", &bytes) {
-                log::warn!("failed to cache base world: {err}");
+            if storage.supports_bytes() {
+                if let Err(err) = storage.save_bytes("world_base", &bytes) {
+                    log::warn!("failed to cache base world: {err}");
+                }
             }
         }
         Ok(world)
