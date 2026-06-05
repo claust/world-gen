@@ -659,8 +659,11 @@ impl PlantWorld {
             let mut prev = 0u32;
             for p in plants {
                 let code = morton10(p.local_x >> POS_SHIFT, p.local_z >> POS_SHIFT);
-                debug_assert!(code >= prev, "base chunk not in canonical Morton order");
-                write_varint(&mut pos, code.wrapping_sub(prev));
+                // Canonical Morton order is a hard precondition of the delta
+                // encoding, so fail fast in every build rather than wrapping into
+                // a corrupt position stream that would only surface at load.
+                assert!(code >= prev, "base chunk not in canonical Morton order");
+                write_varint(&mut pos, code - prev);
                 prev = code;
                 attr.push(pack_height(dequantize_span(p.height)));
                 attr.push((p.rotation >> 8) as u8);
@@ -755,8 +758,15 @@ impl PlantWorld {
             let count = meta_cur.read_u32()? as usize;
             // Each plant consumes at least one varint byte from `pos` and exactly
             // three from `attr`; bound `count` by both before reserving so a
-            // corrupted length can't trigger a huge allocation ahead of EOF.
-            if count > pos_cur.remaining() || count.saturating_mul(3) > attr_cur.remaining() {
+            // corrupted length can't trigger a huge allocation ahead of EOF. Also
+            // cap by the number of distinct Morton cells — a 256 m chunk on the
+            // 10-bit grid can't hold more, and base plants are metres apart, so
+            // this never rejects real data but stops a crafted count from driving
+            // a multi-gigabyte `with_capacity`.
+            if count > MORTON_CELLS
+                || count > pos_cur.remaining()
+                || count.saturating_mul(3) > attr_cur.remaining()
+            {
                 anyhow::bail!("declared {count} plants exceed the section data");
             }
             let mut plants = Vec::with_capacity(count);
@@ -767,6 +777,12 @@ impl PlantWorld {
                     .checked_add(delta)
                     .ok_or_else(|| anyhow::anyhow!("position code overflow"))?;
                 prev = code;
+                // `unmorton10` only reads the low `2*POS_BITS` bits, so reject any
+                // out-of-range code rather than silently wrapping it to a bogus
+                // in-range position.
+                if code as usize >= MORTON_CELLS {
+                    anyhow::bail!("position code {code} out of range");
+                }
                 let (x10, z10) = unmorton10(code);
                 let h8 = attr_cur.read_u8()?;
                 let r8 = attr_cur.read_u8()?;
@@ -1156,6 +1172,10 @@ const BASE_VERSION: u32 = 2;
 /// (`local_x`/`local_z`) span, so a stored code is `local >> POS_SHIFT`.
 const POS_BITS: u32 = 10;
 const POS_SHIFT: u16 = 16 - POS_BITS as u16; // 6
+/// Number of distinct Morton cells on the position grid (`2^(2*POS_BITS)`), the
+/// exclusive upper bound for a stored position code and a hard ceiling on plants
+/// per chunk during load.
+const MORTON_CELLS: usize = 1 << (2 * POS_BITS);
 
 /// Plant height is stored as a `u8` over `[0, HEIGHT_RANGE_M)` → a 0.125 m step.
 /// The tallest default species tops out at 25 m, so 32 m leaves headroom; a
