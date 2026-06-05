@@ -1,5 +1,12 @@
 // Binary entry point — native only.
 // On wasm32, the cdylib entry point in lib.rs is used instead.
+// In release builds on Windows, use the "windows" subsystem so launching the
+// app doesn't also pop up a background console window. Debug builds keep the
+// console subsystem so `cargo run` still shows env_logger output in a terminal.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 #![allow(unexpected_cfgs)] // objc crate's msg_send! macro checks cfg(feature = "cargo-clippy")
 
 #[cfg(target_os = "macos")]

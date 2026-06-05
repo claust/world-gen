@@ -62,17 +62,23 @@ jobs:
           cp target/${{ matrix.target }}/release/world-gen staging/floraforge
           cd staging && zip -r ../${{ matrix.artifact }}.zip .
 
+      # Windows ships as a bare .exe (no zip): it's a single self-contained
+      # binary, so zipping only adds an extra unpack step for the user.
       - name: Package (Windows)
         if: ${{ inputs.release && runner.os == 'Windows' }}
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path staging
-          Copy-Item "target/${{ matrix.target }}/release/world-gen.exe" staging/floraforge.exe
-          Compress-Archive -Path staging/* -DestinationPath "${{ matrix.artifact }}.zip"
+        run: Copy-Item "target/${{ matrix.target }}/release/world-gen.exe" "${{ matrix.artifact }}.exe"
 
-      - name: Upload artifact
-        if: ${{ inputs.release }}
+      - name: Upload artifact (zip)
+        if: ${{ inputs.release && runner.os != 'Windows' }}
         uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.zip
+
+      - name: Upload artifact (exe)
+        if: ${{ inputs.release && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.exe

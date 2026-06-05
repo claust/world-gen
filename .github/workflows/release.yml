@@ -119,4 +119,4 @@ jobs:
             --title "${{ needs.build-wasm.outputs.tag }}" \
             artifacts/floraforge-web-zip/floraforge-web.zip \
             artifacts/floraforge-macos-aarch64/floraforge-macos-aarch64.zip \
-            artifacts/floraforge-windows-x86_64/floraforge-windows-x86_64.zip
+            artifacts/floraforge-windows-x86_64/floraforge-windows-x86_64.exe
