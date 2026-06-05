@@ -38,6 +38,9 @@ egui-wgpu = { version = "0.33", default-features = false }
 objc = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Audio output. We synthesize ambient beds in-memory and feed them as raw f32
+# sample buffers, so none of rodio's file-decoding features are needed.
+rodio = { version = "0.20", default-features = false }
 axum = { version = "0.7", features = ["ws"] }
 notify = "7"
 env_logger = "0.11"

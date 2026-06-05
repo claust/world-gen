@@ -1,4 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
+pub mod audio;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod debug_api;
 pub mod renderer_wgpu;
 pub mod ui;
