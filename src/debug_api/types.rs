@@ -166,6 +166,7 @@ pub enum CommandKind {
 pub enum PressableKey {
     F1,
     Escape,
+    M,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
