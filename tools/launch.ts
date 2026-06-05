@@ -77,6 +77,7 @@ function listInstances(): Array<InstanceMeta & { alive: boolean }> {
     try {
       meta = JSON.parse(readFileSync(file, "utf8"));
     } catch {
+      rmSync(file, { force: true });
       continue;
     }
     // The file is on disk and may be corrupted or hand-edited; a non-numeric
