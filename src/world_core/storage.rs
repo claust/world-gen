@@ -221,17 +221,21 @@ pub fn fetch_base_world() -> Option<Vec<u8>> {
         return None;
     }
 
+    // Read one byte past the cap so an oversized body can be distinguished from a
+    // legitimate one of exactly the cap: `take(MAX)` would silently truncate to
+    // MAX, making the two indistinguishable. A body of exactly MAX is accepted
+    // (the cap is inclusive); anything larger is rejected.
     let mut bytes = Vec::new();
     if let Err(err) = resp
         .into_reader()
-        .take(BASE_WORLD_MAX_BYTES)
+        .take(BASE_WORLD_MAX_BYTES + 1)
         .read_to_end(&mut bytes)
     {
         log::warn!("base world: reading download body from {BASE_WORLD_URL} failed: {err}");
         return None;
     }
 
-    if bytes.len() as u64 >= BASE_WORLD_MAX_BYTES {
+    if bytes.len() as u64 > BASE_WORLD_MAX_BYTES {
         log::warn!(
             "base world: download from {BASE_WORLD_URL} exceeded {BASE_WORLD_MAX_BYTES} bytes; ignoring"
         );
