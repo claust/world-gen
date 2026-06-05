@@ -222,7 +222,8 @@ impl Heightmap {
         for i in 1..=max_steps {
             let px = chunk_centre(cx) + ux * step * i as f32;
             let pz = chunk_centre(cz) + uz * step * i as f32;
-            if self.sample_height(px, pz) > sea_level {
+            // Land is "at or above sea level", matching the cell classification.
+            if self.sample_height(px, pz) >= sea_level {
                 sx = px;
                 sz = pz;
             } else {
