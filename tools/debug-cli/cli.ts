@@ -312,6 +312,11 @@ Options:
  * specific running instance without knowing its (OS-assigned) port.
  */
 function apiForInstance(name: string): string {
+  // Reject names that could traverse out of instances/ (matches the game's
+  // validate_instance_name rules) before using one in a filesystem path.
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    die(`invalid instance name '${name}' (use letters, digits, '_' or '-')`);
+  }
   const file = `instances/${name}/instance.json`;
   let meta: { api?: string };
   try {

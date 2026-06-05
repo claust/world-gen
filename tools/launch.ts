@@ -79,6 +79,13 @@ function listInstances(): Array<InstanceMeta & { alive: boolean }> {
     } catch {
       continue;
     }
+    // The file is on disk and may be corrupted or hand-edited; a non-numeric
+    // pid would make isAlive() throw and crash `list`/`launch`. Treat any
+    // record without a valid pid as a dead/stale entry and prune it.
+    if (typeof meta.pid !== "number" || !Number.isInteger(meta.pid)) {
+      rmSync(file, { force: true });
+      continue;
+    }
     const alive = isAlive(meta.pid);
     if (!alive) {
       // Stale record from a crashed/closed instance — prune it. The state dir

@@ -194,10 +194,21 @@ pub fn validate_instance_name(name: &str) -> anyhow::Result<()> {
 /// (current single-instance layout); `instances/<name>` otherwise. Callers that
 /// also write non-storage files (e.g. screenshots) join their own subdir onto
 /// this so every instance's output stays together.
+///
+/// Defends in depth: an invalid name (one that could escape `instances/` via a
+/// path separator or `..`) is rejected here and falls back to the default root
+/// rather than building a traversing path, so no caller can write outside the
+/// intended directory even if it skipped [`validate_instance_name`].
 #[cfg(not(target_arch = "wasm32"))]
 pub fn instance_root(instance: Option<&str>) -> std::path::PathBuf {
     match instance {
-        Some(name) => std::path::Path::new("instances").join(name),
+        Some(name) => match validate_instance_name(name) {
+            Ok(()) => std::path::Path::new("instances").join(name),
+            Err(err) => {
+                eprintln!("Warning: {err}; using default storage root");
+                std::path::PathBuf::from(".")
+            }
+        },
         None => std::path::PathBuf::from("."),
     }
 }
@@ -223,5 +234,32 @@ pub fn create_storage(instance: Option<&str>) -> Box<dyn Storage> {
     {
         let _ = instance;
         Box::new(WebStorage)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::instance_root;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn instance_root_defaults_when_unnamed() {
+        assert_eq!(instance_root(None), PathBuf::from("."));
+    }
+
+    #[test]
+    fn instance_root_namespaces_valid_name() {
+        assert_eq!(
+            instance_root(Some("alpha")),
+            Path::new("instances").join("alpha")
+        );
+    }
+
+    #[test]
+    fn instance_root_rejects_traversal() {
+        // A name that would escape `instances/` must fall back to the default
+        // root, never produce a traversing path.
+        assert_eq!(instance_root(Some("../../tmp")), PathBuf::from("."));
+        assert_eq!(instance_root(Some("a/b")), PathBuf::from("."));
     }
 }
