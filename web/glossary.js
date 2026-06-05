@@ -64,6 +64,7 @@
                 "The view frustum is the truncated pyramid of space the camera can actually see — bounded by the screen edges, a near plane just in front of the lens, and a far plane in the distance. Anything outside that pyramid will never appear in the final image.",
                 "Frustum culling is the optimisation of checking, before drawing, whether an object lies inside the frustum at all — and skipping it entirely if not. There’s no point spending GPU time on a forest behind the camera or a hill off to the side.",
                 "FloraForge tests each chunk’s bounding box against the frustum every frame and only submits the ones that survive, for terrain, plants, and water alike. In a wide-open world where most chunks are off-screen at any moment, this is one of the largest single savings the renderer makes.",
+                "The word “frustum” is Latin for a piece, bit, or morsel — something broken or cut off. Geometers borrowed it for the shape you get when you slice the top off a cone or pyramid with a cut parallel to its base, leaving a solid with its tip removed. A camera’s view is exactly that: a pyramid with its point at the lens, its tip lopped off by the near plane and its base capped by the far plane. (The plural, if you ever need it, is “frusta.”)",
             ],
         },
         "bind-group": {
