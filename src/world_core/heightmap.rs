@@ -116,65 +116,96 @@ impl Heightmap {
     /// The world is sampled one point per chunk centre — the same resolution the
     /// full-world map (M) classifies land/water at, so the chosen cell matches
     /// what the player sees on the map. A chunk is "land" when its centre height
-    /// is at or above `sea_level`. Among all land chunks that border a water
-    /// chunk (4-neighbourhood, with world wrap), the one nearest the world
-    /// centre is chosen; then we step from that chunk's centre toward the water
-    /// and stop just shy of the waterline so the spawn sits right on the shore.
-    /// Returns `None` only if the world has no coastline at all.
+    /// is at or above `sea_level`. We sweep outward from the world centre in
+    /// square rings and stop at the first ring that contains a land chunk
+    /// bordering water (4-neighbourhood, with world wrap), keeping the cell
+    /// nearest the centre within that ring — so the common case touches only a
+    /// handful of cells instead of the whole world. Chunk-centre heights are
+    /// cached so a neighbour shared between cells is never sampled twice. Having
+    /// picked the cell, we step from its centre toward the water and stop just
+    /// shy of the waterline so the spawn sits right on the shore. Returns `None`
+    /// only if the world has no coastline at all.
     pub fn find_coastal_spawn(&self, sea_level: f32) -> Option<CoastalSpawn> {
         use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
+        use std::collections::HashMap;
 
         let n = WORLD_SIZE_CHUNKS;
-        let centre_chunk = (n as f32 - 1.0) * 0.5;
         let chunk_centre = |c: i32| (c as f32 + 0.5) * CHUNK_SIZE_METERS;
-
-        // Land/water at every chunk centre, computed once so the coastline scan
-        // is a cheap array lookup instead of re-sampling per neighbour.
-        let mut land = vec![false; (n * n) as usize];
-        for cz in 0..n {
-            for cx in 0..n {
-                let h = self.sample_height(chunk_centre(cx), chunk_centre(cz));
-                land[(cz * n + cx) as usize] = h >= sea_level;
-            }
-        }
-        let is_land = |cx: i32, cz: i32| land[(cz * n + cx) as usize];
+        // Ring origin: the chunk nearest the world centre.
+        let cc = n / 2;
 
         const NEIGHBOURS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-        // best = (distance² to world centre, chunk x, chunk z, water dir)
-        let mut best: Option<(f32, i32, i32, (f32, f32))> = None;
-        for cz in 0..n {
-            for cx in 0..n {
-                if !is_land(cx, cz) {
-                    continue;
+
+        // best = (distance² to centre, chunk x, chunk z, water dir)
+        let best: Option<(f32, i32, i32, (f32, f32))> = {
+            // Cache one height sample per chunk centre (keyed by wrapped coord)
+            // so neighbour checks never re-sample the expensive noise field.
+            let mut height_cache: HashMap<(i32, i32), f32> = HashMap::new();
+            let mut height = |cx: i32, cz: i32| -> f32 {
+                let key = (cx.rem_euclid(n), cz.rem_euclid(n));
+                *height_cache
+                    .entry(key)
+                    .or_insert_with(|| self.sample_height(chunk_centre(key.0), chunk_centre(key.1)))
+            };
+
+            let mut found = None;
+            // Rings up to n/2 cover the whole (wrapping) world.
+            for r in 0..=(n / 2) {
+                let mut best_in_ring: Option<(f32, i32, i32, (f32, f32))> = None;
+                // Offsets whose Chebyshev distance from the centre is exactly r.
+                let mut ring: Vec<(i32, i32)> = Vec::new();
+                if r == 0 {
+                    ring.push((0, 0));
+                } else {
+                    for ox in -r..=r {
+                        ring.push((ox, -r));
+                        ring.push((ox, r));
+                    }
+                    for oz in (-r + 1)..=(r - 1) {
+                        ring.push((-r, oz));
+                        ring.push((r, oz));
+                    }
                 }
-                // Face the single deepest adjacent water chunk (a cardinal
-                // direction, so the walk below heads at real water rather than a
-                // diagonal land corner) for the most open ocean view.
-                let mut water_dir: Option<(f32, f32)> = None;
-                let mut deepest = f32::MAX;
-                for (dx, dz) in NEIGHBOURS {
-                    let nx = (cx + dx).rem_euclid(n);
-                    let nz = (cz + dz).rem_euclid(n);
-                    if is_land(nx, nz) {
+
+                for (ox, oz) in ring {
+                    let cx = cc + ox;
+                    let cz = cc + oz;
+                    if height(cx, cz) < sea_level {
+                        continue; // water cell — spawn must be on land
+                    }
+                    // Face the single deepest adjacent water chunk (a cardinal
+                    // direction, so the walk below heads at real water rather
+                    // than a diagonal land corner) for the most open ocean view.
+                    let mut water_dir: Option<(f32, f32)> = None;
+                    let mut deepest = f32::MAX;
+                    for (dx, dz) in NEIGHBOURS {
+                        let nh = height(cx + dx, cz + dz);
+                        if nh < sea_level && nh < deepest {
+                            deepest = nh;
+                            water_dir = Some((dx as f32, dz as f32));
+                        }
+                    }
+                    let Some(dir) = water_dir else {
                         continue;
-                    }
-                    let h = self.sample_height(chunk_centre(nx), chunk_centre(nz));
-                    if h < deepest {
-                        deepest = h;
-                        water_dir = Some((dx as f32, dz as f32));
+                    };
+                    let dist2 = (ox * ox + oz * oz) as f32;
+                    if best_in_ring.as_ref().is_none_or(|(bd, ..)| dist2 < *bd) {
+                        best_in_ring = Some((dist2, cx.rem_euclid(n), cz.rem_euclid(n), dir));
                     }
                 }
-                let Some(dir) = water_dir else {
-                    continue;
-                };
-                let ddx = cx as f32 - centre_chunk;
-                let ddz = cz as f32 - centre_chunk;
-                let dist2 = ddx * ddx + ddz * ddz;
-                if best.as_ref().is_none_or(|(bd, ..)| dist2 < *bd) {
-                    best = Some((dist2, cx, cz, dir));
+
+                // Stop at the first ring that has a coastline. A cell one ring
+                // further out could be a hair closer in Euclidean terms (a
+                // straight edge beating this ring's diagonal corner), but that
+                // sub-ring difference doesn't matter for a spawn — this keeps the
+                // scan to the centremost handful of cells.
+                if best_in_ring.is_some() {
+                    found = best_in_ring;
+                    break;
                 }
             }
-        }
+            found
+        };
 
         let (_, cx, cz, (ux, uz)) = best?;
 
@@ -193,7 +224,9 @@ impl Heightmap {
             }
         }
 
-        let ground = self.sample_height(sx, sz).max(sea_level);
+        // The walk only ever keeps points on land, so this is a genuine
+        // above-water terrain height (no clamping needed).
+        let ground = self.sample_height(sx, sz);
         Some(CoastalSpawn {
             x: sx,
             z: sz,
