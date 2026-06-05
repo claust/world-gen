@@ -134,6 +134,12 @@ pub struct AppState {
     loading_map_buf: Vec<u8>,
     /// `done` count at the last map upload, to skip rebuilds when nothing changed.
     loading_map_done: usize,
+    /// Full-world biome map retained after generation for the `M`-key map overlay.
+    /// Adopted from `loading_map_tex` when the build finishes, so it covers every
+    /// canonical chunk — not just the streamed-in ones in `world.chunks()`.
+    world_map_tex: Option<egui::TextureHandle>,
+    /// Whether the full-world map overlay (toggled with `M`) is currently shown.
+    map_open: bool,
     /// Handle to the background world-generation worker (native only). Polled each
     /// frame; dropped (detaching the thread) if the user leaves the loading screen.
     #[cfg(not(target_arch = "wasm32"))]
@@ -253,6 +259,8 @@ impl AppState {
             loading_map_tex: None,
             loading_map_buf: Vec::new(),
             loading_map_done: 0,
+            world_map_tex: None,
+            map_open: false,
             world_gen_job: None,
             thumbnail_renderer: None,
             blur_pass,
@@ -341,6 +349,8 @@ impl AppState {
             loading_map_tex: None,
             loading_map_buf: Vec::new(),
             loading_map_done: 0,
+            world_map_tex: None,
+            map_open: false,
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
@@ -407,6 +417,18 @@ impl AppState {
 
     fn is_on_herbarium(&self) -> bool {
         matches!(self.screen, Screen::Herbarium)
+    }
+
+    /// Toggle the full-world map overlay (`M`). Releases the cursor while open and
+    /// recaptures it on close, mirroring the config panel. Only meaningful during
+    /// play; callers gate on the active screen before invoking this.
+    fn toggle_map_overlay(&mut self) {
+        self.map_open = !self.map_open;
+        if self.map_open {
+            self.release_cursor();
+        } else {
+            self.capture_cursor();
+        }
     }
 
     fn return_to_menu(&mut self) {
@@ -683,6 +705,11 @@ impl AppState {
                     self.capture_cursor();
                 }
                 self.loading_state = None;
+                // Adopt the finished biome map for the in-game map overlay (M key)
+                // before releasing loading state. The refresh guarantees the texture
+                // reflects the final (fully-generated) cells even on a fast build.
+                self.update_loading_map_texture();
+                self.world_map_tex = self.loading_map_tex.take();
                 // Release the generation-visualization resources now that we're
                 // in-game; they're rebuilt fresh on the next load.
                 self.world_gen_progress = None;
@@ -1452,7 +1479,8 @@ impl AppState {
                 || is_loading
                 || is_herbarium
                 || self.config_panel.is_visible()
-                || is_editor;
+                || is_editor
+                || self.map_open;
             if show_egui {
                 // Refresh the biome map texture from the worker's live progress
                 // before egui runs (needs `ctx` + `&mut self`, which the run
@@ -1504,6 +1532,15 @@ impl AppState {
                         }
                         Screen::Playing => {
                             self.config_panel.ui(ctx, &mut self.ui_registry);
+                            if self.map_open {
+                                render_map_ui(
+                                    ctx,
+                                    self.camera.position.x,
+                                    self.camera.position.z,
+                                    self.camera.yaw,
+                                    self.world_map_tex.as_ref(),
+                                );
+                            }
                         }
                         Screen::PlantEditor => {
                             if let Some(ea) = self.plant_editor_panel.ui(ctx, &mut self.ui_registry)
@@ -1755,6 +1792,116 @@ fn render_loading_ui(
                     egui::ProgressBar::new(frac)
                         .desired_width(map_side)
                         .animate(true),
+                );
+            });
+        });
+}
+
+/// The full-world map overlay (toggled with `M`): a dimmed modal showing the
+/// retained biome map of every canonical chunk, with the player drawn as an arrow
+/// at their wrapped world position pointing along the camera heading. Static view
+/// — no panning or interaction; `M`/`Esc` closes it (handled by the event loop).
+fn render_map_ui(
+    ctx: &egui::Context,
+    cam_x: f32,
+    cam_z: f32,
+    cam_yaw: f32,
+    map_tex: Option<&egui::TextureHandle>,
+) {
+    use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
+    use egui::{
+        Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Shape, Stroke, StrokeKind,
+    };
+
+    let world_size_m = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(Color32::from_black_alpha(190)))
+        .show(ctx, |ui| {
+            let available = ui.available_size();
+            // Square map (the world is square) at ~80% of the smaller viewport
+            // dimension, leaving room for the title above and the hint below.
+            let map_side = (available.x.min(available.y) * 0.8).clamp(200.0, 900.0);
+            let top_pad = ((available.y - map_side) * 0.5 - 48.0).max(16.0);
+            ui.add_space(top_pad);
+
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("World Map")
+                        .size(26.0)
+                        .strong()
+                        .color(Color32::from_rgb(232, 240, 247)),
+                );
+                ui.add_space(12.0);
+
+                let (rect, _resp) =
+                    ui.allocate_exact_size(egui::vec2(map_side, map_side), Sense::hover());
+                if ui.is_rect_visible(rect) {
+                    let painter = ui.painter_at(rect);
+                    painter.rect_filled(
+                        rect,
+                        CornerRadius::same(8),
+                        Color32::from_black_alpha(150),
+                    );
+
+                    match map_tex {
+                        Some(tex) => {
+                            painter.image(
+                                tex.id(),
+                                rect,
+                                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                        }
+                        None => {
+                            painter.text(
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                "Map unavailable",
+                                FontId::proportional(18.0),
+                                Color32::from_white_alpha(160),
+                            );
+                        }
+                    }
+
+                    // Player marker: an arrow at the wrapped world position pointing
+                    // along the camera heading. World +x → screen right and world +z
+                    // → screen down (row index grows with z), so the on-screen heading
+                    // angle is `yaw` directly.
+                    let u = cam_x.rem_euclid(world_size_m) / world_size_m;
+                    let v = cam_z.rem_euclid(world_size_m) / world_size_m;
+                    let center = egui::pos2(
+                        rect.left() + u * rect.width(),
+                        rect.top() + v * rect.height(),
+                    );
+                    let dir = egui::vec2(cam_yaw.cos(), cam_yaw.sin());
+                    let perp = egui::vec2(-dir.y, dir.x);
+                    let s = (map_side * 0.018).clamp(7.0, 16.0);
+                    let tip = center + dir * s;
+                    let back = center - dir * (s * 0.55);
+                    let left = back + perp * (s * 0.7);
+                    let right = back - perp * (s * 0.7);
+                    // Bright fill with a dark outline so the marker reads over any
+                    // biome color underneath it.
+                    painter.add(Shape::convex_polygon(
+                        vec![tip, left, right],
+                        Color32::from_rgb(255, 64, 64),
+                        Stroke::new(2.0, Color32::from_black_alpha(220)),
+                    ));
+
+                    painter.rect_stroke(
+                        rect,
+                        CornerRadius::same(8),
+                        Stroke::new(1.0, Color32::from_white_alpha(40)),
+                        StrokeKind::Inside,
+                    );
+                }
+
+                ui.add_space(14.0);
+                ui.label(
+                    RichText::new("M / Esc to close")
+                        .font(FontId::monospace(13.0))
+                        .color(Color32::from_white_alpha(150)),
                 );
             });
         });
