@@ -20,6 +20,9 @@ opt-level = 3
 
 [dependencies]
 anyhow = "1.0"
+# Pure-Rust Brotli (no C deps, builds on wasm) — compresses the base-world
+# snapshot (`world_base.bin`). See `world_runtime::plant_world` base codec.
+brotli = "8"
 bytemuck = { version = "1.16", features = ["derive"] }
 egui = "0.33"
 gltf = "1"

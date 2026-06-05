@@ -169,8 +169,8 @@ pub const BASE_WORLD_URL: &str = match option_env!("WORLD_BASE_URL") {
 
 /// Upper bound on a downloaded base-world body, to avoid an unbounded allocation
 /// from a misbehaving or hostile server. A real snapshot of the default world is
-/// ~190 MiB (one byte pair per plant across ~14M plants), so this leaves headroom
-/// while still capping a runaway response.
+/// ~31 MiB (Brotli-compressed columnar plant data across ~14M plants), so this
+/// leaves ample headroom while still capping a runaway response.
 #[cfg(not(target_arch = "wasm32"))]
 const BASE_WORLD_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
