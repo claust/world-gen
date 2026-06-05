@@ -202,17 +202,30 @@ async function cmdLaunch(name: string, noBuild: boolean, extra: string[]): Promi
   process.on("SIGINT", () => forward("SIGINT"));
   process.on("SIGTERM", () => forward("SIGTERM"));
 
-  // Race the port log against early exit (e.g. bind failure or a crash).
-  // Race the port log against early exit (e.g. bind failure or a crash).
+  // Race the port log against early exit (crash/bind failure) and a timeout in
+  // case the log format ever changes and the port line never arrives.
+  const PORT_TIMEOUT_MS = 15_000;
+  let timer: ReturnType<typeof setTimeout>;
+  const portTimeout = new Promise<number>((resolve) => {
+    timer = setTimeout(() => resolve(-1), PORT_TIMEOUT_MS);
+  });
   const port = await Promise.race([
     portFound,
     proc.exited.then(() => -1),
-    new Promise<number>((resolve) => setTimeout(() => resolve(-1), 15_000)),
+    portTimeout,
   ]);
+  clearTimeout(timer!);
 
   if (port < 0) {
+    // Either the game already exited, or it's still running but never logged
+    // the port (timeout). Kill it so it doesn't linger as an orphan holding a
+    // port with no registry entry — and so the streams close and `teeing`
+    // below can resolve instead of hanging on the still-open pipes.
+    proc.kill();
     await teeing;
-    console.error("failed to detect debug API port from startup logs (game may have exited or logging format changed)");
+    console.error(
+      "failed to detect debug API port from startup logs (game exited, or its logging format changed)",
+    );
     return proc.exitCode ?? 1;
   }
 
