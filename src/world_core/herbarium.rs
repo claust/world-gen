@@ -92,6 +92,28 @@ pub struct Herbarium {
     pub plants: Vec<HerbariumEntry>,
 }
 
+impl Herbarium {
+    /// Stable 64-bit hash of the inputs that determine base-world generation:
+    /// this herbarium plus the game config (which carries the seed, heightmap,
+    /// and biome rules). Used as the validity key for the cached base-world
+    /// snapshot, so editing any generation rule invalidates a stale cache.
+    ///
+    /// Both types serialize to a deterministic, field-ordered byte image (no
+    /// `HashMap`s), so the same inputs always hash the same across runs of the
+    /// same build.
+    pub fn generation_key(&self, config: &super::config::GameConfig) -> u64 {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Ok(bytes) = serde_json::to_vec(self) {
+            hasher.write(&bytes);
+        }
+        if let Ok(bytes) = serde_json::to_vec(config) {
+            hasher.write(&bytes);
+        }
+        hasher.finish()
+    }
+}
+
 /// A deduplicated, indexed view of the herbarium for world generation.
 /// Each species appears once; `species_index` values in `PlantInstance` refer
 /// to indices in `species`.
