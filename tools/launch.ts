@@ -35,7 +35,11 @@ import {
 import { join } from "node:path";
 
 const INSTANCES_ROOT = "instances";
-const BIN = "target/release/world-gen";
+// Cargo appends .exe on Windows; match it so the launcher finds the binary there.
+const BIN =
+  process.platform === "win32"
+    ? "target/release/world-gen.exe"
+    : "target/release/world-gen";
 // Assets seeded into a fresh instance dir so it starts from the repo's current
 // tuned state instead of the game's built-in defaults. Keys match storage keys.
 const SEED_ASSETS = ["herbarium.json", "config.json"];
@@ -77,21 +81,21 @@ function listInstances(): Array<InstanceMeta & { alive: boolean }> {
     try {
       meta = JSON.parse(readFileSync(file, "utf8"));
     } catch {
-      rmSync(file, { force: true });
+      rmSync(file, { force: true, recursive: true });
       continue;
     }
     // The file is on disk and may be corrupted or hand-edited; a non-numeric
     // pid would make isAlive() throw and crash `list`/`launch`. Treat any
     // record without a valid pid as a dead/stale entry and prune it.
     if (typeof meta.pid !== "number" || !Number.isInteger(meta.pid)) {
-      rmSync(file, { force: true });
+      rmSync(file, { force: true, recursive: true });
       continue;
     }
     const alive = isAlive(meta.pid);
     if (!alive) {
       // Stale record from a crashed/closed instance — prune it. The state dir
       // (save/config/captures) is left intact so the world can be resumed.
-      rmSync(file, { force: true });
+      rmSync(file, { force: true, recursive: true });
       continue;
     }
     out.push({ ...meta, alive });
@@ -250,7 +254,7 @@ async function cmdLaunch(name: string, noBuild: boolean, extra: string[]): Promi
   await proc.exited;
   await teeing;
   // Instance is gone — drop the runtime record (keep the state dir).
-  rmSync(metaPath(name), { force: true });
+  rmSync(metaPath(name), { force: true, recursive: true });
   return proc.exitCode ?? 0;
 }
 
