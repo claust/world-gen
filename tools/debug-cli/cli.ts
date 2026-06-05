@@ -318,13 +318,16 @@ function apiForInstance(name: string): string {
     die(`invalid instance name '${name}' (use letters, digits, '_' or '-')`);
   }
   const file = `instances/${name}/instance.json`;
-  let meta: { api?: string };
+  let meta: { api?: unknown };
   try {
     meta = JSON.parse(readFileSync(file, "utf8"));
   } catch {
     die(`no instance '${name}' found (expected ${file}) — is it running?`);
   }
-  if (!meta.api) die(`instance '${name}' has no api url in ${file}`);
+  // Guard against a corrupt/hand-edited registry: api must be a non-empty string.
+  if (typeof meta.api !== "string" || meta.api.length === 0) {
+    die(`instance '${name}' has no valid api url in ${file}`);
+  }
   return meta.api;
 }
 

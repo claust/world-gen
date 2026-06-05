@@ -149,6 +149,9 @@ async function tee(
       buf = buf.slice(nl + 1);
     }
   }
+  // Flush any bytes the decoder held back (an incomplete multibyte sequence at
+  // a chunk boundary) so the final line isn't truncated.
+  buf += decoder.decode();
   if (buf) onLine(buf);
 }
 
@@ -243,7 +246,17 @@ async function cmdLaunch(name: string, noBuild: boolean, extra: string[]): Promi
     capturesDir,
     startedAt: new Date().toISOString(),
   };
-  writeFileSync(metaPath(name), JSON.stringify(meta, null, 2));
+  // Don't let a write failure (permissions, disk full) crash the launcher and
+  // orphan the running game: warn, note that discovery won't work for it, and
+  // keep managing the child below (signal forwarding + cleanup still apply).
+  try {
+    writeFileSync(metaPath(name), JSON.stringify(meta, null, 2));
+  } catch (err) {
+    console.error(
+      `warning: failed to write registry ${metaPath(name)}: ${(err as Error).message}\n` +
+        `  the game is running on ${api} but won't be discoverable by --name`,
+    );
+  }
 
   // Machine-readable handshake line so a calling LLM/tool learns the port.
   console.log(`[launch] ready ${JSON.stringify(meta)}`);
@@ -275,8 +288,16 @@ async function main(): Promise<void> {
   let name = "";
   let noBuild = false;
   for (let i = 0; i < head.length; i++) {
-    if (head[i] === "--name") name = head[++i] ?? "";
-    else if (head[i] === "--no-build") noBuild = true;
+    if (head[i] === "--name") {
+      const value = head[++i];
+      // Require a real value — don't silently swallow the next flag (e.g.
+      // `--name --no-build`) or fall through to a random name on a bare --name.
+      if (value === undefined || value.startsWith("--")) {
+        console.error("--name requires a value");
+        process.exit(1);
+      }
+      name = value;
+    } else if (head[i] === "--no-build") noBuild = true;
     else {
       console.error(`unknown argument: ${head[i]}`);
       process.exit(1);
