@@ -110,16 +110,16 @@ impl Default for HeightmapConfig {
     fn default() -> Self {
         Self {
             continental: NoiseLayer {
-                frequency: 0.0013,
-                amplitude: 140.0,
+                frequency: 0.0001,
+                amplitude: 180.0,
             },
             ridge: NoiseLayer {
-                frequency: 0.0032,
-                amplitude: 65.0,
+                frequency: 0.0009,
+                amplitude: 45.0,
             },
             detail: NoiseLayer {
                 frequency: 0.018,
-                amplitude: 10.0,
+                amplitude: 6.0,
             },
             moisture_base_frequency: 0.0019,
             moisture_variation_frequency: 0.0095,
