@@ -115,6 +115,10 @@ pub struct AppState {
     captures_dir: std::path::PathBuf,
     #[cfg(not(target_arch = "wasm32"))]
     asset_watcher: Option<AssetWatcher>,
+    /// Ambient sound (procedural surf + birdsong). `None` if no audio device is
+    /// available; native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    audio: Option<crate::audio::AudioSystem>,
     egui_bridge: EguiBridge,
     egui_pass: EguiPass,
     config_panel: ConfigPanel,
@@ -251,6 +255,7 @@ impl AppState {
             screenshot_pending: None,
             captures_dir,
             asset_watcher,
+            audio: crate::audio::AudioSystem::new(),
             benchmark,
             update_cpu_ms: 0.0,
             egui_bridge,
@@ -991,6 +996,14 @@ impl AppState {
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
         self.elapsed_seconds += dt;
 
+        // Ambient sound only plays in the world; pause it on every other screen.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.is_loading() || self.is_on_menu() || self.is_on_herbarium() || self.is_on_editor() {
+            if let Some(audio) = &self.audio {
+                audio.pause();
+            }
+        }
+
         if self.is_loading() {
             self.update_menu(dt);
             self.tick_loading();
@@ -1051,6 +1064,18 @@ impl AppState {
         world.update(sim_dt, self.camera.position);
         self.world_renderer
             .sync_chunks(&self.gpu.device, &self.gpu.queue, world.chunks());
+
+        // Drive the ambient sound mix from the camera's surroundings.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(audio) = self.audio.as_mut() {
+            audio.update(
+                sim_dt,
+                self.camera.position,
+                world.chunks(),
+                self.config.sea_level,
+                &self.config.audio,
+            );
+        }
 
         let aspect = self.gpu.aspect();
         let view_proj = self.camera.view_projection(aspect);
