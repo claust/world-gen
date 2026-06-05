@@ -72,7 +72,7 @@ bun tools/debug-cli/cli.ts move --key w --duration 500               # move came
 If the debug API is on a non-default port, pass `--api http://127.0.0.1:9000`.
 
 ### Debug In VS Code (`F5`)
-- Open this folder (`/Users/claus/Repos/world-gen`) as the workspace root.
+- Open this folder (`/world-gen`) as the workspace root.
 - Select launch config `Debug FloraForge`.
 - Press `F5`.
 
