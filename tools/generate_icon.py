@@ -1,16 +1,15 @@
 """Generate the FloraForge macOS app icon.
 
 Flat reproduction of the FloraForge brand mark / favicon: a stacked two-tier
-conifer in bright "forge green" with a brown trunk on a solid dark-green tile.
-No gradients, glow, or shading — flat fills, matching the favicon exactly. The
-favicon geometry (viewBox 0..64) is the source of truth, scaled up to a crisp
-1024px master and supersampled for anti-aliased edges.
+conifer in bright "forge green" on a solid dark-green tile. No gradients, glow,
+or shading — flat fills, matching the favicon exactly. The favicon geometry
+(viewBox 0..64) is the source of truth, scaled up to a crisp 1024px master and
+supersampled for anti-aliased edges.
 
 Favicon reference (web/index.html):
     rect 64x64 rx16            fill #0b2010   (dark green tile)
     upper triangle (32,12)(44,34)(20,34)      fill #3ecf6e
     lower triangle (32,24)(48,52)(16,52)      fill #3ecf6e
-    trunk rect x29 y34 w6 h18                 fill #5c4033
 """
 
 from PIL import Image, ImageDraw
@@ -27,7 +26,6 @@ CORNER_RADIUS = 0.225  # fraction of the tile
 
 # Brand palette (from web/index.html) — flat fills, no gradients.
 GREEN = (62, 207, 110)  # #3ecf6e — forge green canopy
-TRUNK = (92, 64, 51)  # #5c4033 — brown trunk
 BG = (11, 32, 16)  # #0b2010 — dark green tile
 
 
@@ -37,11 +35,7 @@ def scaled(points, size):
 
 
 def draw_tree(draw, size):
-    """Two stacked canopy triangles + trunk, per the favicon geometry."""
-    # Trunk first so the canopy overlaps it cleanly.
-    trunk = scaled([(29, 34), (35, 34), (35, 52), (29, 52)], size)
-    draw.polygon(trunk, fill=TRUNK)
-
+    """Two stacked canopy triangles, per the favicon geometry."""
     upper = scaled([(32, 12), (44, 34), (20, 34)], size)
     lower = scaled([(32, 24), (48, 52), (16, 52)], size)
     for tri in (lower, upper):
