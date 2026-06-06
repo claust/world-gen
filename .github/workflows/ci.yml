@@ -55,7 +55,7 @@ jobs:
         run: cargo clippy --target wasm32-unknown-unknown --lib -- -D warnings
 
       - name: Build executable (native, release)
-        run: cargo build --release --bin world-gen
+        run: cargo build --release --bin FloraForge
 
       - name: Build wasm (release)
         run: cargo build --release --target wasm32-unknown-unknown --lib
