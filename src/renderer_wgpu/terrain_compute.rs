@@ -4,6 +4,11 @@ use wgpu::util::DeviceExt;
 
 use crate::world_core::chunk::{CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
 
+/// Floats written per terrain vertex by the compute shader: position(3),
+/// normal(3), biome_data(3), river wetness(1). The render pipeline's vertex
+/// layout stride must match (`TERRAIN_VERTEX_FLOATS * 4` bytes).
+pub const TERRAIN_VERTEX_FLOATS: usize = 10;
+
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
 struct ChunkParams {
@@ -74,6 +79,16 @@ impl TerrainComputePipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -125,6 +140,7 @@ impl TerrainComputePipeline {
         coord: IVec2,
         heights: &[f32],
         moisture: &[f32],
+        river: &[f32],
     ) -> GpuTerrainChunk {
         let side = CHUNK_GRID_RESOLUTION;
         let total = side * side;
@@ -155,8 +171,14 @@ impl TerrainComputePipeline {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // 9 floats per vertex (position, normal, color) × 4 bytes
-        let output_size = (total * 9 * 4) as u64;
+        let river_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("terrain-gen-river"),
+            contents: bytemuck::cast_slice(river),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // position, normal, biome_data, river wetness × 4 bytes
+        let output_size = (total * TERRAIN_VERTEX_FLOATS * 4) as u64;
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("terrain-gen-output"),
             size: output_size,
@@ -183,6 +205,10 @@ impl TerrainComputePipeline {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: river_buffer.as_entire_binding(),
                 },
             ],
         });

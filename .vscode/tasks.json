@@ -8,7 +8,7 @@
       "args": [
         "build",
         "--bin",
-        "world-gen"
+        "FloraForge"
       ],
       "group": "build",
       "problemMatcher": [
@@ -23,7 +23,7 @@
         "build",
         "--release",
         "--bin",
-        "world-gen"
+        "FloraForge"
       ],
       "group": "build",
       "problemMatcher": [

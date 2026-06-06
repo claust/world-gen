@@ -38,8 +38,8 @@ const INSTANCES_ROOT = "instances";
 // Cargo appends .exe on Windows; match it so the launcher finds the binary there.
 const BIN =
   process.platform === "win32"
-    ? "target/release/world-gen.exe"
-    : "target/release/world-gen";
+    ? "target/release/FloraForge.exe"
+    : "target/release/FloraForge";
 // Assets seeded into a fresh instance dir so it starts from the repo's current
 // tuned state instead of the game's built-in defaults. Keys match storage keys.
 const SEED_ASSETS = ["herbarium.json", "config.json"];

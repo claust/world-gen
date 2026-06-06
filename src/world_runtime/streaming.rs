@@ -8,6 +8,7 @@ use super::plant_world::PlantWorld;
 use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::PlantRegistry;
+use crate::world_core::rivers::RiverField;
 
 pub struct StreamingStats {
     pub loaded_chunks: usize,
@@ -28,6 +29,7 @@ pub struct StreamingWorld {
     thread_count: usize,
     config: Arc<GameConfig>,
     registry: Arc<PlantRegistry>,
+    rivers: Arc<RiverField>,
 }
 
 impl StreamingWorld {
@@ -37,9 +39,15 @@ impl StreamingWorld {
         threads: usize,
         config: Arc<GameConfig>,
         registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
     ) -> anyhow::Result<Self> {
-        let loader =
-            PlatformLoader::new_loader(seed, threads, Arc::clone(&config), Arc::clone(&registry))?;
+        let loader = PlatformLoader::new_loader(
+            seed,
+            threads,
+            Arc::clone(&config),
+            Arc::clone(&registry),
+            Arc::clone(&rivers),
+        )?;
 
         // No synchronous chunk generation in this constructor — all chunks (including
         // the center) are dispatched via update(); native loaders use background
@@ -53,6 +61,7 @@ impl StreamingWorld {
             thread_count: threads,
             config,
             registry,
+            rivers,
         })
     }
 
@@ -100,16 +109,21 @@ impl StreamingWorld {
 
     pub fn reload_config(&mut self, config: &GameConfig) {
         let new_config = Arc::new(config.clone());
+        // River params live in the config, so re-solve the field before
+        // rebuilding the loader that bakes it into new chunks.
+        let rivers = Arc::new(RiverField::generate(self.seed, config));
         if let Ok(loader) = PlatformLoader::new_loader(
             self.seed,
             self.thread_count,
             Arc::clone(&new_config),
             Arc::clone(&self.registry),
+            Arc::clone(&rivers),
         ) {
             self.loaded.clear();
             self.loader = loader;
             self.load_radius = config.world.load_radius;
             self.config = new_config;
+            self.rivers = rivers;
         }
     }
 

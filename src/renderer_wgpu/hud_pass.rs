@@ -217,6 +217,7 @@ impl HudPass {
         camera_yaw: f32,
         hour: f32,
         fps: f32,
+        plant_count: usize,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -232,35 +233,42 @@ impl HudPass {
 
         let mut verts: Vec<HudVertex> = Vec::with_capacity(512);
 
-        // --- Coordinate text (top-left) ---
+        // --- Info panel (top-left): coordinates, FPS, plant count ---
         let scale = 2.0;
-        let pad = 10.0;
         let line_h = hud_font::GLYPH_H as f32 * scale + 4.0;
-        let text_color = [1.0, 1.0, 1.0, 0.9];
+        let text_color = [1.0, 1.0, 1.0, 0.95];
 
-        let line_x = format!("X: {:.1}m", camera_pos.x);
-        let line_y = format!("Y: {:.1}m", camera_pos.y);
-        let line_z = format!("Z: {:.1}m", camera_pos.z);
-        let line_fps = format!("FPS: {:.0}", fps);
+        let lines = [
+            format!("X: {:.1}m", camera_pos.x),
+            format!("Y: {:.1}m", camera_pos.y),
+            format!("Z: {:.1}m", camera_pos.z),
+            format!("FPS: {:.0}", fps),
+            format!("PLANTS: {}", plant_count),
+        ];
 
-        hud_font::build_text_quads(&line_x, pad, pad, scale, text_color, &mut verts);
-        hud_font::build_text_quads(&line_y, pad, pad + line_h, scale, text_color, &mut verts);
-        hud_font::build_text_quads(
-            &line_z,
-            pad,
-            pad + line_h * 2.0,
-            scale,
-            text_color,
-            &mut verts,
-        );
-        hud_font::build_text_quads(
-            &line_fps,
-            pad,
-            pad + line_h * 3.0,
-            scale,
-            text_color,
-            &mut verts,
-        );
+        let gw = hud_font::GLYPH_W as f32 * scale;
+        let margin = 8.0; // gap between screen edge and panel
+        let inner = 10.0; // gap between panel edge and text
+        let text_x = margin + inner;
+        let text_y = margin + inner;
+
+        let max_chars = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        let panel_w = inner * 2.0 + max_chars as f32 * gw;
+        let panel_h = inner * 2.0 + lines.len() as f32 * line_h - 4.0;
+
+        // See-through background panel (pushed first so the text sits on top).
+        push_panel(&mut verts, margin, margin, panel_w, panel_h);
+
+        for (i, line) in lines.iter().enumerate() {
+            hud_font::build_text_quads(
+                line,
+                text_x,
+                text_y + i as f32 * line_h,
+                scale,
+                text_color,
+                &mut verts,
+            );
+        }
 
         // --- Compass rose (top-right) ---
         build_compass(&mut verts, camera_yaw, screen_w);
@@ -318,6 +326,29 @@ fn push_tri(verts: &mut Vec<HudVertex>, a: [f32; 2], b: [f32; 2], c: [f32; 2], c
         uv: NO_UV,
         color,
     });
+}
+
+/// Pushes a filled axis-aligned rectangle (two triangles) as a solid-color quad.
+fn push_rect(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+    push_tri(verts, [x, y], [x + w, y], [x + w, y + h], color);
+    push_tri(verts, [x, y], [x + w, y + h], [x, y + h], color);
+}
+
+/// A translucent info panel: a dark see-through fill framed by a subtle border.
+fn push_panel(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32) {
+    let border = 1.5;
+    let border_color = [0.7, 0.75, 0.8, 0.35];
+    let fill_color = [0.04, 0.06, 0.09, 0.5];
+    // Border first as a slightly larger rect, then the fill on top of it.
+    push_rect(
+        verts,
+        x - border,
+        y - border,
+        w + border * 2.0,
+        h + border * 2.0,
+        border_color,
+    );
+    push_rect(verts, x, y, w, h, fill_color);
 }
 
 fn build_compass(verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {

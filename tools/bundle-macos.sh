@@ -1,5 +1,5 @@
 #!/bin/bash
-# Bundle world-gen as a macOS .app with icon.
+# Bundle FloraForge as a macOS .app with icon.
 # Usage: ./tools/bundle-macos.sh [--release]
 
 set -euo pipefail
@@ -13,7 +13,7 @@ else
     cargo build
 fi
 
-APP_NAME="World Gen"
+APP_NAME="FloraForge"
 BUNDLE_DIR="target/${PROFILE}/${APP_NAME}.app"
 CONTENTS="${BUNDLE_DIR}/Contents"
 MACOS="${CONTENTS}/MacOS"
@@ -23,7 +23,7 @@ rm -rf "${BUNDLE_DIR}"
 mkdir -p "${MACOS}" "${RESOURCES}"
 
 # Copy binary
-cp "target/${PROFILE}/world-gen" "${MACOS}/world-gen"
+cp "target/${PROFILE}/FloraForge" "${MACOS}/FloraForge"
 
 # Copy icon
 cp "assets/icon/world-gen.icns" "${RESOURCES}/world-gen.icns"
@@ -38,9 +38,9 @@ cat > "${CONTENTS}/Info.plist" << 'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>World Gen</string>
+    <string>FloraForge</string>
     <key>CFBundleDisplayName</key>
-    <string>World Gen</string>
+    <string>FloraForge</string>
     <key>CFBundleIdentifier</key>
     <string>com.worldgen.app</string>
     <key>CFBundleVersion</key>
@@ -48,7 +48,7 @@ cat > "${CONTENTS}/Info.plist" << 'PLIST'
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleExecutable</key>
-    <string>world-gen</string>
+    <string>FloraForge</string>
     <key>CFBundleIconFile</key>
     <string>world-gen</string>
     <key>CFBundlePackageType</key>

@@ -6,7 +6,13 @@ use wgpu::util::DeviceExt;
 #[derive(Clone, Copy, Zeroable, Pod)]
 pub struct FrameUniform {
     pub view_proj: [[f32; 4]; 4],
-    pub inv_view_proj: [[f32; 4]; 4],
+    /// Inverse of the *translation-free* view-projection (camera placed at the
+    /// origin). The sky pass reconstructs view rays from this and normalizes the
+    /// result directly — no `- camera_position` subtraction. Building it without
+    /// the camera translation avoids catastrophic f32 cancellation when the
+    /// camera is far from the world origin, which otherwise makes the sky, sun,
+    /// and clouds jitter wildly while the camera moves.
+    pub inv_view_proj_no_translation: [[f32; 4]; 4],
     pub light_view_proj: [[f32; 4]; 4],
     pub camera_position: [f32; 4],
     /// x = elapsed seconds, y = hour-of-day, z = underwater submerge factor
@@ -15,6 +21,15 @@ pub struct FrameUniform {
     /// Shadow controls: x = 1/shadow_map_size (texel), y = depth bias,
     /// z = shadow strength, w = enabled (1.0 = on, 0.0 = off).
     pub shadow_params: [f32; 4],
+    /// Translation-free world→clip matrix (`proj * view_rotation`, camera at the
+    /// origin). World passes multiply it by `world_pos - camera_position` so the
+    /// large world coordinate is reduced to a small camera-relative value *before*
+    /// the projection, instead of relying on the matrix to cancel a huge camera
+    /// translation in f32. Far from the world origin that cancellation costs most
+    /// of the depth precision, which makes thin coplanar geometry (e.g. the text
+    /// painted on a sign board) z-fight and flicker as the camera pans. This is
+    /// the forward companion to [`Self::inv_view_proj_no_translation`].
+    pub view_proj_no_translation: [[f32; 4]; 4],
 }
 
 /// Shader depth bias applied when sampling the shadow map (in NDC depth units).
@@ -49,9 +64,22 @@ impl FrameUniform {
         shadow_enabled: f32,
         submerge: f32,
     ) -> Self {
+        // Strip the camera translation before inverting: `view_proj` maps
+        // world→clip with the camera at `camera_position`, so multiplying by a
+        // translate(+camera_position) on the right cancels the view's
+        // translate(-camera_position), leaving the camera at the origin. The
+        // sky pass then reconstructs ray directions from the origin, avoiding
+        // the huge-minus-huge subtraction that caused motion jitter.
+        // `view_proj * translate(+camera)` cancels the view's translate(-camera),
+        // leaving `proj * view_rotation` — the world→clip transform with the
+        // camera pinned at the origin. World passes apply it to camera-relative
+        // positions; the sky pass inverts it (below) to rebuild ray directions.
+        let view_proj_no_translation = view_proj * Mat4::from_translation(camera_position);
+        let inv_view_proj_no_translation = view_proj_no_translation.inverse();
+
         Self {
             view_proj: view_proj.to_cols_array_2d(),
-            inv_view_proj: view_proj.inverse().to_cols_array_2d(),
+            inv_view_proj_no_translation: inv_view_proj_no_translation.to_cols_array_2d(),
             light_view_proj: light_view_proj.to_cols_array_2d(),
             camera_position: [camera_position.x, camera_position.y, camera_position.z, 0.0],
             time: [elapsed, hour, submerge, 0.0],
@@ -61,6 +89,7 @@ impl FrameUniform {
                 1.0,
                 shadow_enabled,
             ],
+            view_proj_no_translation: view_proj_no_translation.to_cols_array_2d(),
         }
     }
 }

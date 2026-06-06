@@ -1,10 +1,11 @@
 struct FrameUniform {
     view_proj: mat4x4<f32>,
-    inv_view_proj: mat4x4<f32>,
+    inv_view_proj_no_translation: mat4x4<f32>,
     light_view_proj: mat4x4<f32>,
     camera_position: vec4<f32>,
     time: vec4<f32>,
     shadow_params: vec4<f32>,
+    view_proj_no_translation: mat4x4<f32>,
 };
 
 struct MaterialUniform {
@@ -83,7 +84,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     );
 
     var out: VertexOutput;
-    out.clip_position = frame.view_proj * vec4<f32>(world_pos, 1.0);
+    out.clip_position =
+        frame.view_proj_no_translation * vec4<f32>(world_pos - frame.camera_position.xyz, 1.0);
     out.world_normal = rot_normal;
     out.albedo = input.vert_color * input.inst_color.rgb;
     out.world_position = world_pos;

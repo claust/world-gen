@@ -13,7 +13,9 @@ use crate::renderer_wgpu::gpu_context::GpuContext;
 use crate::renderer_wgpu::thumbnail::ThumbnailRenderer;
 use crate::renderer_wgpu::world::WorldRenderer;
 use crate::ui::plant_editor_panel::PlantParams;
-use crate::ui::{ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, StartMenu, UiRegistry};
+use crate::ui::{
+    ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, SettingsPanel, StartMenu, UiRegistry,
+};
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::Herbarium;
 use crate::world_core::save::{CameraSave, SaveData, WorldSave};
@@ -115,9 +117,14 @@ pub struct AppState {
     captures_dir: std::path::PathBuf,
     #[cfg(not(target_arch = "wasm32"))]
     asset_watcher: Option<AssetWatcher>,
+    /// Ambient sound (procedural surf + birdsong + underwater drone). `None` if
+    /// no audio device is available; native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    audio: Option<crate::audio::AudioSystem>,
     egui_bridge: EguiBridge,
     egui_pass: EguiPass,
     config_panel: ConfigPanel,
+    settings_panel: SettingsPanel,
     plant_editor_panel: PlantEditorPanel,
     plant_editor: Option<plant_editor::PlantEditorState>,
     screen: Screen,
@@ -155,6 +162,12 @@ pub struct AppState {
     /// frame; dropped (detaching the thread) if the user leaves the loading screen.
     #[cfg(not(target_arch = "wasm32"))]
     world_gen_job: Option<WorldGenJob>,
+    /// Result slot for the async world build (wasm only). The spawned future
+    /// fetches the prebuilt base snapshot, builds the world, and parks the result
+    /// here; `tick_create_world` polls it each frame so the loading screen keeps
+    /// animating during the download.
+    #[cfg(target_arch = "wasm32")]
+    wasm_world_job: Option<std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<WorldRuntime>>>>>,
     thumbnail_renderer: Option<ThumbnailRenderer>,
     blur_pass: BlurPass,
     blur_capture_pending: bool,
@@ -251,11 +264,13 @@ impl AppState {
             screenshot_pending: None,
             captures_dir,
             asset_watcher,
+            audio: crate::audio::AudioSystem::new(),
             benchmark,
             update_cpu_ms: 0.0,
             egui_bridge,
             egui_pass,
             config_panel,
+            settings_panel: SettingsPanel::new(),
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
@@ -346,6 +361,7 @@ impl AppState {
             egui_bridge,
             egui_pass,
             config_panel,
+            settings_panel: SettingsPanel::new(),
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
@@ -367,6 +383,7 @@ impl AppState {
             loading_map_done: 0,
             world_map_tex: None,
             map_open: false,
+            wasm_world_job: None,
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
@@ -581,6 +598,10 @@ impl AppState {
         {
             self.world_gen_job = None;
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.wasm_world_job = None;
+        }
     }
 
     fn tick_loading(&mut self) {
@@ -748,11 +769,11 @@ impl AppState {
                     self.capture_cursor();
                 }
                 self.loading_state = None;
-                // Adopt the finished biome map for the in-game map overlay (M key)
-                // before releasing loading state. The refresh guarantees the texture
-                // reflects the final (fully-generated) cells even on a fast build.
-                self.update_loading_map_texture();
-                self.world_map_tex = self.loading_map_tex.take();
+                // Build the in-game map overlay (M key). Rather than reuse the
+                // blocky one-cell-per-chunk loading map, resample the world's
+                // continuous heightmap into a smooth, relief-shaded map. It's
+                // static, so this one-time build is all the overlay needs.
+                self.build_world_map_texture();
                 // Release the generation-visualization resources now that we're
                 // in-game; they're rebuilt fresh on the next load.
                 self.world_gen_progress = None;
@@ -879,27 +900,76 @@ impl AppState {
 
         #[cfg(target_arch = "wasm32")]
         {
-            // No threads on wasm: generate synchronously (blocks, as before).
-            let save_ref = if resume { self.save.as_ref() } else { None };
-            let registry = self.loading_registry.take().unwrap_or_else(|| {
-                std::sync::Arc::new(crate::world_core::herbarium::PlantRegistry::from_herbarium(
-                    &self.herbarium,
-                ))
-            });
-            let gen_key = self.herbarium.generation_key(&self.config);
-            match WorldRuntime::new(&self.config, save_ref, 1, registry, &*self.storage, gen_key) {
-                Ok(world) => {
+            // No threads on wasm. First entry: spawn an async task that downloads
+            // the prebuilt base snapshot (yielding to the browser so the loading
+            // screen keeps animating) and then builds the world. A validated
+            // download skips the multi-minute single-threaded generation; a miss
+            // still falls back to it (blocking, as before).
+            if self.wasm_world_job.is_none() {
+                let registry = self.loading_registry.take().unwrap_or_else(|| {
+                    std::sync::Arc::new(
+                        crate::world_core::herbarium::PlantRegistry::from_herbarium(
+                            &self.herbarium,
+                        ),
+                    )
+                });
+                let config = self.config.clone();
+                let save = if resume { self.save.clone() } else { None };
+                let gen_key = self.herbarium.generation_key(&self.config);
+                let slot: std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<WorldRuntime>>>> =
+                    std::rc::Rc::new(std::cell::RefCell::new(None));
+                // The task holds only a Weak ref so leaving the loading screen
+                // (`abort_loading` drops `wasm_world_job`) lets us cancel before
+                // the expensive build.
+                let weak = std::rc::Rc::downgrade(&slot);
+                self.wasm_world_job = Some(slot);
+                self.loading_started = Some(Instant::now());
+
+                wasm_bindgen_futures::spawn_local(async move {
+                    // Only a New Game downloads the base; a resume rebuilds from
+                    // its own seed without it (matching the native path).
+                    let base_bytes = if save.is_none() {
+                        crate::world_core::storage::fetch_base_world_async().await
+                    } else {
+                        None
+                    };
+                    // If the user left the loading screen during the download the
+                    // slot is gone — bail before the blocking build/generation so
+                    // we don't freeze the UI for a result nobody will read.
+                    let Some(slot) = weak.upgrade() else {
+                        return;
+                    };
+                    let result = WorldRuntime::new_web(
+                        &config,
+                        save.as_ref(),
+                        registry,
+                        base_bytes,
+                        gen_key,
+                    );
+                    *slot.borrow_mut() = Some(result);
+                });
+                return;
+            }
+
+            // Subsequent frames: poll the slot without blocking.
+            let done = self
+                .wasm_world_job
+                .as_ref()
+                .and_then(|slot| slot.borrow_mut().take());
+            match done {
+                Some(Ok(world)) => {
                     self.world = Some(world);
+                    self.wasm_world_job = None;
+                    if let Some(s) = &mut self.loading_state {
+                        s.phase = LoadingPhase::DispatchChunks;
+                        s.progress = 0.30;
+                    }
                 }
-                Err(err) => {
+                Some(Err(err)) => {
                     log::error!("failed to create world runtime: {err}");
                     self.abort_loading();
-                    return;
                 }
-            }
-            if let Some(s) = &mut self.loading_state {
-                s.phase = LoadingPhase::DispatchChunks;
-                s.progress = 0.30;
+                None => {}
             }
         }
     }
@@ -946,6 +1016,27 @@ impl AppState {
         }
     }
 
+    /// Build the static, relief-shaded world map shown by the `M`-key overlay.
+    /// Resamples the world's continuous heightmap at high resolution (smooth
+    /// coastlines, hypsometric elevation tints, flat sea, hillshade relief)
+    /// instead of reusing the blocky per-chunk loading map. Falls back to the
+    /// loading map if the world somehow isn't ready yet.
+    fn build_world_map_texture(&mut self) {
+        let res = crate::world_runtime::WORLD_MAP_RES;
+        let Some(world) = &self.world else {
+            self.update_loading_map_texture();
+            self.world_map_tex = self.loading_map_tex.take();
+            return;
+        };
+        let buf = world.render_world_map(res);
+        let image = egui::ColorImage::from_rgba_unmultiplied([res, res], &buf);
+        self.world_map_tex = Some(self.egui_bridge.ctx().load_texture(
+            "world-map",
+            image,
+            egui::TextureOptions::LINEAR,
+        ));
+    }
+
     /// Bail out of loading back to the start menu, releasing generation state.
     fn abort_loading(&mut self) {
         self.screen = Screen::StartMenu;
@@ -956,6 +1047,10 @@ impl AppState {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.world_gen_job = None;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.wasm_world_job = None;
         }
     }
 
@@ -990,6 +1085,20 @@ impl AppState {
 
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
         self.elapsed_seconds += dt;
+
+        // Ambient sound plays in the world and on the start menu (so volume
+        // changes in Settings are audible while adjusting them); it stays paused
+        // on the other non-playing screens (loading, herbarium, plant editor).
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.is_on_menu() {
+            if let Some(audio) = self.audio.as_mut() {
+                audio.update_menu(dt, &self.config.audio);
+            }
+        } else if self.is_loading() || self.is_on_herbarium() || self.is_on_editor() {
+            if let Some(audio) = &self.audio {
+                audio.pause();
+            }
+        }
 
         if self.is_loading() {
             self.update_menu(dt);
@@ -1052,6 +1161,18 @@ impl AppState {
         self.world_renderer
             .sync_chunks(&self.gpu.device, &self.gpu.queue, world.chunks());
 
+        // Drive the ambient sound mix from the camera's surroundings.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(audio) = self.audio.as_mut() {
+            audio.update(
+                sim_dt,
+                self.camera.position,
+                world.chunks(),
+                self.config.sea_level,
+                &self.config.audio,
+            );
+        }
+
         let aspect = self.gpu.aspect();
         let view_proj = self.camera.view_projection(aspect);
         let lighting = world.lighting();
@@ -1078,6 +1199,7 @@ impl AppState {
             self.camera.yaw,
             stats.hour,
             1000.0 / self.frame_time_ms.max(0.01),
+            stats.loaded_visible_plants,
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );
@@ -1118,19 +1240,6 @@ impl AppState {
 
         #[cfg(not(target_arch = "wasm32"))]
         self.publish_telemetry_if_due(&stats);
-
-        let day_speed = self.world.as_ref().unwrap().day_speed();
-        self.window.set_title(&format!(
-            "FloraForge | {:.1}ms ({:.0}fps) | chunks: {}/{} | center: {},{} | hour: {:.1} | day_speed: {:.2}",
-            self.frame_time_ms,
-            1000.0 / self.frame_time_ms.max(0.01),
-            stats.loaded_chunks,
-            stats.loaded_chunks + stats.pending_chunks,
-            stats.center_chunk.x,
-            stats.center_chunk.y,
-            stats.hour,
-            day_speed,
-        ));
     }
 
     fn update_editor(&mut self, dt: f32) {
@@ -1563,6 +1672,7 @@ impl AppState {
                 }
                 let raw_input = self.egui_bridge.take_raw_input();
                 let mut menu_action = None;
+                let mut settings_closed = false;
                 let loading_progress = self
                     .loading_state
                     .as_ref()
@@ -1577,7 +1687,20 @@ impl AppState {
                     .ctx()
                     .run(raw_input, |ctx| match self.screen {
                         Screen::StartMenu => {
-                            menu_action = self.start_menu.ui(ctx, &mut self.ui_registry);
+                            // Capture before drawing: when the settings dialog is
+                            // open it's modal, so start-menu buttons must not act
+                            // (egui z-orders mouse clicks, but the debug API's
+                            // consume_click bypasses that, so gate here too).
+                            let settings_open = self.settings_panel.is_open();
+                            let menu = self.start_menu.ui(ctx, &mut self.ui_registry);
+                            if !settings_open {
+                                menu_action = menu;
+                            }
+                            settings_closed = self.settings_panel.ui(
+                                ctx,
+                                &mut self.ui_registry,
+                                &mut self.config.audio,
+                            );
                         }
                         Screen::Loading => {
                             render_loading_ui(
@@ -1648,6 +1771,11 @@ impl AppState {
                 );
 
                 self.pending_menu_action = menu_action;
+
+                // Persist audio/settings changes once the dialog is dismissed.
+                if settings_closed {
+                    self.persist_config();
+                }
             }
         }
 
@@ -1671,6 +1799,19 @@ impl AppState {
 
         output.present();
         Ok(())
+    }
+
+    /// Write the current `GameConfig` to storage (`config.json`). Used to make
+    /// settings changes (e.g. audio volume) survive a restart.
+    fn persist_config(&self) {
+        match serde_json::to_string_pretty(&self.config) {
+            Ok(json) => {
+                if let Err(e) = self.storage.save("config", &json) {
+                    log::warn!("failed to save config: {e}");
+                }
+            }
+            Err(e) => log::warn!("failed to serialize config: {e}"),
+        }
     }
 
     fn save_game(&self) {

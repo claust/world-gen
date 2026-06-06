@@ -8,6 +8,7 @@ use crate::world_core::config::GameConfig;
 use crate::world_core::content::{ContentInput, ContentLayer};
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::layer::Layer;
+use crate::world_core::rivers::RiverField;
 use crate::world_core::terrain::TerrainLayer;
 
 pub struct ChunkGenerator {
@@ -17,9 +18,19 @@ pub struct ChunkGenerator {
 }
 
 impl ChunkGenerator {
-    pub fn new(seed: u32, config: &GameConfig, registry: Arc<PlantRegistry>) -> Self {
+    pub fn new(
+        seed: u32,
+        config: &GameConfig,
+        registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
+    ) -> Self {
         Self {
-            terrain_layer: TerrainLayer::new(seed, config.heightmap.clone(), config.sea_level),
+            terrain_layer: TerrainLayer::new(
+                seed,
+                config.heightmap.clone(),
+                config.sea_level,
+                rivers,
+            ),
             biome_layer: BiomeLayer {
                 biome_config: config.biome.clone(),
             },
@@ -50,6 +61,7 @@ mod tests {
     use crate::world_core::config::GameConfig;
     use crate::world_core::herbarium::{Herbarium, PlantRegistry};
     use crate::world_core::lifecycle::GrowthStage;
+    use crate::world_core::rivers::RiverField;
     use glam::IVec2;
     use std::sync::Arc;
 
@@ -59,8 +71,13 @@ mod tests {
 
         let config = GameConfig::default();
         let herb = Herbarium::default_seeded();
-        let generator =
-            ChunkGenerator::new(7, &config, Arc::new(PlantRegistry::from_herbarium(&herb)));
+        let rivers = Arc::new(RiverField::generate(7, &config));
+        let generator = ChunkGenerator::new(
+            7,
+            &config,
+            Arc::new(PlantRegistry::from_herbarium(&herb)),
+            rivers,
+        );
 
         // A chunk and the same chunk one full world lap east must share terrain
         // and content; only the world-space position is shifted by `L`.
@@ -104,8 +121,10 @@ mod tests {
         let herb = Herbarium::default_seeded();
         let reg_a = Arc::new(PlantRegistry::from_herbarium(&herb));
         let reg_b = Arc::new(PlantRegistry::from_herbarium(&herb));
-        let a = ChunkGenerator::new(42, &config, reg_a).generate_chunk(IVec2::new(3, -2));
-        let b = ChunkGenerator::new(42, &config, reg_b).generate_chunk(IVec2::new(3, -2));
+        let rivers = Arc::new(RiverField::generate(42, &config));
+        let a = ChunkGenerator::new(42, &config, reg_a, Arc::clone(&rivers))
+            .generate_chunk(IVec2::new(3, -2));
+        let b = ChunkGenerator::new(42, &config, reg_b, rivers).generate_chunk(IVec2::new(3, -2));
 
         assert_eq!(a.content.base_plants.len(), b.content.base_plants.len());
         assert_eq!(a.content.base_plants.len(), a.content.plants.len());

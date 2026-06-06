@@ -100,6 +100,9 @@ impl ChunkContent {
 pub struct ChunkTerrain {
     pub heights: Vec<f32>,
     pub moisture: Vec<f32>,
+    /// Per-vertex river wetness in `0..1`, parallel to `heights`. Drives the
+    /// riverbed tint in the terrain shader; `0` everywhere when rivers are off.
+    pub river: Vec<f32>,
     pub min_height: f32,
     pub max_height: f32,
     /// `true` when any vertex in this chunk is below `SEA_LEVEL`.

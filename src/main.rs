@@ -7,22 +7,6 @@
     all(target_os = "windows", not(debug_assertions)),
     windows_subsystem = "windows"
 )]
-#![allow(unexpected_cfgs)] // objc crate's msg_send! macro checks cfg(feature = "cargo-clippy")
-
-#[cfg(target_os = "macos")]
-fn set_macos_dock_icon() {
-    use objc::runtime::{Class, Object};
-    use objc::{msg_send, sel, sel_impl};
-
-    let icon_data = include_bytes!("../assets/icon/icon_1024.png");
-    unsafe {
-        let ns_data: *mut Object = msg_send![Class::get("NSData").unwrap(), dataWithBytes:icon_data.as_ptr() length:icon_data.len()];
-        let alloc: *mut Object = msg_send![Class::get("NSImage").unwrap(), alloc];
-        let ns_image: *mut Object = msg_send![alloc, initWithData: ns_data];
-        let app: *mut Object = msg_send![Class::get("NSApplication").unwrap(), sharedApplication];
-        let _: () = msg_send![app, setApplicationIconImage: ns_image];
-    }
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
@@ -63,15 +47,16 @@ fn main() -> anyhow::Result<()> {
         world_gen::world_core::storage::validate_instance_name(name)?;
         log::info!("instance name: {name}");
     }
+    let window_title = match &instance {
+        Some(name) => format!("[{name}] FloraForge"),
+        None => "FloraForge".to_string(),
+    };
 
     let event_loop = EventLoop::new()?;
 
-    #[cfg(target_os = "macos")]
-    set_macos_dock_icon();
-
     let window = Box::leak(Box::new(
         WindowBuilder::new()
-            .with_title("FloraForge")
+            .with_title(window_title)
             .with_inner_size(PhysicalSize::new(1600, 900))
             .build(&event_loop)
             .context("failed to create window")?,
@@ -173,8 +158,14 @@ fn generate_base_world(out_path: &str) -> anyhow::Result<()> {
         .unwrap_or(4);
 
     log::info!("generating base world (seed {seed}, gen_key {gen_key:#018x}, {threads} threads)…");
-    let world = PlantWorld::generate_base(seed, &config, registry, threads, None);
-    let bytes = world.serialize_base(gen_key);
+    let rivers = Arc::new(world_gen::world_core::rivers::RiverField::generate(
+        seed, &config,
+    ));
+    let world = PlantWorld::generate_base(seed, &config, registry, rivers, threads, None);
+    // This is the snapshot shipped on GitHub and downloaded by clients, so use
+    // the high download quality to minimize the download (the encode cost is
+    // paid here in CI, never on a player's machine).
+    let bytes = world.serialize_base(gen_key, PlantWorld::DOWNLOAD_QUALITY);
     std::fs::write(out_path, &bytes)?;
     log::info!(
         "wrote {out_path}: {} plants across {} chunks, {} bytes",

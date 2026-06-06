@@ -7,6 +7,7 @@ pub enum MenuAction {
     NewGame,
     ResumeGame,
     Herbarium,
+    OpenSettings,
     OpenPlantEditor(usize),
     NewPlant,
     LeaveHerbarium,
@@ -83,6 +84,17 @@ impl StartMenu {
                         || registry.consume_click("btn-herbarium")
                     {
                         action = Some(MenuAction::Herbarium);
+                    }
+
+                    ui.add_space(12.0);
+
+                    registry.register_button("btn-settings", "Settings");
+                    if ui
+                        .add_sized(button_size, theme::menu_button("Settings"))
+                        .clicked()
+                        || registry.consume_click("btn-settings")
+                    {
+                        action = Some(MenuAction::OpenSettings);
                     }
 
                     #[cfg(not(target_arch = "wasm32"))]

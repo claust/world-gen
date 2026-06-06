@@ -39,6 +39,12 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
 
+      # The audio backend (rodio → cpal → alsa-sys) links against ALSA on Linux,
+      # discovered via pkg-config. ubuntu-latest doesn't ship the dev headers, so
+      # the native clippy/build steps below would fail to link without this.
+      - name: Install system audio libraries (ALSA)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -49,7 +55,7 @@ jobs:
         run: cargo clippy --target wasm32-unknown-unknown --lib -- -D warnings
 
       - name: Build executable (native, release)
-        run: cargo build --release --bin world-gen
+        run: cargo build --release --bin FloraForge
 
       - name: Build wasm (release)
         run: cargo build --release --target wasm32-unknown-unknown --lib

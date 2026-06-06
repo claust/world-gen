@@ -111,6 +111,23 @@ impl WorldRuntime {
         Ok(world)
     }
 
+    /// Build a world in the browser from an already-downloaded base snapshot.
+    /// Unlike [`new`], which reads `world_base` from storage (web `localStorage`
+    /// can't hold it), the snapshot is fetched asynchronously by the caller and
+    /// handed in as `base_bytes`; a `None` (or a snapshot that fails validation)
+    /// falls back to single-threaded local generation. No base cache is written
+    /// back — the browser HTTP cache covers repeat downloads.
+    #[cfg(target_arch = "wasm32")]
+    pub fn new_web(
+        config: &GameConfig,
+        save: Option<&SaveData>,
+        registry: Arc<PlantRegistry>,
+        base_bytes: Option<Vec<u8>>,
+        gen_key: u64,
+    ) -> anyhow::Result<Self> {
+        Self::build(config, save, 1, registry, None, base_bytes, gen_key, None)
+    }
+
     /// Build a world from fully-owned, `Send` inputs so the whole generation can
     /// run on a worker thread off the event loop. `spread_bytes` is the persisted
     /// spread blob, read from storage on the main thread (storage handles are not
@@ -163,6 +180,13 @@ impl WorldRuntime {
         let load_radius = config.world.load_radius;
 
         let arc_config = Arc::new(config.clone());
+
+        // Solve the global river field once from the generation inputs. Both the
+        // one-time base-flora pass and live chunk streaming bake from this same
+        // field, so terrain (and the plants placed on it) stays consistent.
+        let rivers = Arc::new(crate::world_core::rivers::RiverField::generate(
+            seed, config,
+        ));
 
         // Base flora for every canonical chunk. The one-time world-creation cost
         // is generating it from the seed (parallel; terrain discarded per chunk),
@@ -233,11 +257,15 @@ impl WorldRuntime {
                             seed,
                             config,
                             Arc::clone(&registry),
+                            Arc::clone(&rivers),
                             threads,
                             progress,
                         );
+                        // Local cache only — never uploaded — so use fast Brotli:
+                        // ~30% smaller than raw in well under a second, where the
+                        // download's q10 would add ~1 min to every New Game.
                         let pending = if save.is_none() {
-                            Some(world.serialize_base(gen_key))
+                            Some(world.serialize_base(gen_key, PlantWorld::LOCAL_QUALITY))
                         } else {
                             None
                         };
@@ -254,7 +282,14 @@ impl WorldRuntime {
         );
 
         Ok(Self {
-            streaming: StreamingWorld::new(seed, load_radius, threads, arc_config, registry)?,
+            streaming: StreamingWorld::new(
+                seed,
+                load_radius,
+                threads,
+                arc_config,
+                registry,
+                rivers,
+            )?,
             clock: WorldClock::new(start_hour, total_hours, day_speed),
             plant_world,
             last_growth_hour: total_hours,
@@ -332,6 +367,13 @@ impl WorldRuntime {
 
     pub fn chunks(&self) -> &HashMap<IVec2, ChunkData> {
         self.streaming.chunks()
+    }
+
+    /// Render a high-resolution, relief-shaded world-map image (RGBA8,
+    /// `res`×`res`) from the world's continuous heightmap, for the `M`-key map
+    /// overlay.
+    pub fn render_world_map(&self, res: usize) -> Vec<u8> {
+        self.plant_world.render_world_map(res)
     }
 
     pub fn lighting(&self) -> LightingState {

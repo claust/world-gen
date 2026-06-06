@@ -9,6 +9,7 @@ struct ChunkParams {
 @group(0) @binding(1) var<storage, read> heights: array<f32>;
 @group(0) @binding(2) var<storage, read> moisture: array<f32>;
 @group(0) @binding(3) var<storage, read_write> output: array<f32>;
+@group(0) @binding(4) var<storage, read> river: array<f32>;
 
 // Biome IDs: 0=grass, 1=desert, 2=forest, 3=rock, 4=snow
 // Returns vec3(biome_a, biome_b, blend_factor) with canonical ordering (biome_a <= biome_b)
@@ -139,8 +140,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let biome = biome_blend(h, m);
 
-    // Write 9 floats per vertex (position, normal, biome_data)
-    let base = idx * 9u;
+    // Write 10 floats per vertex (position, normal, biome_data, river wetness)
+    let base = idx * 10u;
     output[base + 0u] = world_x;
     output[base + 1u] = h;
     output[base + 2u] = world_z;
@@ -150,4 +151,5 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     output[base + 6u] = biome.x;
     output[base + 7u] = biome.y;
     output[base + 8u] = biome.z;
+    output[base + 9u] = river[idx];
 }

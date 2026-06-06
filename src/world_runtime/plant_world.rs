@@ -25,6 +25,7 @@ use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::GrowthStage;
+use crate::world_core::rivers::RiverField;
 
 /// Packed per-plant record — **16 bytes** (`repr(C)`), validated against the
 /// real plant count in the M0 feasibility spike.
@@ -94,12 +95,22 @@ fn quantize_rotation(radians: f32) -> u16 {
 impl Plant {
     /// Pack a generated plant whose absolute position lies in the chunk whose
     /// world origin is `(origin_x, origin_z)`.
+    ///
+    /// Base plants are snapped to the **base-snapshot storage grid** here, so a
+    /// world generated locally is bit-identical to one rebuilt from a downloaded
+    /// `world_base.bin`: positions to a 10-bit-per-axis grid (`POS_BITS`, 0.25 m),
+    /// height to `pack_height` (0.125 m), rotation to 8 bits (~1.4°). Without this
+    /// the snapshot would be lossy relative to generation and the two paths would
+    /// diverge — and since spread RNG is keyed on a plant's index within its
+    /// chunk, the caller also Morton-sorts each chunk after packing.
     fn pack(plant: &PlantInstance, origin_x: f32, origin_z: f32) -> Self {
+        let h8 = pack_height(plant.height);
+        let r8 = pack_rotation(plant.rotation);
         Plant {
-            local_x: quantize_span(plant.position.x - origin_x),
-            local_z: quantize_span(plant.position.z - origin_z),
-            height: quantize_span(plant.height),
-            rotation: quantize_rotation(plant.rotation),
+            local_x: snap_pos(quantize_span(plant.position.x - origin_x)),
+            local_z: snap_pos(quantize_span(plant.position.z - origin_z)),
+            height: unpack_height(h8),
+            rotation: (r8 as u16) << 8,
             species: plant.species_index as u8,
             stage: stage_to_u8(plant.growth_stage),
             born_hour: 0.0,
@@ -179,6 +190,7 @@ impl PlantWorld {
         seed: u32,
         config: &GameConfig,
         registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
         threads: usize,
         progress: Option<&crate::world_runtime::gen_progress::GenerationProgress>,
     ) -> Self {
@@ -203,7 +215,7 @@ impl PlantWorld {
 
         let n = WORLD_SIZE_CHUNKS;
         let total = (n as usize) * (n as usize);
-        let generator = ChunkGenerator::new(seed, config, Arc::clone(&registry));
+        let generator = ChunkGenerator::new(seed, config, Arc::clone(&registry), rivers);
 
         // Pack one canonical chunk's base flora (and classify its centre biome);
         // terrain/biome maps are transient.
@@ -221,6 +233,11 @@ impl PlantWorld {
             for plant in &data.content.base_plants {
                 plants.push(Plant::pack(plant, origin_x, origin_z));
             }
+            // Canonical Morton order: makes the base-snapshot position deltas
+            // small (the on-disk win) and fixes each plant's index within the
+            // chunk, which spread RNG is keyed on — so a downloaded snapshot and a
+            // local regeneration produce the same world and evolve identically.
+            sort_chunk_canonical(&mut plants);
             plants.shrink_to_fit();
             let centre_height = data.terrain.heights[centre];
             let biome = classify(centre_height, data.terrain.moisture[centre], &config.biome);
@@ -307,6 +324,14 @@ impl PlantWorld {
         for (idx, &byte) in self.cell_bytes.iter().enumerate() {
             progress.record(idx, byte);
         }
+    }
+
+    /// Render a high-resolution, relief-shaded world-map image (RGBA8,
+    /// `res`×`res`) by resampling the retained continuous heightmap. Used for the
+    /// static in-game map overlay (`M`), which would otherwise reuse the blocky
+    /// one-cell-per-chunk loading map.
+    pub fn render_world_map(&self, res: usize) -> Vec<u8> {
+        crate::world_runtime::world_map::render_world_map(&self.heightmap, self.sea_level, res)
     }
 
     /// Total plants across the whole world (loaded or not). O(1).
@@ -615,30 +640,78 @@ impl PlantWorld {
         Ok(added)
     }
 
+    /// Brotli quality for the snapshot shipped on GitHub and downloaded by
+    /// clients: a high level (~31 MiB, near the practical size floor — q11 saves
+    /// only ~1 MiB for ~20 s more) at ~1 min to encode, paid once in CI and
+    /// never on a player's machine. See [`serialize_base`](Self::serialize_base).
+    pub const DOWNLOAD_QUALITY: u32 = 10;
+    /// Brotli quality for a locally generated cache: ~30% smaller than raw
+    /// (~67→47 MiB) in well under a second, so a New Game pays no perceptible
+    /// compression cost. Higher levels hit sharp diminishing returns — matching
+    /// the download's size would cost the full ~1 min encode for ~16 MiB more.
+    pub const LOCAL_QUALITY: u32 = 1;
+
     /// Serialize the whole base world — every canonical chunk's full plant list
     /// plus its biome and overview-map cell — as a compact binary blob, tagged
     /// with `gen_key` (a hash of the generation inputs) and the seed. This is the
     /// expensive [`generate_base`] output cached so a later New Game can skip
     /// regeneration. Distinct from [`save_spread`], which persists only the
     /// per-game spread delta on top of a regenerable base.
-    pub fn serialize_base(&self, gen_key: u64) -> Vec<u8> {
+    ///
+    /// Layout (v2): a small plaintext header, then three independently
+    /// Brotli-compressed columnar sections. Splitting by field lets the
+    /// compressor exploit each column's statistics — `meta` (biome/cell/count)
+    /// and `attr` (height/rotation/species) are low-entropy and collapse, while
+    /// `pos` (the irreducible position core) is kept small by Morton-sorting each
+    /// chunk and storing varint deltas of the sorted codes. Plants are assumed to
+    /// already be in canonical Morton order (generation and load both sort), so
+    /// deltas are non-negative.
+    ///
+    /// `quality` is the Brotli level (0–11) for each section. The prebuilt
+    /// snapshot shipped on GitHub uses [`Self::DOWNLOAD_QUALITY`] (q10) so the
+    /// once-in-CI encode buys the smallest practical download; a locally
+    /// generated cache uses [`Self::LOCAL_QUALITY`] (q1), which is ~30% smaller
+    /// than raw for a fraction of a second — q10 would add ~minutes to every New
+    /// Game for a file that never leaves the disk. Brotli decode is
+    /// quality-agnostic, so every quality yields the same v2 layout (only the
+    /// compressed bytes differ) and loads through the identical path.
+    pub fn serialize_base(&self, gen_key: u64, quality: u32) -> Vec<u8> {
         let total = self.chunks.len();
-        let plant_total: usize = self.chunks.iter().map(Vec::len).sum();
-        let mut buf = Vec::with_capacity(BASE_HEADER_BYTES + total * 6 + plant_total * PLANT_BYTES);
+
+        let mut meta = Vec::with_capacity(total * 6);
+        let mut pos = Vec::new();
+        let mut attr = Vec::new();
+        for idx in 0..total {
+            let plants = &self.chunks[idx];
+            meta.push(biome_slot(self.biome[idx]) as u8);
+            meta.push(self.cell_bytes[idx]);
+            meta.extend_from_slice(&(plants.len() as u32).to_le_bytes());
+            let mut prev = 0u32;
+            for p in plants {
+                let code = morton10(p.local_x >> POS_SHIFT, p.local_z >> POS_SHIFT);
+                // Canonical Morton order is a hard precondition of the delta
+                // encoding, so fail fast in every build rather than wrapping into
+                // a corrupt position stream that would only surface at load.
+                assert!(code >= prev, "base chunk not in canonical Morton order");
+                write_varint(&mut pos, code - prev);
+                prev = code;
+                attr.push(pack_height(dequantize_span(p.height)));
+                attr.push((p.rotation >> 8) as u8);
+                attr.push(p.species);
+            }
+        }
+
+        let mut buf = Vec::new();
         buf.extend_from_slice(&BASE_MAGIC.to_le_bytes());
         buf.extend_from_slice(&BASE_VERSION.to_le_bytes());
         buf.extend_from_slice(&gen_key.to_le_bytes());
         buf.extend_from_slice(&self.seed.to_le_bytes());
         buf.extend_from_slice(&(WORLD_SIZE_CHUNKS as u32).to_le_bytes());
-        for idx in 0..total {
-            buf.push(biome_slot(self.biome[idx]) as u8);
-            buf.push(self.cell_bytes[idx]);
-            let plants = &self.chunks[idx];
-            buf.extend_from_slice(&(plants.len() as u32).to_le_bytes());
-            for plant in plants {
-                write_plant(&mut buf, plant);
-            }
-        }
+        buf.push(POS_BITS as u8);
+        buf.extend_from_slice(&[0u8; 3]); // reserved (keeps the header word-aligned)
+        write_section(&mut buf, &meta, quality);
+        write_section(&mut buf, &pos, quality);
+        write_section(&mut buf, &attr, quality);
         buf
     }
 
@@ -689,23 +762,71 @@ impl PlantWorld {
         if n != WORLD_SIZE_CHUNKS as u32 {
             anyhow::bail!("world size {n} does not match {WORLD_SIZE_CHUNKS}");
         }
+        let pos_bits = cur.read_u8()?;
+        if pos_bits as u32 != POS_BITS {
+            anyhow::bail!("position precision {pos_bits} does not match {POS_BITS}");
+        }
+        cur.skip(3)?; // reserved
         let total = (n as usize) * (n as usize);
+
+        // Three Brotli sections, decompressed into their own buffers and walked
+        // in lockstep: `meta` drives the per-chunk loop, `pos`/`attr` feed each
+        // plant. Section lengths are bounded inside `read_section`. Decode is
+        // independent of the quality each was written at.
+        let meta = read_section(&mut cur)?;
+        let pos = read_section(&mut cur)?;
+        let attr = read_section(&mut cur)?;
+        let mut meta_cur = Cursor::new(&meta);
+        let mut pos_cur = Cursor::new(&pos);
+        let mut attr_cur = Cursor::new(&attr);
 
         let mut chunks: Vec<Vec<Plant>> = Vec::with_capacity(total);
         let mut biome = Vec::with_capacity(total);
         let mut cell_bytes = Vec::with_capacity(total);
         for _ in 0..total {
-            let biome_code = cur.read_u8()?;
-            let cell = cur.read_u8()?;
-            let count = cur.read_u32()? as usize;
-            // Bound `count` by the bytes actually left before reserving, so a
-            // corrupted length can't trigger a huge allocation ahead of EOF.
-            if count.saturating_mul(PLANT_BYTES) > cur.remaining() {
-                anyhow::bail!("declared {count} plants exceed the remaining data");
+            let biome_code = meta_cur.read_u8()?;
+            let cell = meta_cur.read_u8()?;
+            let count = meta_cur.read_u32()? as usize;
+            // Each plant consumes at least one varint byte from `pos` and exactly
+            // three from `attr`; bound `count` by both before reserving so a
+            // corrupted length can't trigger a huge allocation ahead of EOF. Also
+            // cap by the number of distinct Morton cells — a 256 m chunk on the
+            // 10-bit grid can't hold more, and base plants are metres apart, so
+            // this never rejects real data but stops a crafted count from driving
+            // a multi-gigabyte `with_capacity`.
+            if count > MORTON_CELLS
+                || count > pos_cur.remaining()
+                || count.saturating_mul(3) > attr_cur.remaining()
+            {
+                anyhow::bail!("declared {count} plants exceed the section data");
             }
             let mut plants = Vec::with_capacity(count);
+            let mut prev = 0u32;
             for _ in 0..count {
-                plants.push(read_plant(&mut cur)?);
+                let delta = read_varint(&mut pos_cur)?;
+                let code = prev
+                    .checked_add(delta)
+                    .ok_or_else(|| anyhow::anyhow!("position code overflow"))?;
+                prev = code;
+                // `unmorton10` only reads the low `2*POS_BITS` bits, so reject any
+                // out-of-range code rather than silently wrapping it to a bogus
+                // in-range position.
+                if code as usize >= MORTON_CELLS {
+                    anyhow::bail!("position code {code} out of range");
+                }
+                let (x10, z10) = unmorton10(code);
+                let h8 = attr_cur.read_u8()?;
+                let r8 = attr_cur.read_u8()?;
+                let species = attr_cur.read_u8()?;
+                plants.push(Plant {
+                    local_x: x10 << POS_SHIFT,
+                    local_z: z10 << POS_SHIFT,
+                    height: unpack_height(h8),
+                    rotation: (r8 as u16) << 8,
+                    species,
+                    stage: MATURE,
+                    born_hour: 0.0,
+                });
             }
             chunks.push(plants);
             biome.push(biome_from_slot(biome_code));
@@ -1066,12 +1187,180 @@ const PLANT_BYTES: usize = 14;
 // ---------------------------------------------------------------------------
 // Base-world snapshot — full per-chunk base flora + biome/map, a cache of the
 // expensive `generate_base` pass keyed by the generation inputs.
+//
+// v2 stores plants as three Brotli-compressed columns (meta / position-deltas /
+// attributes) instead of a flat 14-byte record. Combined with reduced field
+// precision and Morton-delta positions this takes the default world from
+// ~190 MiB to ~31 MiB. Base plants are snapped to this grid at generation time
+// (`Plant::pack`) so a downloaded snapshot is bit-identical to a local one.
 // ---------------------------------------------------------------------------
 
 const BASE_MAGIC: u32 = 0x5742_4153; // "WBAS"
-const BASE_VERSION: u32 = 1;
-/// magic(4) + version(4) + gen_key(8) + seed(4) + world_size(4).
-const BASE_HEADER_BYTES: usize = 24;
+const BASE_VERSION: u32 = 2;
+
+/// Bits of position precision stored per axis, over the 256 m chunk: 10 bits →
+/// a 0.25 m grid. `POS_SHIFT` is how far that sits below the resident `u16`
+/// (`local_x`/`local_z`) span, so a stored code is `local >> POS_SHIFT`.
+const POS_BITS: u32 = 10;
+const POS_SHIFT: u16 = 16 - POS_BITS as u16; // 6
+/// Number of distinct Morton cells on the position grid (`2^(2*POS_BITS)`), the
+/// exclusive upper bound for a stored position code and a hard ceiling on plants
+/// per chunk during load.
+const MORTON_CELLS: usize = 1 << (2 * POS_BITS);
+
+/// Plant height is stored as a `u8` over `[0, HEIGHT_RANGE_M)` → a 0.125 m step.
+/// The tallest default species tops out at 25 m, so 32 m leaves headroom; a
+/// taller plant would clamp (cosmetic only — height never feeds spread).
+const HEIGHT_RANGE_M: f32 = 32.0;
+
+/// Brotli window (`lgwin`, 10–24) for the snapshot sections; 24 (16 MiB) lets the
+/// compressor reach back across a whole column. Quality is chosen per call —
+/// see [`PlantWorld::DOWNLOAD_QUALITY`] / [`PlantWorld::LOCAL_QUALITY`].
+const BASE_BROTLI_LGWIN: u32 = 24;
+
+/// Cap on a single decompressed section, to bound allocation from a corrupt or
+/// hostile header before the bytes are trusted.
+const BASE_SECTION_MAX_BYTES: usize = 512 * 1024 * 1024;
+
+/// Mask a quantized position down to the `POS_BITS` storage grid (clears the low
+/// `POS_SHIFT` bits) so generation and snapshot round-trips agree exactly.
+fn snap_pos(v: u16) -> u16 {
+    v & !((1u16 << POS_SHIFT) - 1)
+}
+
+/// Quantize a height in metres to the 8-bit storage range.
+fn pack_height(height_m: f32) -> u8 {
+    (height_m / HEIGHT_RANGE_M * 256.0)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+/// Inverse of [`pack_height`], back into the resident `u16` height span so
+/// [`dequantize_span`] reproduces the stored metres.
+fn unpack_height(h8: u8) -> u16 {
+    quantize_span(h8 as f32 / 256.0 * HEIGHT_RANGE_M)
+}
+
+/// Quantize a rotation in radians to 8 bits over `[0, TAU)` (wraps at TAU).
+fn pack_rotation(radians: f32) -> u8 {
+    ((radians.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU * 256.0).round() as i64
+        & 0xFF) as u8
+}
+
+/// Interleave the low `POS_BITS` of `x` and `z` into a Morton (Z-order) code.
+/// Sorting a chunk by this keeps spatially-near plants adjacent, so their
+/// delta-coded positions stay small. A plain bit loop — only run once per plant
+/// at generation/serialization, never on a hot path.
+fn morton10(x: u16, z: u16) -> u32 {
+    let mut code = 0u32;
+    for i in 0..POS_BITS {
+        code |= ((x as u32 >> i) & 1) << (2 * i);
+        code |= ((z as u32 >> i) & 1) << (2 * i + 1);
+    }
+    code
+}
+
+/// Inverse of [`morton10`].
+fn unmorton10(code: u32) -> (u16, u16) {
+    let mut x = 0u16;
+    let mut z = 0u16;
+    for i in 0..POS_BITS {
+        x |= (((code >> (2 * i)) & 1) as u16) << i;
+        z |= (((code >> (2 * i + 1)) & 1) as u16) << i;
+    }
+    (x, z)
+}
+
+/// Sort a chunk's plants into canonical Morton order (stable, so equal cells keep
+/// generation order). This both shrinks the snapshot and pins each plant's index
+/// within its chunk — which spread RNG reads — so every client agrees.
+fn sort_chunk_canonical(plants: &mut [Plant]) {
+    plants.sort_by_key(|p| morton10(p.local_x >> POS_SHIFT, p.local_z >> POS_SHIFT));
+}
+
+/// LEB128 unsigned varint, little-endian groups of 7 bits. Morton deltas are
+/// mostly tiny, so this is where the position stream shrinks before compression.
+fn write_varint(buf: &mut Vec<u8>, mut v: u32) {
+    while v >= 0x80 {
+        buf.push((v as u8) | 0x80);
+        v >>= 7;
+    }
+    buf.push(v as u8);
+}
+
+fn read_varint(cur: &mut Cursor<'_>) -> anyhow::Result<u32> {
+    let mut result = 0u32;
+    let mut shift = 0u32;
+    loop {
+        if shift >= 32 {
+            anyhow::bail!("varint too long");
+        }
+        let byte = cur.read_u8()?;
+        result |= ((byte & 0x7f) as u32) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(result);
+        }
+        shift += 7;
+    }
+}
+
+/// Brotli-compress a section body. Writing to a `Vec` is infallible, so this
+/// can't error.
+fn brotli_compress(data: &[u8], quality: u32) -> Vec<u8> {
+    use std::io::Write;
+    let mut out = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut out, 4096, quality, BASE_BROTLI_LGWIN);
+        writer
+            .write_all(data)
+            .expect("brotli compression into a Vec is infallible");
+    }
+    out
+}
+
+/// Brotli-decompress, refusing anything that expands past `max_len` so a crafted
+/// stream can't blow up memory.
+fn brotli_decompress(data: &[u8], max_len: usize) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    brotli::Decompressor::new(data, 4096)
+        .take(max_len as u64 + 1)
+        .read_to_end(&mut out)?;
+    if out.len() > max_len {
+        anyhow::bail!("decompressed section exceeds declared length");
+    }
+    Ok(out)
+}
+
+/// Append a length-framed, Brotli-compressed section at the given `quality`:
+/// `uncompressed_len(u32)`, `compressed_len(u32)`, then the compressed bytes.
+fn write_section(buf: &mut Vec<u8>, data: &[u8], quality: u32) {
+    let comp = brotli_compress(data, quality);
+    buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&comp);
+}
+
+/// Read and decompress one [`write_section`] frame, validating both lengths.
+fn read_section(cur: &mut Cursor<'_>) -> anyhow::Result<Vec<u8>> {
+    let uncomp_len = cur.read_u32()? as usize;
+    let comp_len = cur.read_u32()? as usize;
+    if uncomp_len > BASE_SECTION_MAX_BYTES {
+        anyhow::bail!("section length {uncomp_len} exceeds {BASE_SECTION_MAX_BYTES}");
+    }
+    if comp_len > cur.remaining() {
+        anyhow::bail!("compressed section {comp_len} exceeds remaining data");
+    }
+    let comp = cur.take(comp_len)?;
+    let out = brotli_decompress(comp, uncomp_len)?;
+    if out.len() != uncomp_len {
+        anyhow::bail!(
+            "section length mismatch: decoded {} want {uncomp_len}",
+            out.len()
+        );
+    }
+    Ok(out)
+}
 
 fn write_plant(buf: &mut Vec<u8>, p: &Plant) {
     buf.extend_from_slice(&p.local_x.to_le_bytes());
@@ -1111,13 +1400,18 @@ impl<'a> Cursor<'a> {
     }
 
     fn take(&mut self, n: usize) -> anyhow::Result<&'a [u8]> {
-        let end = self.pos + n;
-        if end > self.buf.len() {
-            anyhow::bail!("unexpected end of spread data");
-        }
+        let end = self.pos.checked_add(n).filter(|&e| e <= self.buf.len());
+        let Some(end) = end else {
+            anyhow::bail!("unexpected end of data");
+        };
         let slice = &self.buf[self.pos..end];
         self.pos = end;
         Ok(slice)
+    }
+
+    fn skip(&mut self, n: usize) -> anyhow::Result<()> {
+        self.take(n)?;
+        Ok(())
     }
 
     fn read_u8(&mut self) -> anyhow::Result<u8> {
@@ -1242,6 +1536,23 @@ mod tests {
         }
     }
 
+    // A mature base plant already snapped to the base-snapshot storage grid,
+    // exactly as `Plant::pack` produces — so a base-snapshot round-trip is
+    // bit-identical and `assert_eq!` on whole chunks holds.
+    fn grid_plant(local_x: f32, local_z: f32, species: u8) -> Plant {
+        let h8 = pack_height(4.0);
+        let r8 = pack_rotation(1.0);
+        Plant {
+            local_x: snap_pos(quantize_span(local_x)),
+            local_z: snap_pos(quantize_span(local_z)),
+            height: unpack_height(h8),
+            rotation: (r8 as u16) << 8,
+            species,
+            stage: MATURE,
+            born_hour: 0.0,
+        }
+    }
+
     #[test]
     fn spread_state_round_trips_through_save_and_load() {
         let reg = registry();
@@ -1281,45 +1592,72 @@ mod tests {
     fn base_snapshot_round_trips_and_rebuilds_indices() {
         let reg = registry();
         // A full-size world (the snapshot format is fixed to WORLD_SIZE_CHUNKS²)
-        // with a few populated chunks.
+        // with a few populated chunks. Base flora is always mature and snapped to
+        // the storage grid, so plant lists round-trip bit-identically once each
+        // chunk is in canonical Morton order.
         let total = (WORLD_SIZE_CHUNKS as usize) * (WORLD_SIZE_CHUNKS as usize);
         let mut chunks = vec![Vec::new(); total];
-        let mature = Plant {
-            stage: MATURE,
-            ..seedling(10.0, 0.0)
-        };
-        chunks[5].push(mature);
-        chunks[5].push(seedling(20.0, 24.0)); // one immature in chunk 5
-        chunks[total - 1].push(mature);
+        chunks[5].push(grid_plant(10.0, 50.0, 0));
+        chunks[5].push(grid_plant(20.0, 80.0, 3));
+        chunks[total - 1].push(grid_plant(10.0, 50.0, 1));
+        for c in &mut chunks {
+            sort_chunk_canonical(c);
+        }
         let world = test_world(chunks, Arc::clone(&reg));
 
         let config = GameConfig::default();
         let gen_key = 0xABCD_1234_5678_9A00u64;
-        let bytes = world.serialize_base(gen_key);
 
-        let restored =
-            PlantWorld::from_base_snapshot(&bytes, gen_key, world.seed, &config, Arc::clone(&reg))
-                .expect("a matching snapshot loads");
-        assert_eq!(restored.population(), world.population());
-        assert_eq!(restored.populated_chunks(), world.populated_chunks());
-        // Plant lists round-trip byte-for-byte; derived indices are rebuilt.
-        assert_eq!(restored.chunks[5], world.chunks[5]);
-        assert_eq!(restored.base_count[5], 2);
-        assert_eq!(restored.immature[5], 1);
-        assert_eq!(restored.chunks[total - 1], world.chunks[total - 1]);
+        // Brotli decode is quality-agnostic, so a fast local cache (q1) and the
+        // shipped download (q10) share the v2 layout and round-trip identically.
+        for quality in [PlantWorld::LOCAL_QUALITY, PlantWorld::DOWNLOAD_QUALITY] {
+            let bytes = world.serialize_base(gen_key, quality);
+            // The blob is the v2 compressed format, not a flat plant dump.
+            assert_eq!(&bytes[0..4], &BASE_MAGIC.to_le_bytes());
+            assert_eq!(&bytes[4..8], &BASE_VERSION.to_le_bytes());
 
-        // A snapshot is rejected (falls back to generation) when the generation
-        // key or the seed does not match.
-        assert!(
-            PlantWorld::from_base_snapshot(&bytes, gen_key ^ 1, world.seed, &config, registry())
+            let restored = PlantWorld::from_base_snapshot(
+                &bytes,
+                gen_key,
+                world.seed,
+                &config,
+                Arc::clone(&reg),
+            )
+            .expect("a matching snapshot loads");
+            assert_eq!(restored.population(), world.population());
+            assert_eq!(restored.populated_chunks(), world.populated_chunks());
+            // Plant lists round-trip byte-for-byte; derived indices are rebuilt.
+            // Base plants are all mature, so nothing is immature after a load.
+            assert_eq!(restored.chunks[5], world.chunks[5]);
+            assert_eq!(restored.base_count[5], 2);
+            assert_eq!(restored.immature[5], 0);
+            assert_eq!(restored.chunks[total - 1], world.chunks[total - 1]);
+
+            // A snapshot is rejected (falls back to generation) when the
+            // generation key or the seed does not match.
+            assert!(
+                PlantWorld::from_base_snapshot(
+                    &bytes,
+                    gen_key ^ 1,
+                    world.seed,
+                    &config,
+                    registry()
+                )
                 .is_none(),
-            "a changed generation key must invalidate the cache"
-        );
-        assert!(
-            PlantWorld::from_base_snapshot(&bytes, gen_key, world.seed + 1, &config, registry())
+                "a changed generation key must invalidate the cache"
+            );
+            assert!(
+                PlantWorld::from_base_snapshot(
+                    &bytes,
+                    gen_key,
+                    world.seed + 1,
+                    &config,
+                    registry()
+                )
                 .is_none(),
-            "a different seed must invalidate the cache"
-        );
+                "a different seed must invalidate the cache"
+            );
+        }
     }
 
     #[test]
@@ -1381,17 +1719,20 @@ mod tests {
         let terrain = ChunkTerrain {
             heights: vec![88.0; total],
             moisture: vec![0.5; total],
+            river: vec![0.0; total],
             min_height: 88.0,
             max_height: 88.0,
             has_water: false,
         };
         let back = packed.to_instance(IVec2::new(5, 7), &terrain);
 
-        assert!((back.position.x - original.position.x).abs() < 0.01);
-        assert!((back.position.z - original.position.z).abs() < 0.01);
+        // Base plants are snapped to the storage grid in `pack`: 0.25 m per axis
+        // (`POS_BITS`), 0.125 m height, ~1.4° rotation.
+        assert!((back.position.x - original.position.x).abs() < 0.25);
+        assert!((back.position.z - original.position.z).abs() < 0.25);
         assert!((back.position.y - 88.0).abs() < 1e-3);
-        assert!((back.height - original.height).abs() < 0.01);
-        assert!((back.rotation - original.rotation).abs() < 0.01);
+        assert!((back.height - original.height).abs() < 0.13);
+        assert!((back.rotation - original.rotation).abs() < 0.03);
         assert_eq!(back.species_index, original.species_index);
         assert_eq!(back.growth_stage, GrowthStage::Mature);
     }
@@ -1405,6 +1746,7 @@ mod tests {
         let terrain = ChunkTerrain {
             heights: vec![50.0; total],
             moisture: vec![0.5; total],
+            river: vec![0.0; total],
             min_height: 50.0,
             max_height: 50.0,
             has_water: false,
