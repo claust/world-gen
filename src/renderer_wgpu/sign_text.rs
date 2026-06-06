@@ -101,7 +101,7 @@ impl SignTextPass {
             ],
         });
 
-        let font = MsdfFont::load();
+        let (font, atlas_rgba) = MsdfFont::load();
         let atlas_size = wgpu::Extent3d {
             width: font.atlas_w,
             height: font.atlas_h,
@@ -124,7 +124,7 @@ impl SignTextPass {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &font.atlas_rgba,
+            &atlas_rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(font.atlas_w * 4),
@@ -132,6 +132,8 @@ impl SignTextPass {
             },
             atlas_size,
         );
+        // The CPU texels live only on the GPU now; metrics are kept in `font`.
+        drop(atlas_rgba);
 
         let font_view = font_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Linear filtering: the MSDF shader reconstructs each glyph's edge from a
@@ -299,8 +301,11 @@ fn build_label_vertices(font: &MsdfFont, coord: IVec2, ground_y: f32) -> Vec<Sig
     let cz = (coord.y as f32 + 0.5) * CHUNK_SIZE_METERS;
     let cy = ground_y + SIGN_BOARD_CENTER_Y;
     let z_off = SIGN_BOARD_HALF_T + 0.012;
-    // Baseline so the cap band centers vertically on the board center.
-    let baseline = cy + CAP_EM * 0.5 * em_m;
+    // Baseline so the cap band centers vertically on the board center. Glyphs are
+    // placed y-up (`yt = baseline + plane.top * em_m`), so the cap band spans
+    // `[baseline, baseline + CAP_EM*em_m]` and its midpoint sits half a cap above
+    // the baseline — subtract that to land the midpoint on `cy`.
+    let baseline = cy - CAP_EM * 0.5 * em_m;
 
     let mut out = Vec::with_capacity(text.len() * 12);
     let mut pen = start_x;

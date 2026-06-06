@@ -73,7 +73,6 @@ const GLYPH_COUNT: usize = LAST_CH - FIRST_CH + 1;
 
 /// A loaded MSDF font: decompressed atlas texels plus per-glyph metrics.
 pub struct MsdfFont {
-    pub atlas_rgba: Vec<u8>,
     pub atlas_w: u32,
     pub atlas_h: u32,
     /// Distance-field spread in atlas texels — the shader uses this to size its AA.
@@ -105,16 +104,27 @@ struct RawAtlas {
 
 impl MsdfFont {
     /// Decompress the baked atlas and parse its metrics. Cheap (one ~80 KiB brotli
-    /// blob); call once at startup.
-    pub fn load() -> Self {
+    /// blob); call once at startup. Returns the metrics plus the raw RGBA8 texels —
+    /// the caller uploads the texels to a texture and lets them drop, so the
+    /// half-megabyte CPU copy isn't kept resident for the session.
+    pub fn load() -> (Self, Vec<u8>) {
         let raw: RawAtlas = serde_json::from_str(include_str!("../../assets/fonts/hud_atlas.json"))
             .expect("parse hud_atlas.json");
 
+        let expected = raw.atlas_w as usize * raw.atlas_h as usize * 4;
         let compressed: &[u8] = include_bytes!("../../assets/fonts/hud_atlas.bin");
-        let mut atlas_rgba = Vec::with_capacity((raw.atlas_w * raw.atlas_h * 4) as usize);
+        let mut atlas_rgba = Vec::with_capacity(expected);
+        // Bound the read to one byte past the expected size so a corrupt or swapped
+        // asset fails the assert below instead of decompressing unboundedly.
         brotli::Decompressor::new(compressed, 4096)
+            .take(expected as u64 + 1)
             .read_to_end(&mut atlas_rgba)
             .expect("decompress hud_atlas.bin");
+        assert_eq!(
+            atlas_rgba.len(),
+            expected,
+            "hud_atlas.bin does not match hud_atlas.json dimensions — re-run `cargo run --example bake_hud_font`",
+        );
 
         let mut glyphs = [None; GLYPH_COUNT];
         for g in raw.glyphs {
@@ -131,15 +141,15 @@ impl MsdfFont {
             }
         }
 
-        Self {
-            atlas_rgba,
+        let font = Self {
             atlas_w: raw.atlas_w,
             atlas_h: raw.atlas_h,
             px_range: raw.px_range,
             line_height: raw.line_height,
             ascender: raw.ascender,
             glyphs,
-        }
+        };
+        (font, atlas_rgba)
     }
 
     /// Glyph metrics for `c`, or `None` outside the baked ASCII range.

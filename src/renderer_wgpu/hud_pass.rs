@@ -54,7 +54,7 @@ impl HudPass {
             }],
         });
 
-        let font = MsdfFont::load();
+        let (font, atlas_rgba) = MsdfFont::load();
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("hud-uniform-buffer"),
@@ -120,7 +120,7 @@ impl HudPass {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &font.atlas_rgba,
+            &atlas_rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(font.atlas_w * 4),
@@ -128,6 +128,8 @@ impl HudPass {
             },
             atlas_size,
         );
+        // The CPU texels live only on the GPU now; metrics are kept in `font`.
+        drop(atlas_rgba);
 
         let font_view = font_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Linear filtering: the MSDF shader reconstructs the edge from a smoothly
