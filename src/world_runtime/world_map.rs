@@ -56,10 +56,11 @@ const RIVER_DEEP_COLOR: [f32; 3] = [0.14, 0.27, 0.46];
 /// their main tributaries — the selective look of a drawn atlas, not a flow map.
 const RIVER_MIN_WETNESS: f32 = 0.28;
 
-/// Unconditional widening passes applied to *every* river before the size-aware
-/// widening. Guarantees even the faintest tributary is a few texels wide so it
-/// survives the map's down-scaling to screen instead of dropping to a dotted
-/// hairline.
+/// Unconditional widening passes applied before the size-aware widening, so even
+/// the faintest *drawn* tributary (wetness ≥ [`RIVER_MIN_WETNESS`]) is a few texels
+/// wide and survives the map's down-scaling to screen instead of dropping to a
+/// dotted hairline. (Sub-threshold wetness is widened too but zeroed out before
+/// compositing, so the guarantee only matters for rivers that actually get drawn.)
 const RIVER_MIN_WIDTH_PASSES: usize = 1;
 
 /// Per-texel decay applied while size-widening rivers. A trunk river (wetness ≈ 1)
@@ -156,7 +157,9 @@ fn river_intensity_grid(rivers: &RiverField, res: usize, step: f32) -> Vec<f32> 
         } else {
             RIVER_WIDEN_DECAY
         };
-        let src = grid.clone();
+        // Move the buffer out rather than clone it — `grid` is rebuilt from `src`
+        // below, so the old allocation is dead weight we'd otherwise copy each pass.
+        let src = std::mem::take(&mut grid);
         let widen_row = |row: usize| -> Vec<f32> {
             (0..res)
                 .map(|col| {
