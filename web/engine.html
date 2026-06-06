@@ -1,42 +1,15 @@
 ---
-# Empty front matter triggers Jekyll processing for the {% include nav.html %} call.
+layout: article
+nav: engine
+title: "Inside the Engine | FloraForge"
+description: "A guided tour of the FloraForge engine: the frame loop, what update() and render() do, the screen state machine, and the three-layer architecture."
+og_title: Inside the FloraForge Engine
+og_description: How the FloraForge engine works — the per-frame loop, simulation, rendering passes, and architecture.
+og_type: article
+og_url: https://floraforge.eu/engine.html
+css: ./assets/article.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
 ---
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Inside the Engine | FloraForge</title>
-    <meta
-        name="description"
-        content="A guided tour of the FloraForge engine: the frame loop, what update() and render() do, the screen state machine, and the three-layer architecture."
-    >
-    <meta property="og:title" content="Inside the FloraForge Engine">
-    <meta
-        property="og:description"
-        content="How the FloraForge engine works — the per-frame loop, simulation, rendering passes, and architecture."
-    >
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://floraforge.eu/engine.html">
-    <meta name="theme-color" content="#0a1f0a">
-    <link
-        rel="icon"
-        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3Crect x='29' y='34' width='6' height='18' fill='%235c4033'/%3E%3C/svg%3E"
-    >
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
-        rel="stylesheet"
-    >
-    <link rel="stylesheet" href="./assets/article.css">
-</head>
-<body>
-    <div class="content">
-        <header class="wrap">
-            {% include nav.html current="engine" %}
-        </header>
-
         <section class="hero wrap">
             <p class="eyebrow">Inside the Engine</p>
             <h1>One frame, <span class="accent">many times a second.</span></h1>
@@ -356,7 +329,3 @@
                 <p><a href="./index.html">Home</a> · <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a></p>
             </div>
         </footer>
-    </div>
-    <script src="./glossary.js" defer></script>
-</body>
-</html>
