@@ -69,60 +69,11 @@ h1, h2, h3 {
 .accent { color: var(--green-bright); }
 
 /* ---- top bar ---- */
+/* Bar look and brand mark live in the shared assets/nav.css; only the
+   article-specific spacing around the bar stays here. */
 .topbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
     padding: 1.8rem 0;
 }
-
-.brand {
-    display: flex;
-    align-items: center;
-    gap: 0.9rem;
-    font-family: "Space Grotesk", sans-serif;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-}
-
-.brand-mark {
-    width: 2.4rem;
-    height: 2.4rem;
-    border-radius: 999px;
-    background:
-        radial-gradient(circle at 35% 35%, rgba(124, 255, 159, 0.95), transparent 32%),
-        linear-gradient(180deg, #1f5f30, #0c2611);
-    box-shadow: inset 0 0 0 1px rgba(124, 255, 159, 0.22), 0 0 22px rgba(62, 207, 110, 0.18);
-    position: relative;
-}
-
-.brand-mark::before,
-.brand-mark::after {
-    content: "";
-    position: absolute;
-    background: rgba(240, 237, 228, 0.9);
-    border-radius: 999px;
-}
-
-.brand-mark::before { width: 0.2rem; height: 1.05rem; left: 1.1rem; top: 0.85rem; }
-.brand-mark::after { width: 0.85rem; height: 0.36rem; left: 0.78rem; top: 1.22rem; transform: rotate(-24deg); }
-
-.top-links {
-    display: flex;
-    gap: 1.4rem;
-    flex-wrap: wrap;
-    font-size: 0.95rem;
-    color: var(--mist);
-}
-
-.top-links a {
-    border-bottom: 1px solid transparent;
-    transition: color 180ms ease, border-color 180ms ease;
-}
-
-.top-links a:hover { color: var(--green-glow); border-color: rgba(124, 255, 159, 0.4); }
-.top-links a.current { color: var(--green-bright); }
 
 /* ---- hero ---- */
 .hero { padding: 3rem 0 1rem; }

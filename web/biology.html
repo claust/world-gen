@@ -1,42 +1,15 @@
 ---
-# Empty front matter triggers Jekyll processing for the {% include nav.html %} call.
+layout: article
+nav: biology
+title: "The Living World | FloraForge"
+description: "The biology of FloraForge: how climate carves the world into biomes, and the seven procedural plant species that grow across them."
+og_title: The Living World — FloraForge Biology
+og_description: "A field guide to FloraForge's biomes and plant species — climate rules, procedural trees, and where each one takes root."
+og_type: article
+og_url: https://floraforge.eu/biology.html
+css: ./assets/article.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
 ---
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>The Living World | FloraForge</title>
-    <meta
-        name="description"
-        content="The biology of FloraForge: how climate carves the world into biomes, and the seven procedural plant species that grow across them."
-    >
-    <meta property="og:title" content="The Living World — FloraForge Biology">
-    <meta
-        property="og:description"
-        content="A field guide to FloraForge's biomes and plant species — climate rules, procedural trees, and where each one takes root."
-    >
-    <meta property="og:type" content="article">
-    <meta property="og:url" content="https://floraforge.eu/biology.html">
-    <meta name="theme-color" content="#0a1f0a">
-    <link
-        rel="icon"
-        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3Crect x='29' y='34' width='6' height='18' fill='%235c4033'/%3E%3C/svg%3E"
-    >
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
-        rel="stylesheet"
-    >
-    <link rel="stylesheet" href="./assets/article.css">
-</head>
-<body>
-    <div class="content">
-        <header class="wrap">
-            {% include nav.html current="biology" %}
-        </header>
-
         <section class="hero wrap">
             <p class="eyebrow">The Living World</p>
             <h1>Where climate <span class="accent">decides what grows.</span></h1>
@@ -557,7 +530,3 @@
                 <p><a href="./index.html">Home</a> · <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a></p>
             </div>
         </footer>
-    </div>
-    <script src="./glossary.js" defer></script>
-</body>
-</html>
