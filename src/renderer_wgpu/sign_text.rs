@@ -133,10 +133,14 @@ impl SignTextPass {
         );
 
         let font_view = font_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Linear filtering gives the glyph mask a smooth coverage gradient at its
+        // edges; the shader turns that gradient into an anti-aliased alpha. With
+        // nearest filtering the edges are a hard 1-bit mask that shimmers (whole
+        // texels flicker on/off) as the camera pans across the sign.
         let font_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("sign-font-sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
