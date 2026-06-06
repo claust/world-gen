@@ -55,9 +55,12 @@ pub fn sea_bed(seconds: f32) -> Vec<f32> {
     buf
 }
 
-/// A sparse dawn-chorus bed: randomized chirps scattered over `seconds`, each a
-/// short frequency-swept whistle with a quick envelope. All chirps finish well
-/// before the end so the loop boundary is silence and joins cleanly.
+/// A sparse dawn-chorus bed: randomized bird calls scattered over `seconds`. Each
+/// call is one of several archetypes (warbling whistle, trill, two-note call,
+/// descending whistle, rising tweet, staccato chatter) so the chorus stays varied
+/// rather than repeating one shape. All calls finish well before the end so the
+/// loop boundary is silence and joins cleanly. Use a long `seconds` (≈40) so a
+/// listener hears many distinct calls before the loop comes back around.
 pub fn bird_bed(seconds: f32) -> Vec<f32> {
     let sr = SAMPLE_RATE as f32;
     let n = (seconds * sr) as usize;
@@ -65,28 +68,19 @@ pub fn bird_bed(seconds: f32) -> Vec<f32> {
 
     let mut rng = StdRng::seed_from_u64(0x00B1_2D50);
 
-    // Leave a margin at the end so a chirp (plus its echo tail) never crosses
-    // the wrap point.
-    let margin = 1.5;
+    // Leave a margin at the end so a call (plus its echo tail) never crosses the
+    // wrap point. The longest archetype stays under ~1.3 s, so 2.0 s is ample.
+    let margin = 2.0;
     let mut t = 0.3;
     while t < seconds - margin {
-        let base = rng.random_range(1800.0..4200.0);
-        let syllables = rng.random_range(1..=4);
-        let mut at = t;
-        for _ in 0..syllables {
-            let dur = rng.random_range(0.04..0.13);
-            let sweep = rng.random_range(-1.0..1.0) * rng.random_range(200.0..1400.0);
-            let amp = rng.random_range(0.25..0.5);
-            render_chirp(&mut buf, sr, at, dur, base, base + sweep, amp);
-            at += dur + rng.random_range(0.01..0.06);
-        }
+        render_bird_call(&mut buf, sr, t, &mut rng);
         // Gap until the next bird call. Kept fairly long so the chorus stays
         // sparse — a few birds rather than a constant chatter.
-        t += rng.random_range(1.2..3.5);
+        t += rng.random_range(1.0..3.2);
     }
 
     // Light echo for a sense of open air. The decaying taps stay within the
-    // end margin because the last chirp finishes before `seconds - margin`.
+    // end margin because the last call finishes before `seconds - margin`.
     let delay = (0.11 * sr) as usize;
     for i in delay..n {
         buf[i] += buf[i - delay] * 0.18;
@@ -94,6 +88,94 @@ pub fn bird_bed(seconds: f32) -> Vec<f32> {
 
     normalize(&mut buf, 0.45);
     buf
+}
+
+/// Render one bird call at `start`, choosing among several archetypes so the
+/// dawn chorus has real variety. Every archetype is built from the same swept
+/// `render_chirp` whistle primitive, so they share a consistent timbre while
+/// differing in rhythm, pitch contour, and phrasing.
+fn render_bird_call(buf: &mut [f32], sr: f32, start: f32, rng: &mut StdRng) {
+    let base = rng.random_range(1800.0..4600.0);
+    match rng.random_range(0..6) {
+        // Warbling whistle: 1–4 swept syllables — the original call shape.
+        0 => {
+            let syllables = rng.random_range(1..=4);
+            let mut at = start;
+            for _ in 0..syllables {
+                let dur = rng.random_range(0.04..0.13);
+                let sweep = rng.random_range(-1.0..1.0) * rng.random_range(200.0..1400.0);
+                let amp = rng.random_range(0.25..0.5);
+                render_chirp(buf, sr, at, dur, base, base + sweep, amp);
+                at += dur + rng.random_range(0.01..0.06);
+            }
+        }
+        // Trill: a fast run of short syllables at a steady rate, each given a
+        // small alternating sweep so it shimmers.
+        1 => {
+            let reps = rng.random_range(6..16);
+            let step = rng.random_range(0.025..0.05);
+            let dur = (step * rng.random_range(0.55..0.8_f32)).min(0.04);
+            let sweep =
+                rng.random_range(150.0..600.0) * if rng.random_bool(0.5) { 1.0 } else { -1.0 };
+            let amp = rng.random_range(0.22..0.4);
+            let mut at = start;
+            for k in 0..reps {
+                // Flip the sweep each rep for a warbling shimmer.
+                let s = if k % 2 == 0 { sweep } else { -sweep };
+                render_chirp(buf, sr, at, dur, base, base + s, amp);
+                at += step;
+            }
+        }
+        // Two-note call: a higher note answered by a lower one (cuckoo /
+        // chickadee feel), repeated a couple of times.
+        2 => {
+            let low = base * rng.random_range(0.62..0.82);
+            let dur = rng.random_range(0.08..0.14);
+            let amp = rng.random_range(0.3..0.5);
+            let reps = rng.random_range(1..=2);
+            let mut at = start;
+            for _ in 0..reps {
+                // Near-flat tones (tiny downward sweep keeps them lively).
+                render_chirp(buf, sr, at, dur, base * 1.02, base, amp);
+                at += dur + rng.random_range(0.05..0.1);
+                render_chirp(buf, sr, at, dur, low * 1.02, low, amp);
+                at += dur + rng.random_range(0.14..0.26);
+            }
+        }
+        // Descending whistle: one long, slow downward glide.
+        3 => {
+            let dur = rng.random_range(0.18..0.34);
+            let drop = rng.random_range(600.0..1800.0);
+            let amp = rng.random_range(0.3..0.5);
+            render_chirp(buf, sr, start, dur, base, (base - drop).max(900.0), amp);
+        }
+        // Rising tweet: two or three short upward chirps.
+        4 => {
+            let count = rng.random_range(2..=3);
+            let dur = rng.random_range(0.05..0.09);
+            let rise = rng.random_range(400.0..1200.0);
+            let amp = rng.random_range(0.3..0.5);
+            let mut at = start;
+            for _ in 0..count {
+                render_chirp(buf, sr, at, dur, base, base + rise, amp);
+                at += dur + rng.random_range(0.06..0.14);
+            }
+        }
+        // Staccato chatter: several very short, near-flat chips at irregular
+        // spacing around the base pitch.
+        _ => {
+            let count = rng.random_range(3..7);
+            let amp = rng.random_range(0.25..0.42);
+            let mut at = start;
+            for _ in 0..count {
+                let dur = rng.random_range(0.015..0.035);
+                let f = base * rng.random_range(0.85..1.15);
+                let sweep = rng.random_range(-200.0..200.0);
+                render_chirp(buf, sr, at, dur, f, f + sweep, amp);
+                at += dur + rng.random_range(0.03..0.1);
+            }
+        }
+    }
 }
 
 /// A deep underwater bed: a sub-bass drone (rumble + a near-infrasonic sine)
