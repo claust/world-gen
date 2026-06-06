@@ -283,3 +283,39 @@ Moisture is untouched (still 2 evals/vertex, ~1.8 ms/chunk) — moving it global
 (**Phase 2**, → 0 evals) is what reaches the doc's ~10–13 s projection; the fast
 2D detail octave (**Phase 3**) is independent. The E8 experiment in
 `examples/profile_chunks.rs` is the global-field prototype this shipped from.
+
+## Implemented: Phase 2 — global moisture field (base + variation)
+
+Both moisture octaves now ride the same `TerrainFields` grid. The struct grew
+from two baked octaves to four (continental, ridge, moisture base ~530 m,
+moisture variation ~105 m); `Heightmap` dropped its `moisture: OpenSimplex`
+member entirely, so `sample_moisture` / `moisture_grid` are now pure bilinear
+lookups plus the per-vertex weight blend and `[0,1]` clamp — **zero 4D evals**.
+The variation octave bakes its phase offset into the grid nodes (`torus_raw`
+gained `offset_x/z`), so a plain lookup reproduces it. The cache key now also
+hashes the moisture frequencies and variation offsets.
+
+Unlike the height octaves, the variation octave is only ~3×/wavelength at the
+native 32 m/node grid (less on web), so the lookup mildly smooths it. That is
+fine: moisture only drives biome classification (baked once, never regenerated
+at runtime, so no plant float/sink risk) and variation carries just a quarter of
+the moisture weight — the loss is a few-metre shift in biome boundaries. This is
+**lossy**, so `BaseGenerationInputs.version` was bumped **4 → 5**; old snapshots
+auto-reject. The grid-vs-point bit-identity test still holds (both moisture paths
+share the field's bilinear math).
+
+Measured (10-core Apple silicon, `--release`, harness E2/E3, 3-run medians):
+
+| Metric | Before (Phase 1) | After (Phase 2) | Gain |
+|---|---|---|---|
+| Moisture (point sample, E3) | 1.79 ms/chunk | **0.08 ms/chunk** | 2 evals → 0 |
+| Terrain layer (grid path, E2) | ~0.51 ms/chunk | **~0.31 ms/chunk** | 1.64× |
+| Full 65,536-chunk build (chunk-parallel) | ~23 s | **~11 s** | ~2× |
+
+Moisture went from the **single most expensive** part of terrain (more than
+height) to nearly free. The full-build figure uses the doc's standard
+extrapolation (chunk-parallel rate × 65,536); per-chunk *compute* dropped ~1.45×
+(content + biome, ~30% of a chunk, are unchanged), with the rest of the
+wall-clock gain inside this harness's known thread-scaling variance. This lands
+the build in the doc's ~10–13 s target. **Phase 3** (fast 2D detail octave) is
+the only remaining lever and is independent of this work.

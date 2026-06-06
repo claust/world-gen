@@ -8,12 +8,12 @@ use crate::world_core::config::HeightmapConfig;
 use crate::world_core::terrain_fields::{FieldKind, TerrainFields};
 
 pub struct Heightmap {
-    /// Raw continental + ridge noise, precomputed once on a coarse global grid
-    /// and bilinearly sampled (the low-frequency octaves barely change within a
-    /// chunk). The ridge crease and amplitudes are still applied per vertex.
+    /// Raw continental, ridge, and moisture (base + variation) noise, precomputed
+    /// once on a coarse global grid and bilinearly sampled (these low-frequency
+    /// octaves barely change within a chunk). The ridge crease, amplitudes, and
+    /// moisture weights are still applied per vertex.
     fields: Arc<TerrainFields>,
     detail: OpenSimplex,
-    moisture: OpenSimplex,
     config: HeightmapConfig,
 }
 
@@ -36,7 +36,6 @@ impl Heightmap {
         Self {
             fields: TerrainFields::shared(seed, &config),
             detail: OpenSimplex::new(seed.wrapping_add(907)),
-            moisture: OpenSimplex::new(seed.wrapping_add(1701)),
             config,
         }
     }
@@ -100,19 +99,10 @@ impl Heightmap {
     }
 
     pub fn sample_moisture(&self, x: f32, z: f32) -> f32 {
-        let x = x as f64;
-        let z = z as f64;
         let c = &self.config;
-        let base =
-            Self::torus_sample(&self.moisture, x, z, c.moisture_base_frequency, 0.0, 0.0) as f32;
-        let variation = Self::torus_sample(
-            &self.moisture,
-            x,
-            z,
-            c.moisture_variation_frequency,
-            c.moisture_variation_offset_x,
-            c.moisture_variation_offset_z,
-        ) as f32;
+        // Both moisture octaves are bilinear lookups into the precomputed coarse
+        // field; the weights and clamp are the only per-vertex work left.
+        let (base, variation) = self.fields.sample_moisture(x, z);
         ((base * c.moisture_base_weight + variation * c.moisture_variation_weight) * 0.5 + 0.5)
             .clamp(0.0, 1.0)
     }
@@ -222,38 +212,18 @@ impl Heightmap {
         cell_size: f32,
     ) -> Vec<f32> {
         let c = &self.config;
-        // One allocation for all four per-axis trig tables (base/variation × {x, z}).
-        let mut trig = vec![(0.0f64, 0.0f64); 4 * side];
-        let (base_x, rest) = trig.split_at_mut(side);
-        let (base_z, rest) = rest.split_at_mut(side);
-        let (var_x, var_z) = rest.split_at_mut(side);
-        Self::fill_axis_trig(base_x, c.moisture_base_frequency, 0.0, origin_x, cell_size);
-        Self::fill_axis_trig(base_z, c.moisture_base_frequency, 0.0, origin_z, cell_size);
-        Self::fill_axis_trig(
-            var_x,
-            c.moisture_variation_frequency,
-            c.moisture_variation_offset_x,
-            origin_x,
-            cell_size,
-        );
-        Self::fill_axis_trig(
-            var_z,
-            c.moisture_variation_frequency,
-            c.moisture_variation_offset_z,
-            origin_z,
-            cell_size,
-        );
-        let (base_x, base_z, var_x, var_z) = (&*base_x, &*base_z, &*var_x, &*var_z);
+        // Both moisture octaves share the one coarse field, so a single pair of
+        // per-axis bilinear factors serves both — hoisted out of the inner loop.
+        let mx = self.fields.axis_factors(origin_x, cell_size, side);
+        let mz = self.fields.axis_factors(origin_z, cell_size, side);
         let (base_w, var_w) = (c.moisture_base_weight, c.moisture_variation_weight);
 
         Self::fill_grid(side, |zi, row| {
-            let (bz0, bz1) = base_z[zi];
-            let (vz0, vz1) = var_z[zi];
+            let fz = mz[zi];
             for (xi, cell) in row.iter_mut().enumerate() {
-                let (bx0, bx1) = base_x[xi];
-                let base = self.moisture.get([bx0, bx1, bz0, bz1]) as f32;
-                let (vx0, vx1) = var_x[xi];
-                let variation = self.moisture.get([vx0, vx1, vz0, vz1]) as f32;
+                let fx = mx[xi];
+                let base = self.fields.blend(FieldKind::MoistureBase, fx, fz);
+                let variation = self.fields.blend(FieldKind::MoistureVariation, fx, fz);
                 *cell = ((base * base_w + variation * var_w) * 0.5 + 0.5).clamp(0.0, 1.0);
             }
         })
