@@ -337,7 +337,12 @@ impl PlantWorld {
     /// static in-game map overlay (`M`), which would otherwise reuse the blocky
     /// one-cell-per-chunk loading map.
     pub fn render_world_map(&self, res: usize) -> Vec<u8> {
-        crate::world_runtime::world_map::render_world_map(&self.heightmap, self.sea_level, res)
+        crate::world_runtime::world_map::render_world_map(
+            &self.heightmap,
+            self.sea_level,
+            &self.rivers,
+            res,
+        )
     }
 
     pub fn sample_height(&self, x: f32, z: f32) -> f32 {
