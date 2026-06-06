@@ -97,6 +97,7 @@ impl WorldRenderer {
         );
         let river = RiverPass::new(
             device,
+            queue,
             render_format,
             &frame_bg.layout,
             &terrain_material.layout,
