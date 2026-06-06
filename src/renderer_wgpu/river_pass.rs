@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 
 use super::frustum::Frustum;
 use super::pipeline::create_water_pipeline;
+use super::river_normal_texture::RiverNormalTexture;
 use crate::world_core::chunk::{
     ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, RIVER_SURFACE_THRESHOLD,
 };
@@ -38,16 +39,21 @@ pub struct RiverPass {
     index_buffer: wgpu::Buffer,
     index_count: u32,
     chunks: HashMap<IVec2, GpuRiverChunk>,
+    normal_map: RiverNormalTexture,
 }
 
 impl RiverPass {
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         render_format: wgpu::TextureFormat,
         frame_layout: &wgpu::BindGroupLayout,
         material_layout: &wgpu::BindGroupLayout,
         shadow_layout: &wgpu::BindGroupLayout,
     ) -> Self {
+        // Flow-map normal texture (Option D): a tiling water normal map advected
+        // along the per-vertex flow vector in the shader. Bound at group 3.
+        let normal_map = RiverNormalTexture::new(device, queue);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("river-shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -59,10 +65,16 @@ impl RiverPass {
             ),
         });
 
-        // Rivers sample the shadow map at group 2, like the sea water pass.
+        // Rivers sample the shadow map at group 2 (like the sea water pass) and
+        // the flow-map normal texture at group 3.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("river-pipeline-layout"),
-            bind_group_layouts: &[frame_layout, material_layout, shadow_layout],
+            bind_group_layouts: &[
+                frame_layout,
+                material_layout,
+                shadow_layout,
+                &normal_map.bind_group_layout,
+            ],
             push_constant_ranges: &[],
         });
 
@@ -121,6 +133,7 @@ impl RiverPass {
             index_buffer,
             index_count: indices.len() as u32,
             chunks: HashMap::new(),
+            normal_map,
         }
     }
 
@@ -192,6 +205,7 @@ impl RiverPass {
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(2, shadow_bind_group, &[]);
+        pass.set_bind_group(3, &self.normal_map.bind_group, &[]);
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         for (coord, chunk) in &self.chunks {
             if !frustum.is_chunk_visible(*coord) {
