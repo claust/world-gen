@@ -74,7 +74,7 @@ jobs:
           ./target/release/FloraForge --generate-base-web web/world_base.bin
 
       - name: Upload world-base artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: floraforge-world-base
           path: native/world_base.bin
@@ -133,7 +133,7 @@ jobs:
       # Place the prebuilt snapshot next to the bundle so the wasm client fetches
       # it at the same-origin path `world_base.bin` instead of generating locally.
       - name: Bundle prebuilt base world
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: floraforge-web-world-base
           path: web/
@@ -142,7 +142,7 @@ jobs:
         run: cd web && zip -r ../floraforge-web.zip .
 
       - name: Upload zip artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: floraforge-web-zip
           path: floraforge-web.zip
@@ -188,7 +188,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 
