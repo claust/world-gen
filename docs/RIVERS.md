@@ -76,15 +76,31 @@ shader sampling. Verified in-engine on the largest world rivers (close-up shows
 the rippled normal detail and clean bank fade; ~127k px change over a 5 s gap
 with camera and sun frozen confirms it still streams downstream).
 
-### Option E — Foam / whitewater ⏳ deferred
+### Option F — Fresnel sky reflection ✅ implemented
+The actual root cause of "only visible opposite the sun": the water body was lit
+almost identically to the surrounding land (near-flat normals, same diffuse) and
+painted nearly the same blue as the riverbed tint beneath it, so the only strong
+cue was the **sun glint** — which by construction fires only when the mirror
+reflection points at the eye. Real water reads as water from *any* angle because
+it reflects the **sky**, bright and pale toward grazing angles. So `river.wgsl`
+now picks a sky color along the reflected view ray (`material.sky_zenith` toward
+`sky_horizon`) and blends the water body toward it by a Schlick-style fresnel
+(floored so even top-down views pick up some sky). Goes dark for free at night as
+the sky uniforms dim. This is what makes the channel pop off the land off-axis;
+foam (E1) then adds the moving cue on top. gen_key-neutral (runtime shading only).
+
+### Option E — Foam / whitewater ⏳ deferred (E1 tried, reverted)
 Additive white foam, the single strongest readability cue — the eye locks onto
 moving white streaks instantly. Two sub-parts at different cost:
 
-- **E1 — Shoreline / edge foam (cheap):** a band of foam where the surface meets
-  the bank, keyed on the **wetness gradient** (foam where `wetness` is near the
-  dry cutoff). Needs no new data — wetness is already per-vertex — and a small
-  scrolling foam noise/texture advected along flow. Reads as a river edge lapping
-  its banks. Good first slice; pairs with D's texture binding.
+- **E1 — Shoreline / edge foam ⏳ tried & reverted:** a first pass added two
+  additive near-white bands advected along the flow frame (sharpened-sine wave
+  crests + cross-rippled shoreline lapping). In-engine it read as discrete,
+  too-circular white *spots* sliding down the channel rather than foam — the
+  sharpened sine made round blobs, not streaks. Reverted; the **F** sky-reflection
+  alone already made the river read clearly as water, which was the main goal. If
+  revisited, foam wants a proper scrolling noise/texture mask (reusing D's group-3
+  binding) and thin flow-elongated shapes, not an analytic sine threshold.
 - **E2 — Whitewater on fast/steep water (more work):** foam concentrated where
   the current is **fast or steep** (rapids). This needs a **flow-speed signal we
   don't currently bake** — the flow field stores direction only (normalized); the
@@ -107,9 +123,11 @@ doesn't change carved heights). Impact: very high — foam sells "rushing river.
 2. **D** — done. Flow-map normal texture for convincing surface detail around
    bends; added the first texture binding (group 3) to the river pass, which E1
    can now reuse.
-3. **E1** — shoreline foam (reuses D's texture binding, no new baked data).
-4. **E2** — whitewater, once a baked flow-speed/slope scalar is added to
-   `RiverField`.
+3. **F** — done. Fresnel sky reflection (the off-axis visibility fix); this alone
+   made the river read clearly as water. E1 foam was tried here and reverted (read
+   as circular spots — see Option E).
+4. **E1 / E2** — foam: E1 needs a texture-based foam mask (not analytic sine);
+   E2 whitewater additionally needs a baked flow-speed/slope scalar in `RiverField`.
 
 D and E are independent of each other but both build on the flow field from C;
 E2 is the only one that needs new baked data (a speed/slope grid).
