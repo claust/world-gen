@@ -153,6 +153,7 @@ async function cmdSetCameraLook(apiBase: string, flags: Record<string, string>) 
 async function cmdMapRightClick(apiBase: string, flags: Record<string, string>) {
   const u = requireFloat(flags, "u");
   const v = requireFloat(flags, "v");
+  if (u < 0 || u > 1 || v < 0 || v > 1) die(`--u and --v must be in range 0..1`);
   const result = await sendAndWait(apiBase, { type: "map_right_click", u, v });
   console.log(JSON.stringify(result, null, 2));
 }
