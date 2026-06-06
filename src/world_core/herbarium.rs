@@ -235,7 +235,11 @@ impl<'a> BaseGenerationInputs<'a> {
             // snapshots — which still seat trees in the water — must be rejected.
             // v4: cattails (the first aquatic species) are baked into the wet
             // band along banks, adding plants old snapshots never had.
-            version: 4,
+            // v5: both moisture octaves moved to the precomputed coarse global
+            // field (mildly lossy bilinear vs the exact 4D noise), shifting baked
+            // biome boundaries, so old snapshots must be rejected. See
+            // `world_core::terrain_fields`.
+            version: 5,
             seed: config.world.seed,
             sea_level: config.sea_level,
             biome: &config.biome,
