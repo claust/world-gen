@@ -1,5 +1,6 @@
 // River water surface pass: see shaders/river.wgsl for the animated surface.
-// Its dry-fringe cutoff mirrors RIVER_SURFACE_THRESHOLD used here.
+// Its dry-fringe cutoff mirrors the RIVER_SURFACE_THRESHOLD that
+// `river_water_depth` applies when lifting the surface above the bed.
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
