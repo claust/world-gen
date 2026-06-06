@@ -8,4 +8,4 @@ mod world_map;
 pub use gen_progress::GenerationProgress;
 pub use plant_world::PlantWorld;
 pub use runtime::{RuntimeStats, WorldRuntime};
-pub use world_map::WORLD_MAP_RES;
+pub use world_map::{render_world_map, WORLD_MAP_RES};
