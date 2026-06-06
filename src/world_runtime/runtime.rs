@@ -376,6 +376,10 @@ impl WorldRuntime {
         self.plant_world.render_world_map(res)
     }
 
+    pub fn sample_height(&self, x: f32, z: f32) -> f32 {
+        self.plant_world.sample_height(x, z)
+    }
+
     pub fn lighting(&self) -> LightingState {
         LightingState {
             sun_direction: self.clock.sun_direction(),

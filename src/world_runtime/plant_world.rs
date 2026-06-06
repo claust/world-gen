@@ -334,6 +334,10 @@ impl PlantWorld {
         crate::world_runtime::world_map::render_world_map(&self.heightmap, self.sea_level, res)
     }
 
+    pub fn sample_height(&self, x: f32, z: f32) -> f32 {
+        self.heightmap.sample_height(x, z)
+    }
+
     /// Total plants across the whole world (loaded or not). O(1).
     pub fn population(&self) -> usize {
         self.population

@@ -466,6 +466,16 @@ impl AppState {
         }
     }
 
+    fn teleport_camera_to_map_position(&mut self, x: f32, z: f32) {
+        let ground_y = self
+            .world
+            .as_ref()
+            .map(|world| world.sample_height(x, z))
+            .unwrap_or(self.camera.position.y - MIN_HEIGHT_ABOVE_GROUND);
+        self.camera.position = Vec3::new(x, ground_y + MIN_HEIGHT_ABOVE_GROUND, z);
+        self.camera_controller.reset_inputs();
+    }
+
     fn return_to_menu(&mut self) {
         // Capture the current frame for a blurred menu background (desktop only;
         // WASM surface textures lack COPY_SRC).
@@ -1682,6 +1692,7 @@ impl AppState {
                     .loading_started
                     .map(|t| t.elapsed().as_secs_f32())
                     .unwrap_or(0.0);
+                let mut map_teleport_target = None;
                 let full_output = self
                     .egui_bridge
                     .ctx()
@@ -1729,13 +1740,15 @@ impl AppState {
                         Screen::Playing => {
                             self.config_panel.ui(ctx, &mut self.ui_registry);
                             if self.map_open {
-                                render_map_ui(
+                                if let Some((x, z)) = render_map_ui(
                                     ctx,
                                     self.camera.position.x,
                                     self.camera.position.z,
                                     self.camera.yaw,
                                     self.world_map_tex.as_ref(),
-                                );
+                                ) {
+                                    map_teleport_target = Some((x, z));
+                                }
                             }
                         }
                         Screen::PlantEditor => {
@@ -1771,6 +1784,10 @@ impl AppState {
                 );
 
                 self.pending_menu_action = menu_action;
+
+                if let Some((x, z)) = map_teleport_target {
+                    self.teleport_camera_to_map_position(x, z);
+                }
 
                 // Persist audio/settings changes once the dialog is dismissed.
                 if settings_closed {
@@ -2013,21 +2030,24 @@ fn render_loading_ui(
 
 /// The full-world map overlay (toggled with `M`): a dimmed modal showing the
 /// retained biome map of every canonical chunk, with the player drawn as an arrow
-/// at their wrapped world position pointing along the camera heading. Static view
-/// — no panning or interaction; `M`/`Esc` closes it (handled by the event loop).
+/// at their wrapped world position pointing along the camera heading. Right-click
+/// on the map teleports the player to that world position; `M`/`Esc` closes it
+/// (handled by the event loop).
 fn render_map_ui(
     ctx: &egui::Context,
     cam_x: f32,
     cam_z: f32,
     cam_yaw: f32,
     map_tex: Option<&egui::TextureHandle>,
-) {
+) -> Option<(f32, f32)> {
     use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
     use egui::{
-        epaint, Align2, Color32, CornerRadius, FontId, RichText, Sense, Shape, Stroke, StrokeKind,
+        epaint, Align2, Color32, CornerRadius, CursorIcon, FontId, RichText, Sense, Shape, Stroke,
+        StrokeKind,
     };
 
     let world_size_m = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
+    let mut teleport_target = None;
 
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(Color32::from_black_alpha(190)))
@@ -2051,8 +2071,16 @@ fn render_map_ui(
                 );
                 ui.add_space(12.0);
 
-                let (rect, _resp) =
-                    ui.allocate_exact_size(egui::vec2(map_side, map_side), Sense::hover());
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(map_side, map_side), Sense::click());
+                let resp = resp.on_hover_cursor(CursorIcon::Crosshair);
+                if resp.secondary_clicked() {
+                    if let Some(pos) = resp.interact_pointer_pos() {
+                        let u = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                        let v = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
+                        teleport_target = Some(map_uv_to_world_position(u, v));
+                    }
+                }
                 if ui.is_rect_visible(rect) {
                     let painter = ui.painter_at(rect);
                     painter.rect_filled(
@@ -2125,6 +2153,24 @@ fn render_map_ui(
                         Stroke::new(2.0, Color32::from_black_alpha(220)),
                     ));
 
+                    if resp.hovered() {
+                        if let Some(pos) = resp.interact_pointer_pos() {
+                            let r = (map_side * 0.012).clamp(5.0, 11.0);
+                            let stroke = Stroke::new(1.5, Color32::from_rgb(245, 248, 250));
+                            let shadow = Stroke::new(3.0, Color32::from_black_alpha(180));
+                            let h0 = egui::pos2(pos.x - r, pos.y);
+                            let h1 = egui::pos2(pos.x + r, pos.y);
+                            let v0 = egui::pos2(pos.x, pos.y - r);
+                            let v1 = egui::pos2(pos.x, pos.y + r);
+                            painter.circle_stroke(pos, r * 0.62, shadow);
+                            painter.line_segment([h0, h1], shadow);
+                            painter.line_segment([v0, v1], shadow);
+                            painter.circle_stroke(pos, r * 0.62, stroke);
+                            painter.line_segment([h0, h1], stroke);
+                            painter.line_segment([v0, v1], stroke);
+                        }
+                    }
+
                     painter.rect_stroke(
                         rect,
                         CornerRadius::same(8),
@@ -2135,12 +2181,23 @@ fn render_map_ui(
 
                 ui.add_space(14.0);
                 ui.label(
-                    RichText::new("M / Esc to close")
+                    RichText::new("Right-click to teleport   •   M / Esc to close")
                         .font(FontId::monospace(13.0))
                         .color(Color32::from_white_alpha(150)),
                 );
             });
         });
+
+    teleport_target
+}
+
+fn map_uv_to_world_position(u: f32, v: f32) -> (f32, f32) {
+    use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
+
+    let world_size_m = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
+    let u = u.clamp(0.0, 1.0 - f32::EPSILON);
+    let v = v.clamp(0.0, 1.0 - f32::EPSILON);
+    ((1.0 - v) * world_size_m, u * world_size_m)
 }
 
 pub fn try_grab_window_cursor(window: &Window) -> bool {
