@@ -85,14 +85,14 @@ jobs:
 
       - name: Upload artifact (zip)
         if: ${{ inputs.release && runner.os != 'Windows' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.zip
 
       - name: Upload artifact (exe)
         if: ${{ inputs.release && runner.os == 'Windows' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.exe
