@@ -6,5 +6,4 @@ Steps:
 3. Group commits by feature/PR for the release summary
 4. Create a PR from `main` to `production` with:
    - Summary listing each feature with its PR reference
-   - Stats (files changed, lines, commit count)
-   - Test plan checklist
+

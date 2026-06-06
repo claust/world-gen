@@ -1,6 +1,3 @@
-#[macro_use]
-mod par;
-
 pub mod biome;
 pub mod biome_map;
 pub mod chunk;
@@ -17,4 +14,5 @@ pub mod rivers;
 pub mod save;
 pub mod storage;
 pub mod terrain;
+pub mod terrain_fields;
 pub mod time;

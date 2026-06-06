@@ -17,6 +17,7 @@ use rayon::prelude::*;
 
 use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
 use crate::world_core::heightmap::Heightmap;
+use crate::world_core::rivers::RiverField;
 
 /// Side length (in texels) of the rendered world-map texture. 1024² resamples
 /// the world ~4× finer than the per-chunk grid (256²) in each axis, which is
@@ -40,6 +41,50 @@ const BLUR_RADIUS: usize = 2;
 /// Single flat sea color (muted atlas blue). The whole sea reads as one tone.
 const SEA_COLOR: [f32; 3] = [0.38, 0.50, 0.60];
 
+/// River ink (atlas blue), darker and more saturated than the sea so the channels
+/// read as drawn lines over land rather than melting into the coast. Trunk centers
+/// deepen toward [`RIVER_DEEP_COLOR`] for an extra cue on top of their width.
+const RIVER_COLOR: [f32; 3] = [0.27, 0.40, 0.55];
+
+/// Ink for the biggest rivers' cores — a deeper, more saturated blue so a major
+/// trunk reads as a heavier stroke than the tributaries feeding it.
+const RIVER_DEEP_COLOR: [f32; 3] = [0.14, 0.27, 0.46];
+
+/// Wetness below this isn't drawn at all. Wetness is `log(drainage area)` mapped
+/// to `0..1`. Set well above the per-chunk river-surface threshold (0.04): drawing
+/// every capillary turns the land into a dense web, so we keep only the trunks and
+/// their main tributaries — the selective look of a drawn atlas, not a flow map.
+const RIVER_MIN_WETNESS: f32 = 0.28;
+
+/// Unconditional widening passes applied before the size-aware widening, so even
+/// the faintest *drawn* tributary (wetness ≥ [`RIVER_MIN_WETNESS`]) is a few texels
+/// wide and survives the map's down-scaling to screen instead of dropping to a
+/// dotted hairline. (Sub-threshold wetness is widened too but zeroed out before
+/// compositing, so the guarantee only matters for rivers that actually get drawn.)
+const RIVER_MIN_WIDTH_PASSES: usize = 1;
+
+/// Per-texel decay applied while size-widening rivers. A trunk river (wetness ≈ 1)
+/// stays above [`RIVER_MIN_WETNESS`] for many steps and so grows thick; a thin
+/// tributary (wetness ≈ 0.1) decays past it almost immediately and stays near the
+/// minimum width. This is what turns the single wetness number into "bold trunk,
+/// fine tributary" signature line weights — not to scale, but legibly ranked.
+const RIVER_WIDEN_DECAY: f32 = 0.14;
+
+/// Number of size-aware widening iterations. Caps the widest trunk at roughly this
+/// many texels of half-width on top of the minimum-width passes.
+const RIVER_WIDEN_ITERS: usize = 7;
+
+/// Ink opacity floor for any drawn river cell. Kept high so channels read as solid
+/// drawn lines of fairly uniform darkness — width, not fade, carries river size —
+/// with only a slight lift toward full opacity at trunk cores.
+const RIVER_OPACITY_FLOOR: f32 = 0.7;
+
+/// Supersampling factor (per axis) when reading the wetness field into texels.
+/// River channels are far narrower than a 64 m texel, so we sample a finer grid
+/// and keep the **max** — otherwise thin tributaries fall between texel centers
+/// and break into dashes.
+const RIVER_OVERSAMPLE: usize = 3;
+
 /// Hypsometric color ramp: `(t, rgb)` stops from coast (`t = 0`) to the highest
 /// land (`t = 1`), in the muted, earthy palette of an old physical map.
 const LAND_RAMP: [(f32, [f32; 3]); 6] = [
@@ -54,6 +99,100 @@ const LAND_RAMP: [(f32, [f32; 3]); 6] = [
 #[inline]
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
+}
+
+#[inline]
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Build a per-texel river "ink intensity" grid (`res`×`res`, row-major) from the
+/// baked wetness field, encoding the signature line weights drawn onto the map.
+///
+/// Two stages: (1) read the wetness field at higher-than-texel density and keep
+/// the max so sub-texel channels don't break into dashes; (2) widen by a
+/// wetness-aware dilation so trunk rivers thicken while tributaries stay hairline
+/// (see [`RIVER_WIDEN_DECAY`]).
+fn river_intensity_grid(rivers: &RiverField, res: usize, step: f32) -> Vec<f32> {
+    // Stage 1: max-wetness resample. `step` is the world metres per texel; we
+    // probe `RIVER_OVERSAMPLE²` points inside each texel's footprint.
+    let os = RIVER_OVERSAMPLE.max(1);
+    let sub = step / os as f32;
+    let sample_row = |row: usize| -> Vec<f32> {
+        let z0 = row as f32 * step;
+        (0..res)
+            .map(|col| {
+                let x0 = col as f32 * step;
+                let mut m = 0.0f32;
+                for sz in 0..os {
+                    let wz = z0 + (sz as f32 + 0.5) * sub;
+                    for sx in 0..os {
+                        let wx = x0 + (sx as f32 + 0.5) * sub;
+                        let (_, wet) = rivers.sample(wx, wz);
+                        if wet > m {
+                            m = wet;
+                        }
+                    }
+                }
+                m
+            })
+            .collect()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut grid: Vec<f32> = (0..res).into_par_iter().flat_map(sample_row).collect();
+    #[cfg(target_arch = "wasm32")]
+    let mut grid: Vec<f32> = (0..res).flat_map(sample_row).collect();
+
+    // Stage 2: dilation. Each pass lets a texel inherit a (possibly decayed) copy
+    // of its strongest neighbour. The first `RIVER_MIN_WIDTH_PASSES` use no decay,
+    // so every river — even a faint tributary — gets a guaranteed minimum width;
+    // the remaining passes decay, so only strong (trunk) cells survive far enough
+    // to keep widening while tributaries hold near the minimum.
+    let n = res as i32;
+    let total_passes = RIVER_MIN_WIDTH_PASSES + RIVER_WIDEN_ITERS;
+    for pass in 0..total_passes {
+        let decay = if pass < RIVER_MIN_WIDTH_PASSES {
+            0.0
+        } else {
+            RIVER_WIDEN_DECAY
+        };
+        // Move the buffer out rather than clone it — `grid` is rebuilt from `src`
+        // below, so the old allocation is dead weight we'd otherwise copy each pass.
+        let src = std::mem::take(&mut grid);
+        let widen_row = |row: usize| -> Vec<f32> {
+            (0..res)
+                .map(|col| {
+                    let mut best = src[row * res + col];
+                    for (dr, dc) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                        let r = (row as i32 + dr).clamp(0, n - 1) as usize;
+                        let c = (col as i32 + dc).clamp(0, n - 1) as usize;
+                        let cand = src[r * res + c] - decay;
+                        if cand > best {
+                            best = cand;
+                        }
+                    }
+                    best
+                })
+                .collect()
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            grid = (0..res).into_par_iter().flat_map(widen_row).collect();
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            grid = (0..res).flat_map(widen_row).collect();
+        }
+    }
+
+    // Zero out everything below the draw threshold so the compositor can skip it.
+    for v in grid.iter_mut() {
+        if *v < RIVER_MIN_WETNESS {
+            *v = 0.0;
+        }
+    }
+    grid
 }
 
 /// Sample the hypsometric ramp at normalized land elevation `t` in `[0, 1]`.
@@ -143,7 +282,12 @@ fn box_blur(src: &[[f32; 3]], res: usize, radius: usize) -> Vec<[f32; 3]> {
 /// Texel layout matches the loading/minimap convention so the existing overlay
 /// UV mapping in `render_map_ui` stays valid: **column = world +x**, **row =
 /// world +z**.
-pub fn render_world_map(heightmap: &Heightmap, sea_level: f32, res: usize) -> Vec<u8> {
+pub fn render_world_map(
+    heightmap: &Heightmap,
+    sea_level: f32,
+    rivers: &RiverField,
+    res: usize,
+) -> Vec<u8> {
     let world_size_m = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
     let step = world_size_m / res as f32;
 
@@ -224,9 +368,43 @@ pub fn render_world_map(heightmap: &Heightmap, sea_level: f32, res: usize) -> Ve
     // gradients of a printed map.
     let blurred = box_blur(&colors, res, BLUR_RADIUS);
 
-    // Pass 4: quantize to RGBA8.
+    // Pass 4: ink the rivers on top of the (already soft) terrain so the channels
+    // stay crisp drawn lines. Done after the blur on purpose: blurring hairline
+    // tributaries would just dim them away.
+    let rivers_grid = river_intensity_grid(rivers, res, step);
+    let final_colors: Vec<[f32; 3]> = blurred
+        .iter()
+        .zip(rivers_grid.iter())
+        .map(|(land, &v)| {
+            if v <= 0.0 {
+                return *land;
+            }
+            // Width carries river size, so ink at a high, fairly uniform opacity
+            // (tight smoothstep band = a crisp anti-aliased edge, not a fade), with
+            // only a small lift toward full opacity where the value is strongest.
+            let edge = smoothstep(RIVER_MIN_WETNESS, RIVER_MIN_WETNESS + 0.02, v);
+            let alpha = (edge
+                * (RIVER_OPACITY_FLOOR + (1.0 - RIVER_OPACITY_FLOOR) * v.clamp(0.0, 1.0)))
+            .clamp(0.0, 1.0);
+            // Deepen the ink toward the trunk-core blue as the value climbs, so a
+            // major river reads as a heavier stroke than the threads feeding it.
+            let deepen = smoothstep(0.4, 0.95, v);
+            let ink = [
+                lerp(RIVER_COLOR[0], RIVER_DEEP_COLOR[0], deepen),
+                lerp(RIVER_COLOR[1], RIVER_DEEP_COLOR[1], deepen),
+                lerp(RIVER_COLOR[2], RIVER_DEEP_COLOR[2], deepen),
+            ];
+            [
+                lerp(land[0], ink[0], alpha),
+                lerp(land[1], ink[1], alpha),
+                lerp(land[2], ink[2], alpha),
+            ]
+        })
+        .collect();
+
+    // Pass 5: quantize to RGBA8.
     let mut pixels = vec![0u8; res * res * 4];
-    for (i, c) in blurred.iter().enumerate() {
+    for (i, c) in final_colors.iter().enumerate() {
         let o = i * 4;
         pixels[o] = (c[0].clamp(0.0, 1.0) * 255.0) as u8;
         pixels[o + 1] = (c[1].clamp(0.0, 1.0) * 255.0) as u8;

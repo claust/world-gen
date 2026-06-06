@@ -2,23 +2,31 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use wgpu::util::DeviceExt;
 
-use super::hud_font::{self, HudVertex, ATLAS_H, ATLAS_W};
+use super::hud_font::{self, HudVertex, MsdfFont};
 use super::pipeline::DEPTH_FORMAT;
 
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
 struct HudUniform {
     screen_size: [f32; 2],
-    _pad: [f32; 2],
+    /// MSDF distance-field range, in atlas texels (forwarded to the shader's AA).
+    px_range: f32,
+    _pad: f32,
 }
 
 const INITIAL_VERTEX_CAP: usize = 4096;
+
+/// Font size (em → pixels) for the info-panel text lines.
+const PANEL_TEXT_PX: f32 = 22.0;
+/// Font size for the compass cardinal labels.
+const COMPASS_LABEL_PX: f32 = 20.0;
 
 pub struct HudPass {
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     font_bind_group: wgpu::BindGroup,
+    font: MsdfFont,
     vertex_buffer: wgpu::Buffer,
     vertex_cap: usize,
     vertex_count: u32,
@@ -35,7 +43,8 @@ impl HudPass {
             label: Some("hud-uniform-layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                // VERTEX projects positions; FRAGMENT reads px_range for MSDF AA.
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -45,11 +54,14 @@ impl HudPass {
             }],
         });
 
+        let (font, atlas_rgba) = MsdfFont::load();
+
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("hud-uniform-buffer"),
             contents: bytemuck::cast_slice(&[HudUniform {
                 screen_size: [1.0, 1.0],
-                _pad: [0.0; 2],
+                px_range: font.px_range,
+                _pad: 0.0,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -86,10 +98,9 @@ impl HudPass {
             ],
         });
 
-        let atlas_pixels = hud_font::generate_atlas_pixels();
         let atlas_size = wgpu::Extent3d {
-            width: ATLAS_W,
-            height: ATLAS_H,
+            width: font.atlas_w,
+            height: font.atlas_h,
             depth_or_array_layers: 1,
         };
         let font_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -98,7 +109,7 @@ impl HudPass {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -109,20 +120,24 @@ impl HudPass {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &atlas_pixels,
+            &atlas_rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(ATLAS_W),
-                rows_per_image: Some(ATLAS_H),
+                bytes_per_row: Some(font.atlas_w * 4),
+                rows_per_image: Some(font.atlas_h),
             },
             atlas_size,
         );
+        // The CPU texels live only on the GPU now; metrics are kept in `font`.
+        drop(atlas_rgba);
 
         let font_view = font_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Linear filtering: the MSDF shader reconstructs the edge from a smoothly
+        // interpolated distance, so the sampler must interpolate (not snap).
         let font_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("hud-font-sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
@@ -202,6 +217,7 @@ impl HudPass {
             uniform_buffer,
             uniform_bind_group,
             font_bind_group,
+            font,
             vertex_buffer,
             vertex_cap: INITIAL_VERTEX_CAP,
             vertex_count: 0,
@@ -227,15 +243,16 @@ impl HudPass {
             0,
             bytemuck::cast_slice(&[HudUniform {
                 screen_size: [screen_w, screen_h],
-                _pad: [0.0; 2],
+                px_range: self.font.px_range,
+                _pad: 0.0,
             }]),
         );
 
         let mut verts: Vec<HudVertex> = Vec::with_capacity(512);
 
         // --- Info panel (top-left): coordinates, FPS, plant count ---
-        let scale = 2.0;
-        let line_h = hud_font::GLYPH_H as f32 * scale + 4.0;
+        let px = PANEL_TEXT_PX;
+        let line_h = self.font.line_height * px;
         let text_color = [1.0, 1.0, 1.0, 0.95];
 
         let lines = [
@@ -243,35 +260,38 @@ impl HudPass {
             format!("Y: {:.1}m", camera_pos.y),
             format!("Z: {:.1}m", camera_pos.z),
             format!("FPS: {:.0}", fps),
-            format!("PLANTS: {}", plant_count),
+            format!("PLANTS: {}", format_compact_count(plant_count)),
         ];
 
-        let gw = hud_font::GLYPH_W as f32 * scale;
         let margin = 8.0; // gap between screen edge and panel
         let inner = 10.0; // gap between panel edge and text
         let text_x = margin + inner;
         let text_y = margin + inner;
 
-        let max_chars = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-        let panel_w = inner * 2.0 + max_chars as f32 * gw;
-        let panel_h = inner * 2.0 + lines.len() as f32 * line_h - 4.0;
+        let max_w = lines
+            .iter()
+            .map(|l| self.font.measure(l, px))
+            .fold(0.0_f32, f32::max);
+        let panel_w = inner * 2.0 + max_w;
+        let panel_h = inner * 2.0 + lines.len() as f32 * line_h;
 
         // See-through background panel (pushed first so the text sits on top).
         push_panel(&mut verts, margin, margin, panel_w, panel_h);
 
         for (i, line) in lines.iter().enumerate() {
             hud_font::build_text_quads(
+                &self.font,
                 line,
                 text_x,
                 text_y + i as f32 * line_h,
-                scale,
+                px,
                 text_color,
                 &mut verts,
             );
         }
 
         // --- Compass rose (top-right) ---
-        build_compass(&mut verts, camera_yaw, screen_w);
+        build_compass(&self.font, &mut verts, camera_yaw, screen_w);
 
         // --- Sky clock (below compass) ---
         build_sky_clock(&mut verts, hour, screen_w);
@@ -328,6 +348,18 @@ fn push_tri(verts: &mut Vec<HudVertex>, a: [f32; 2], b: [f32; 2], c: [f32; 2], c
     });
 }
 
+fn format_compact_count(count: usize) -> String {
+    // f64 is exact for integers up to 2^53, well beyond any realistic plant total,
+    // so the division below never loses precision the way f32 would past ~16.7M.
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 10_000 {
+        format!("{:.1}k", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
+}
+
 /// Pushes a filled axis-aligned rectangle (two triangles) as a solid-color quad.
 fn push_rect(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
     push_tri(verts, [x, y], [x + w, y], [x + w, y + h], color);
@@ -351,7 +383,7 @@ fn push_panel(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32) {
     push_rect(verts, x, y, w, h, fill_color);
 }
 
-fn build_compass(verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {
+fn build_compass(font: &MsdfFont, verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {
     let cx = screen_w - 70.0;
     let cy = 70.0;
     let radius = 28.0;
@@ -387,9 +419,10 @@ fn build_compass(verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {
 
     // Cardinal labels
     let label_color = [1.0, 1.0, 1.0, 0.95];
-    let label_scale = 1.5;
-    let gw = hud_font::GLYPH_W as f32 * label_scale;
-    let gh = hud_font::GLYPH_H as f32 * label_scale;
+    let px = COMPASS_LABEL_PX;
+    // Approximate cap height of the uppercase labels, in em — used to center each
+    // glyph vertically on its compass point (build_text_quads positions by top-left).
+    const CAP_EM: f32 = 0.72;
 
     for (angle, label) in [
         (0.0, "N"),
@@ -398,10 +431,10 @@ fn build_compass(verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {
         (3.0 * std::f32::consts::FRAC_PI_2, "W"),
     ] {
         let pos = rot(angle, label_radius);
-        // Center the glyph on that position
-        let lx = pos[0] - gw * 0.5;
-        let ly = pos[1] - gh * 0.5;
-        hud_font::build_text_quads(label, lx, ly, label_scale, label_color, verts);
+        let lx = pos[0] - font.measure(label, px) * 0.5;
+        // Place the line top so the cap's midline lands on `pos.y`.
+        let ly = pos[1] + (0.5 * CAP_EM - font.ascender) * px;
+        hud_font::build_text_quads(font, label, lx, ly, px, label_color, verts);
     }
 }
 
@@ -550,5 +583,26 @@ fn build_sky_clock(verts: &mut Vec<HudVertex>, hour: f32, screen_w: f32) {
             push_tri(verts, r0, r2, r3, ray_color);
             push_tri(verts, r0, r3, r1, ray_color);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_compact_count;
+
+    #[test]
+    fn compact_count_keeps_hud_plant_totals_readable() {
+        assert_eq!(format_compact_count(3_129), "3129");
+        assert_eq!(format_compact_count(29_532), "29.5k");
+        assert_eq!(format_compact_count(999_999), "1000.0k");
+        assert_eq!(format_compact_count(14_165_889), "14.2M");
+    }
+
+    #[test]
+    fn compact_count_stays_exact_past_f32_precision() {
+        // Above ~16.7M an f32 mantissa can't represent every integer, which would
+        // skew the division; f64 keeps the rounded result correct.
+        assert_eq!(format_compact_count(16_777_217), "16.8M");
+        assert_eq!(format_compact_count(123_456_789), "123.5M");
     }
 }

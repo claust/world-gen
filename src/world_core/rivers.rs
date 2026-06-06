@@ -22,6 +22,18 @@ use rayon::prelude::*;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
+/// Plant placement is rejected wherever river wetness exceeds this. Wetness is
+/// `0..1` (see [`RiverField`]); the channel itself trends toward `1.0` while
+/// merely-damp banks stay low, so this keeps vegetation out of the water without
+/// stripping the riparian fringe. Shared by base-flora placement and the spread
+/// landing pass so both agree on where "in the river" is.
+pub const MAX_PLANTABLE_WETNESS: f32 = 0.15;
+
+/// Upper wetness bound for aquatic plants (cattails). Keeps them out of the deep
+/// channel centre so banks read as a reed fringe rather than a carpet over open
+/// water. Their lower bound is [`MAX_PLANTABLE_WETNESS`], where land plants stop.
+pub const AQUATIC_MAX_WETNESS: f32 = 0.55;
+
 /// A baked global river field, sampled during terrain generation.
 pub struct RiverField {
     res: usize,
@@ -29,16 +41,24 @@ pub struct RiverField {
     carve: Vec<f32>,
     /// Per-cell wetness in `0..1` (riverbed tint strength).
     wet: Vec<f32>,
+    /// Per-cell normalized downstream flow direction in world space, split into
+    /// parallel x/z grids. `(0, 0)` away from rivers; elsewhere a unit vector
+    /// pointing the way the water runs (toward the sea). Drives the streaming
+    /// animation of the river water surface.
+    flow_x: Vec<f32>,
+    flow_z: Vec<f32>,
 }
 
 impl RiverField {
-    /// An inert field: no carving, no wetness. Used when rivers are disabled and
-    /// as a cheap stand-in in tests.
+    /// An inert field: no carving, no wetness, no flow. Used when rivers are
+    /// disabled and as a cheap stand-in in tests.
     pub fn empty() -> Self {
         Self {
             res: 1,
             carve: vec![0.0],
             wet: vec![0.0],
+            flow_x: vec![0.0],
+            flow_z: vec![0.0],
         }
     }
 
@@ -89,6 +109,21 @@ impl RiverField {
         let hi = (threshold * 300.0).ln();
         let mut carve = vec![0.0f32; n2];
         let mut wet = vec![0.0f32; n2];
+        let mut flow_x = vec![0.0f32; n2];
+        let mut flow_z = vec![0.0f32; n2];
+        let half = res as i64 / 2;
+        // Shortest toroidal step between two grid indices on one axis. The
+        // receiver is always an 8-neighbour, so the result is in `-1..=1`.
+        let wrap_step = |to: i64, from: i64| -> i64 {
+            let d = to - from;
+            if d > half {
+                d - res as i64
+            } else if d < -half {
+                d + res as i64
+            } else {
+                d
+            }
+        };
         for i in 0..n2 {
             let a = hy.accum[i];
             if a <= threshold {
@@ -97,6 +132,20 @@ impl RiverField {
             let t = ((a.ln() - lo) / (hi - lo)).clamp(0.0, 1.0);
             wet[i] = t;
             carve[i] = rc.max_carve_depth * (0.3 + 0.7 * t);
+
+            // Downstream direction: from this cell toward its receiver. World x
+            // grows with the column index and world z with the row index, so the
+            // grid step doubles as the world-space flow direction once normalized.
+            let r = hy.receiver[i];
+            if r != u32::MAX {
+                let dx = wrap_step((r as usize % res) as i64, (i % res) as i64) as f32;
+                let dz = wrap_step((r as usize / res) as i64, (i / res) as i64) as f32;
+                let len = (dx * dx + dz * dz).sqrt();
+                if len > 0.0 {
+                    flow_x[i] = dx / len;
+                    flow_z[i] = dz / len;
+                }
+            }
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -111,7 +160,13 @@ impl RiverField {
             );
         }
 
-        Self { res, carve, wet }
+        Self {
+            res,
+            carve,
+            wet,
+            flow_x,
+            flow_z,
+        }
     }
 
     /// Bilinearly sample the field at world `(x, z)` (wrapping toroidally).
@@ -146,6 +201,47 @@ impl RiverField {
             top * (1.0 - tz) + bot * tz
         };
         (lerp(&self.carve), lerp(&self.wet))
+    }
+
+    /// Bilinearly sample the downstream flow direction at world `(x, z)`,
+    /// renormalized so the caller gets a unit vector (or `(0, 0)` away from any
+    /// river). Bilinear blending of neighbouring directions naturally smooths the
+    /// flow field; it can shrink near confluences where directions disagree, so
+    /// we renormalize rather than trusting the interpolated length.
+    pub fn sample_flow(&self, x: f32, z: f32) -> (f32, f32) {
+        if self.res <= 1 {
+            return (0.0, 0.0);
+        }
+        let res = self.res;
+        let cell = WORLD_SIZE_METERS as f32 / res as f32;
+        let gx = x / cell;
+        let gz = z / cell;
+        let x0 = gx.floor();
+        let z0 = gz.floor();
+        let tx = gx - x0;
+        let tz = gz - z0;
+        let ix0 = (x0 as i64).rem_euclid(res as i64) as usize;
+        let iz0 = (z0 as i64).rem_euclid(res as i64) as usize;
+        let ix1 = (ix0 + 1) % res;
+        let iz1 = (iz0 + 1) % res;
+
+        let lerp = |buf: &[f32]| {
+            let a = buf[iz0 * res + ix0];
+            let b = buf[iz0 * res + ix1];
+            let c = buf[iz1 * res + ix0];
+            let d = buf[iz1 * res + ix1];
+            let top = a * (1.0 - tx) + b * tx;
+            let bot = c * (1.0 - tx) + d * tx;
+            top * (1.0 - tz) + bot * tz
+        };
+        let fx = lerp(&self.flow_x);
+        let fz = lerp(&self.flow_z);
+        let len = (fx * fx + fz * fz).sqrt();
+        if len > 1e-4 {
+            (fx / len, fz / len)
+        } else {
+            (0.0, 0.0)
+        }
     }
 }
 
@@ -188,6 +284,8 @@ fn box_blur_wrapped(src: &[f32], res: usize, radius: usize, iters: usize) -> Vec
 
 struct Hydrology {
     accum: Vec<f32>,
+    /// Each cell's downhill receiver cell index (`u32::MAX` for outlets/ocean).
+    receiver: Vec<u32>,
 }
 
 const NB8: [(i64, i64); 8] = [
@@ -264,7 +362,7 @@ fn compute_hydrology(heights: &[f32], res: usize, sea_level: f32) -> Hydrology {
         }
     }
 
-    Hydrology { accum }
+    Hydrology { accum, receiver }
 }
 
 #[cfg(test)]
@@ -302,5 +400,40 @@ mod tests {
         let field = RiverField::generate(42, &config);
         let wet_cells = field.wet.iter().filter(|&&w| w > 0.0).count();
         assert!(wet_cells > 0, "expected the default world to grow rivers");
+    }
+
+    #[test]
+    fn flow_is_unit_or_zero_and_wraps() {
+        let mut config = GameConfig::default();
+        config.rivers.grid_resolution = 256;
+        let field = RiverField::generate(42, &config);
+        let l = WORLD_SIZE_METERS as f32;
+
+        // Sweep a grid of world points and assert the two invariants of
+        // `sample_flow`: every sample is either the zero vector (away from
+        // rivers) or unit length (renormalized direction), and it is periodic
+        // across the world wrap just like `sample`.
+        let mut saw_flow = false;
+        for gz in 0..48 {
+            for gx in 0..48 {
+                let x = gx as f32 / 48.0 * l;
+                let z = gz as f32 / 48.0 * l;
+                let (fx, fz) = field.sample_flow(x, z);
+                let len = (fx * fx + fz * fz).sqrt();
+                assert!(
+                    len < 1e-3 || (len - 1.0).abs() < 1e-3,
+                    "flow at ({x},{z}) is neither zero nor unit: len {len}"
+                );
+                if len > 0.5 {
+                    saw_flow = true;
+                }
+                let (px, pz) = field.sample_flow(x + l, z - l);
+                assert!(
+                    (fx - px).abs() < 1e-3 && (fz - pz).abs() < 1e-3,
+                    "flow not periodic at ({x},{z})"
+                );
+            }
+        }
+        assert!(saw_flow, "expected some river flow on the default world");
     }
 }

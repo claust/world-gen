@@ -29,11 +29,10 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
 
-  # Generate the prebuilt base world on a cheap Linux runner and upload it as an
-  # artifact. The release attaches it so first-time players download it instead of
-  # spending ~minutes generating it locally. Platform doesn't matter: the client
-  # accepts any snapshot whose embedded seed + generation key match, regardless of
-  # which OS produced it (and a mismatch just falls back to local generation).
+  # Generate the prebuilt base worlds on a cheap Linux runner and upload them as
+  # artifacts. Native and web need separate snapshots because the web build uses
+  # a coarser default river grid; river settings feed the base-generation key, so
+  # a native snapshot is correctly rejected by wasm.
   generate-base:
     name: Generate base world
     runs-on: ubuntu-latest
@@ -64,25 +63,35 @@ jobs:
         run: |
           # Match a fresh end-user install: with no herbarium.json / config.json in
           # the working directory the generator uses the default (default_seeded)
-          # herbarium and default config — the same ones a first-time client loads
-          # and validates the download against. Both are gitignored runtime
-          # artifacts (not in the checkout); this rm is a guard against a stray copy
-          # producing a generation key no shipped client would match.
+          # herbarium and default config for each target profile — the same ones a
+          # first-time client loads and validates the download against. Both are
+          # gitignored runtime artifacts (not in the checkout); this rm is a guard
+          # against a stray copy producing a generation key no shipped client would
+          # match.
           rm -f herbarium.json config.json
-          ./target/release/FloraForge --generate-base world_base.bin
+          mkdir -p native web
+          ./target/release/FloraForge --generate-base native/world_base.bin
+          ./target/release/FloraForge --generate-base-web web/world_base.bin
 
       - name: Upload world-base artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: floraforge-world-base
-          path: world_base.bin
+          path: native/world_base.bin
+
+      - name: Upload web world-base artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: floraforge-web-world-base
+          path: web/world_base.bin
 
   build-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
     # The prebuilt base world is bundled into the web deploy so the wasm client
     # can fetch it same-origin (a browser can't read the cross-origin release
-    # asset — GitHub's asset hosts send no CORS headers).
+    # asset — GitHub's asset hosts send no CORS headers). This artifact is the
+    # web-profile snapshot, not the native release asset.
     needs: generate-base
 
     steps:
@@ -124,16 +133,25 @@ jobs:
       # Place the prebuilt snapshot next to the bundle so the wasm client fetches
       # it at the same-origin path `world_base.bin` instead of generating locally.
       - name: Bundle prebuilt base world
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
-          name: floraforge-world-base
+          name: floraforge-web-world-base
           path: web/
 
+      # Render the site with Jekyll so the shared {% include nav.html %} on
+      # each page is expanded. The release workflow is the only place this
+      # ever builds — we don't run Jekyll locally.
+      - name: Build site with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./web
+          destination: ./web/_site
+
       - name: Create release zip
-        run: cd web && zip -r ../floraforge-web.zip .
+        run: cd web/_site && zip -r ../../floraforge-web.zip .
 
       - name: Upload zip artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: floraforge-web-zip
           path: floraforge-web.zip
@@ -141,7 +159,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: web/
+          path: web/_site
 
   # Same matrix the PR CI validates (native-build.yml), here with release=true to
   # produce optimized, packaged binaries. Single source of truth → no drift.
@@ -179,7 +197,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 

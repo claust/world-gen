@@ -106,6 +106,9 @@ This captures every `2s` for `10` frames.
 - Mouse: look around
 - `Esc`: release mouse cursor
 - `Left Click` (in window): capture mouse cursor again
+- `F1`: toggle config panel
+- `P`: copy a screenshot to the clipboard (also saved to `captures/`)
+- `M`: toggle the full-world map overlay
 
 ## Current Status
 - Architecture is now split into `world_core` (domain), `world_runtime` (use-cases/orchestration), and `renderer_wgpu` (render adapter).

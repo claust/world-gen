@@ -11,7 +11,7 @@ const CROWN_SHAPES: &[&str] = &[
 ];
 const LENGTH_PROFILES: &[&str] = &["conical", "dome", "columnar", "vase", "layered"];
 const FOLIAGE_STYLES: &[&str] = &["broadleaf", "needle", "scale_leaf", "palm_frond", "none"];
-const BODY_KINDS: &[&str] = &["tree", "shrub"];
+const BODY_KINDS: &[&str] = &["tree", "shrub", "reed"];
 const ARRANGEMENT_TYPES: &[&str] = &["spiral", "opposite", "whorled", "random"];
 const CLUSTER_TYPES: &[&str] = &["dense_mass", "clusters", "individual", "ring"];
 

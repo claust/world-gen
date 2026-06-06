@@ -1,0 +1,22 @@
+{%- comment -%}
+Shared top navigation. The wrapping <section>/<header> stays on the page
+so each layout (landing hero vs. article header) can position it.
+
+Pass `current` to mark the active link:
+  {% include nav.html current="home" %}
+  {% include nav.html current="biology" %}
+  {% include nav.html current="engine" %}
+{%- endcomment -%}
+<div class="topbar">
+    <a class="brand" href="./index.html">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>FloraForge</span>
+    </a>
+    <nav class="top-links" aria-label="Site links">
+        <a href="./index.html"{% if include.current == "home" %} class="current" aria-current="page"{% endif %}>Home</a>
+        <a href="./biology.html"{% if include.current == "biology" %} class="current" aria-current="page"{% endif %}>The Living World</a>
+        <a href="./engine.html"{% if include.current == "engine" %} class="current" aria-current="page"{% endif %}>Inside the Engine</a>
+        <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/claust/world-gen/releases" target="_blank" rel="noreferrer">Releases</a>
+    </nav>
+</div>

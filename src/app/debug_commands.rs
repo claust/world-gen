@@ -93,6 +93,40 @@ impl AppState {
                         data: None,
                     }
                 }
+                CommandKind::MapRightClick { u, v } => {
+                    if !self.map_open {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            "map right-click failed: map overlay is not open".to_string(),
+                        )
+                    } else if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            "map right-click failed: u and v must be in 0..=1".to_string(),
+                        )
+                    } else {
+                        let (x, z) = super::map_uv_to_world_position(u, v);
+                        self.teleport_camera_to_map_position(x, z);
+                        let mut evt = CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!(
+                                "map right-click teleported camera to ({:.1}, {:.1}, {:.1})",
+                                self.camera.position.x,
+                                self.camera.position.y,
+                                self.camera.position.z
+                            ),
+                        );
+                        evt.object_position = Some([
+                            self.camera.position.x,
+                            self.camera.position.y,
+                            self.camera.position.z,
+                        ]);
+                        evt
+                    }
+                }
                 CommandKind::FindNearest { kind } => {
                     let cam_pos = self.camera.position;
                     let mut best: Option<(String, [f32; 3], f32)> = None;
@@ -316,6 +350,19 @@ impl AppState {
                                 "map overlay opened".to_string()
                             } else {
                                 "map overlay closed".to_string()
+                            }
+                        }
+                        // Mirrors the in-app `P` shortcut: capture a screenshot
+                        // and copy it to the clipboard. The applied event is
+                        // deferred (via `continue`) until the render loop
+                        // completes the capture, like `TakeScreenshot`.
+                        PressableKey::P => {
+                            if self.screenshot_pending.is_some() {
+                                "screenshot already pending".to_string()
+                            } else {
+                                self.screenshot_pending = Some(command.id);
+                                self.screenshot_to_clipboard = true;
+                                continue;
                             }
                         }
                     };

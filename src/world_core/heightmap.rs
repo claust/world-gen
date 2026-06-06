@@ -1,15 +1,19 @@
 use std::f64::consts::TAU;
+use std::sync::Arc;
 
 use noise::{NoiseFn, OpenSimplex};
 
 use crate::world_core::chunk::WORLD_SIZE_METERS;
 use crate::world_core::config::HeightmapConfig;
+use crate::world_core::terrain_fields::{FieldKind, TerrainFields};
 
 pub struct Heightmap {
-    continental: OpenSimplex,
-    ridge: OpenSimplex,
+    /// Raw continental, ridge, and moisture (base + variation) noise, precomputed
+    /// once on a coarse global grid and bilinearly sampled (these low-frequency
+    /// octaves barely change within a chunk). The ridge crease, amplitudes, and
+    /// moisture weights are still applied per vertex.
+    fields: Arc<TerrainFields>,
     detail: OpenSimplex,
-    moisture: OpenSimplex,
     config: HeightmapConfig,
 }
 
@@ -30,10 +34,8 @@ pub struct CoastalSpawn {
 impl Heightmap {
     pub fn new(seed: u32, config: HeightmapConfig) -> Self {
         Self {
-            continental: OpenSimplex::new(seed),
-            ridge: OpenSimplex::new(seed.wrapping_add(101)),
+            fields: TerrainFields::shared(seed, &config),
             detail: OpenSimplex::new(seed.wrapping_add(907)),
-            moisture: OpenSimplex::new(seed.wrapping_add(1701)),
             config,
         }
     }
@@ -78,35 +80,153 @@ impl Heightmap {
     }
 
     pub fn sample_height(&self, x: f32, z: f32) -> f32 {
-        let x = x as f64;
-        let z = z as f64;
         let c = &self.config;
 
-        let broad =
-            Self::torus_sample(&self.continental, x, z, c.continental.frequency, 0.0, 0.0) as f32;
-        let ridges =
-            1.0 - (Self::torus_sample(&self.ridge, x, z, c.ridge.frequency, 0.0, 0.0).abs() as f32);
-        let rough = Self::torus_sample(&self.detail, x, z, c.detail.frequency, 0.0, 0.0) as f32;
+        // Continental + ridge are bilinear lookups into the precomputed coarse
+        // field; only the high-frequency detail octave is still a 4D noise eval.
+        let (broad, ridge_raw) = self.fields.sample(x, z);
+        let ridges = 1.0 - ridge_raw.abs(); // crease reconstructed at full res
+        let rough = Self::torus_sample(
+            &self.detail,
+            x as f64,
+            z as f64,
+            c.detail.frequency,
+            0.0,
+            0.0,
+        ) as f32;
 
         broad * c.continental.amplitude + ridges * c.ridge.amplitude + rough * c.detail.amplitude
     }
 
     pub fn sample_moisture(&self, x: f32, z: f32) -> f32 {
-        let x = x as f64;
-        let z = z as f64;
         let c = &self.config;
-        let base =
-            Self::torus_sample(&self.moisture, x, z, c.moisture_base_frequency, 0.0, 0.0) as f32;
-        let variation = Self::torus_sample(
-            &self.moisture,
-            x,
-            z,
-            c.moisture_variation_frequency,
-            c.moisture_variation_offset_x,
-            c.moisture_variation_offset_z,
-        ) as f32;
+        // Both moisture octaves are bilinear lookups into the precomputed coarse
+        // field; the weights and clamp are the only per-vertex work left.
+        let (base, variation) = self.fields.sample_moisture(x, z);
         ((base * c.moisture_base_weight + variation * c.moisture_variation_weight) * 0.5 + 0.5)
             .clamp(0.0, 1.0)
+    }
+
+    /// Fill `out` with the per-axis torus trig for `out.len()` evenly spaced
+    /// samples starting at world coordinate `origin` with `cell_size` spacing.
+    ///
+    /// `torus_sample` maps a world axis onto a circle and feeds the two circle
+    /// coordinates (`radius·cosθ`, `radius·sinθ`) to 4D OpenSimplex. Those two
+    /// numbers depend only on that one axis, so for a regular grid the cost can
+    /// be hoisted: the X pair is shared by every row, the Z pair by every column.
+    /// This computes one axis's pairs once. The arithmetic is byte-for-byte the
+    /// same as `torus_sample` (same `k`, `radius`, and `θ = TAU·w/L + offset·TAU/k`),
+    /// so the grid samplers below reproduce the point samplers bit-exactly.
+    fn fill_axis_trig(
+        out: &mut [(f64, f64)],
+        frequency: f64,
+        offset: f64,
+        origin: f32,
+        cell_size: f32,
+    ) {
+        let l = WORLD_SIZE_METERS;
+        let k = (frequency * l).round().max(1.0);
+        let radius = k / TAU;
+        for (i, slot) in out.iter_mut().enumerate() {
+            let w = (origin + i as f32 * cell_size) as f64;
+            let theta = TAU * w / l + offset * TAU / k;
+            *slot = (radius * theta.cos(), radius * theta.sin());
+        }
+    }
+
+    /// Fill a `side × side` field row by row, parallelising over rows — but only
+    /// when not already running inside a rayon worker. The bulk base build and
+    /// the streaming loader both parallelise at the chunk level, so a nested
+    /// per-row `par_iter` there would just add fork/join overhead; a top-level
+    /// caller (e.g. a single synchronous chunk) still gets the inner parallelism.
+    fn fill_grid(side: usize, fill_row: impl Fn(usize, &mut [f32]) + Sync) -> Vec<f32> {
+        let mut out = vec![0.0f32; side * side];
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rayon::prelude::*;
+            if rayon::current_thread_index().is_none() {
+                out.par_chunks_mut(side)
+                    .enumerate()
+                    .for_each(|(zi, row)| fill_row(zi, row));
+                return out;
+            }
+        }
+        out.chunks_mut(side)
+            .enumerate()
+            .for_each(|(zi, row)| fill_row(zi, row));
+        out
+    }
+
+    /// Height field for a `side × side` grid whose `(0,0)` vertex is at world
+    /// `(origin_x, origin_z)` with `cell_size` spacing. Bit-identical to calling
+    /// [`sample_height`](Self::sample_height) at each vertex, but hoists the
+    /// per-axis torus trig out of the inner loop — the dominant cost of base-world
+    /// generation.
+    pub fn height_grid(
+        &self,
+        origin_x: f32,
+        origin_z: f32,
+        side: usize,
+        cell_size: f32,
+    ) -> Vec<f32> {
+        let c = &self.config;
+        // Continental + ridge share one coarse field, so a single pair of per-axis
+        // bilinear factors (wrapped node indices + blend fraction) serves both —
+        // hoisted out of the inner loop the same way the detail trig is.
+        let lf_x = self.fields.axis_factors(origin_x, cell_size, side);
+        let lf_z = self.fields.axis_factors(origin_z, cell_size, side);
+        // The detail octave is still 4D noise; hoist its per-axis torus trig.
+        let mut trig = vec![(0.0f64, 0.0f64); 2 * side];
+        let (detail_x, detail_z) = trig.split_at_mut(side);
+        Self::fill_axis_trig(detail_x, c.detail.frequency, 0.0, origin_x, cell_size);
+        Self::fill_axis_trig(detail_z, c.detail.frequency, 0.0, origin_z, cell_size);
+        let (detail_x, detail_z) = (&*detail_x, &*detail_z);
+        let (amp_c, amp_r, amp_d) = (
+            c.continental.amplitude,
+            c.ridge.amplitude,
+            c.detail.amplitude,
+        );
+
+        Self::fill_grid(side, |zi, row| {
+            let fz = lf_z[zi];
+            let (dz0, dz1) = detail_z[zi];
+            for (xi, cell) in row.iter_mut().enumerate() {
+                let fx = lf_x[xi];
+                let broad = self.fields.blend(FieldKind::Continental, fx, fz);
+                let ridge_raw = self.fields.blend(FieldKind::Ridge, fx, fz);
+                let ridges = 1.0 - ridge_raw.abs();
+                let (dx0, dx1) = detail_x[xi];
+                let rough = self.detail.get([dx0, dx1, dz0, dz1]) as f32;
+                *cell = broad * amp_c + ridges * amp_r + rough * amp_d;
+            }
+        })
+    }
+
+    /// Moisture field for a `side × side` grid, laid out like [`height_grid`](Self::height_grid).
+    /// Bit-identical to [`sample_moisture`](Self::sample_moisture) per vertex.
+    pub fn moisture_grid(
+        &self,
+        origin_x: f32,
+        origin_z: f32,
+        side: usize,
+        cell_size: f32,
+    ) -> Vec<f32> {
+        let c = &self.config;
+        // Both moisture octaves share the one coarse field, so a single pair of
+        // per-axis bilinear factors serves both — hoisted out of the inner loop.
+        let mx = self.fields.axis_factors(origin_x, cell_size, side);
+        let mz = self.fields.axis_factors(origin_z, cell_size, side);
+        let (base_w, var_w) = (c.moisture_base_weight, c.moisture_variation_weight);
+
+        Self::fill_grid(side, |zi, row| {
+            let fz = mz[zi];
+            for (xi, cell) in row.iter_mut().enumerate() {
+                let fx = mx[xi];
+                let base = self.fields.blend(FieldKind::MoistureBase, fx, fz);
+                let variation = self.fields.blend(FieldKind::MoistureVariation, fx, fz);
+                *cell = ((base * base_w + variation * var_w) * 0.5 + 0.5).clamp(0.0, 1.0);
+            }
+        })
     }
 
     /// Scan the world for a coastline and return a pleasant spawn on land beside
@@ -309,5 +429,42 @@ mod tests {
             crosses_into_water,
             "the coast should be within ~{reach:.0} m in the water direction"
         );
+    }
+
+    /// The grid samplers must reproduce the per-vertex point samplers *bit for
+    /// bit*: terrain regenerates while streaming via the point samplers but is
+    /// baked via the grid samplers, so any divergence would float or sink plants.
+    /// Both now share the precomputed low-frequency field (bilinear) plus an
+    /// identical detail-octave trig hoist, so they must still agree exactly.
+    /// Compare `f32` bits over a few chunks, including a negative/off-origin one
+    /// to exercise the world-wrap arithmetic.
+    #[test]
+    fn grid_samplers_are_bit_identical_to_point_samplers() {
+        use crate::world_core::chunk::{CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
+
+        let hm = Heightmap::new(1337, HeightmapConfig::default());
+        let side = CHUNK_GRID_RESOLUTION;
+        let cell = CHUNK_SIZE_METERS / (side - 1) as f32;
+
+        for &(cx, cz) in &[(0, 0), (5, -3), (200, 17), (-12, 9)] {
+            let ox = cx as f32 * CHUNK_SIZE_METERS;
+            let oz = cz as f32 * CHUNK_SIZE_METERS;
+            let h_grid = hm.height_grid(ox, oz, side, cell);
+            let m_grid = hm.moisture_grid(ox, oz, side, cell);
+            for idx in 0..side * side {
+                let wx = ox + (idx % side) as f32 * cell;
+                let wz = oz + (idx / side) as f32 * cell;
+                assert_eq!(
+                    h_grid[idx].to_bits(),
+                    hm.sample_height(wx, wz).to_bits(),
+                    "height mismatch at chunk ({cx},{cz}) idx {idx}"
+                );
+                assert_eq!(
+                    m_grid[idx].to_bits(),
+                    hm.sample_moisture(wx, wz).to_bits(),
+                    "moisture mismatch at chunk ({cx},{cz}) idx {idx}"
+                );
+            }
+        }
     }
 }

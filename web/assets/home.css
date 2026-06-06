@@ -96,49 +96,10 @@ body[data-mode="play"] .page-shell {
     margin: 0 auto;
 }
 
+/* Bar look and brand mark live in the shared assets/nav.css; only the
+   landing-specific spacing below the bar stays here. */
 .topbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
     margin-bottom: 6rem;
-}
-
-.brand {
-    display: flex;
-    align-items: center;
-    gap: 0.9rem;
-    font-family: "Space Grotesk", sans-serif;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-}
-
-/* App icon: same flat two-tier conifer mark used by the favicon and
-   the macOS app icon, so the brand is consistent everywhere. */
-.brand-mark {
-    width: 2.4rem;
-    height: 2.4rem;
-    border-radius: 0.6rem;
-    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3C/svg%3E") center / cover no-repeat;
-    box-shadow: 0 0 22px rgba(62, 207, 110, 0.18);
-}
-
-.top-links {
-    display: flex;
-    gap: 1rem;
-    flex-wrap: wrap;
-    font-size: 0.95rem;
-    color: var(--mist);
-}
-
-.top-links a {
-    border-bottom: 1px solid transparent;
-    transition: color 180ms ease, border-color 180ms ease;
-}
-
-.top-links a:hover {
-    color: var(--green-glow);
-    border-color: rgba(124, 255, 159, 0.4);
 }
 
 .hero-grid {
@@ -635,11 +596,6 @@ body[data-game-ready="true"] canvas {
 
     .hero {
         padding-top: 1.3rem;
-    }
-
-    .topbar {
-        align-items: flex-start;
-        flex-direction: column;
     }
 
     .hero-actions,

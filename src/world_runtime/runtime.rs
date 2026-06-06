@@ -195,7 +195,14 @@ impl WorldRuntime {
         // authored from a New Game (`save.is_none()`) — a resume reuses it when
         // its seed matches but never overwrites it.
         let (mut plant_world, pending_base_snapshot) = match base_bytes.as_deref().and_then(|b| {
-            PlantWorld::from_base_snapshot(b, gen_key, seed, config, Arc::clone(&registry))
+            PlantWorld::from_base_snapshot(
+                b,
+                gen_key,
+                seed,
+                config,
+                Arc::clone(&registry),
+                Arc::clone(&rivers),
+            )
         }) {
             Some(world) => {
                 // Repaint the loading map the generation pass would have filled.
@@ -235,6 +242,7 @@ impl WorldRuntime {
                         seed,
                         config,
                         Arc::clone(&registry),
+                        Arc::clone(&rivers),
                     )
                     .map(|world| (world, bytes))
                 }) {
@@ -374,6 +382,10 @@ impl WorldRuntime {
     /// overlay.
     pub fn render_world_map(&self, res: usize) -> Vec<u8> {
         self.plant_world.render_world_map(res)
+    }
+
+    pub fn sample_height(&self, x: f32, z: f32) -> f32 {
+        self.plant_world.sample_height(x, z)
     }
 
     pub fn lighting(&self) -> LightingState {

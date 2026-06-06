@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::config::{BiomeConfig, GameConfig, HeightmapConfig, RiverConfig};
 pub use super::plant_gen::config::SpeciesConfig;
 use super::storage::Storage;
 
@@ -18,11 +19,18 @@ pub struct PlacementConfig {
     pub spread_chance: f32,
     pub seedling_hours: f32,
     pub young_hours: f32,
+    /// Aquatic species (cattails) spawn *in* the river/lake margin that land
+    /// plants avoid: the base-flora pass seats them in the wet band above
+    /// `MAX_PLANTABLE_WETNESS` and allows them below sea level, the mirror image
+    /// of the land guard. Land species leave this `false`.
+    #[serde(default)]
+    pub aquatic: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Herbarium, PlacementConfig};
+    use crate::world_core::config::GameConfig;
 
     #[test]
     fn placement_config_deserializes_missing_lifecycle_fields_with_defaults() {
@@ -52,11 +60,81 @@ mod tests {
         assert!(!herbarium.plants.is_empty());
 
         for entry in herbarium.plants {
-            assert_eq!(entry.placement.spread_radius, 25.0);
-            assert_eq!(entry.placement.spread_chance, 0.3);
+            // Growth-stage durations are shared by every species.
             assert_eq!(entry.placement.seedling_hours, 48.0);
             assert_eq!(entry.placement.young_hours, 96.0);
+            // Aquatic species (cattails) are base-only: they deliberately opt out
+            // of the lifecycle spread pass, so the spread defaults don't apply.
+            if entry.placement.aquatic {
+                assert_eq!(entry.placement.spread_radius, 0.0);
+                assert_eq!(entry.placement.spread_chance, 0.0);
+            } else {
+                assert_eq!(entry.placement.spread_radius, 25.0);
+                assert_eq!(entry.placement.spread_chance, 0.3);
+            }
         }
+    }
+
+    #[test]
+    fn generation_key_ignores_non_base_generation_config() {
+        let herbarium = Herbarium::default_seeded();
+        let config = GameConfig::default();
+        let key = herbarium.generation_key(&config);
+
+        let mut changed = config.clone();
+        changed.world.load_radius += 2;
+        changed.world.start_hour += 3.0;
+        changed.world.day_speed *= 2.0;
+        changed.audio.enabled = !changed.audio.enabled;
+        changed.audio.master_volume = 0.25;
+        changed.houses.grassland_density *= 2.0;
+        changed.houses.hamlet_house_max += 4;
+
+        assert_eq!(key, herbarium.generation_key(&changed));
+    }
+
+    #[test]
+    fn generation_key_ignores_plant_rendering_traits() {
+        let herbarium = Herbarium::default_seeded();
+        let key = herbarium.generation_key(&GameConfig::default());
+
+        let mut changed = herbarium.clone();
+        changed.plants[0].species.color.leaf.h += 30.0;
+        changed.plants[0].species.trunk.taper *= 0.5;
+        changed.plants[0].species.crown.density *= 0.75;
+
+        assert_eq!(key, changed.generation_key(&GameConfig::default()));
+    }
+
+    #[test]
+    fn generation_key_tracks_base_generation_inputs() {
+        let herbarium = Herbarium::default_seeded();
+        let config = GameConfig::default();
+        let key = herbarium.generation_key(&config);
+
+        let mut seed_changed = config.clone();
+        seed_changed.world.seed += 1;
+        assert_ne!(key, herbarium.generation_key(&seed_changed));
+
+        let mut terrain_changed = config.clone();
+        terrain_changed.heightmap.detail.amplitude += 1.0;
+        assert_ne!(key, herbarium.generation_key(&terrain_changed));
+
+        let mut biome_changed = config.clone();
+        biome_changed.biome.forest_moisture += 0.01;
+        assert_ne!(key, herbarium.generation_key(&biome_changed));
+
+        let mut river_changed = config.clone();
+        river_changed.rivers.max_carve_depth += 1.0;
+        assert_ne!(key, herbarium.generation_key(&river_changed));
+
+        let mut placement_changed = herbarium.clone();
+        placement_changed.plants[0].placement.weight += 0.1;
+        assert_ne!(key, placement_changed.generation_key(&config));
+
+        let mut height_changed = herbarium.clone();
+        height_changed.plants[0].species.body_plan.max_height[1] += 1.0;
+        assert_ne!(key, height_changed.generation_key(&config));
     }
 }
 
@@ -75,6 +153,7 @@ impl Default for PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         }
     }
 }
@@ -94,37 +173,89 @@ pub struct Herbarium {
 
 impl Herbarium {
     /// Deterministic 64-bit hash of the inputs that determine base-world
-    /// generation: this herbarium plus the game config (which carries the seed,
-    /// heightmap, and biome rules). Used as the validity key for the cached
-    /// base-world snapshot, so editing any generation rule invalidates a stale
-    /// cache.
+    /// generation. Used as the validity key for the cached base-world snapshot,
+    /// so editing any generation rule invalidates a stale cache.
     ///
-    /// Deterministic *within a build*: both types serialize to a field-ordered
-    /// JSON byte image (no `HashMap`s) hashed through a fixed-keyed
+    /// Keep this intentionally narrower than [`GameConfig`]: audio, load radius,
+    /// day/night timing, house placement, and plant rendering traits do not
+    /// affect the serialized base flora, so changing them must not invalidate a
+    /// large downloaded/local base cache.
+    ///
+    /// Deterministic *within a build*: the selected inputs serialize to a
+    /// field-ordered JSON byte image (no `HashMap`s) hashed through a fixed-keyed
     /// `DefaultHasher`. It is **not** guaranteed stable across `rustc` /
     /// `serde_json` upgrades — a toolchain bump may change the key and simply
     /// invalidate the on-disk cache, which then regenerates harmlessly.
     pub fn generation_key(&self, config: &super::config::GameConfig) -> u64 {
         use std::hash::Hasher;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let inputs = BaseGenerationInputs::new(self, config);
         // A serialization failure must not silently drop an input from the key —
         // that could let a snapshot built from different inputs validate. Hash a
         // distinct marker instead (so the key changes) and warn loudly.
-        match serde_json::to_vec(self) {
+        match serde_json::to_vec(&inputs) {
             Ok(bytes) => hasher.write(&bytes),
             Err(e) => {
-                log::warn!("herbarium did not serialize for the generation key: {e}");
-                hasher.write(b"\0herbarium-serialize-error\0");
-            }
-        }
-        match serde_json::to_vec(config) {
-            Ok(bytes) => hasher.write(&bytes),
-            Err(e) => {
-                log::warn!("config did not serialize for the generation key: {e}");
-                hasher.write(b"\0config-serialize-error\0");
+                log::warn!("base generation inputs did not serialize for the generation key: {e}");
+                hasher.write(b"\0base-generation-inputs-serialize-error\0");
             }
         }
         hasher.finish()
+    }
+}
+
+#[derive(Serialize)]
+struct BaseGenerationInputs<'a> {
+    version: u32,
+    seed: u32,
+    sea_level: f32,
+    biome: &'a BiomeConfig,
+    heightmap: &'a HeightmapConfig,
+    rivers: &'a RiverConfig,
+    flora: Vec<BaseGenerationPlant<'a>>,
+}
+
+#[derive(Serialize)]
+struct BaseGenerationPlant<'a> {
+    name: &'a str,
+    kind: &'a str,
+    height_range: [f32; 2],
+    placement: &'a PlacementConfig,
+}
+
+impl<'a> BaseGenerationInputs<'a> {
+    fn new(herbarium: &'a Herbarium, config: &'a GameConfig) -> Self {
+        Self {
+            // v2: terrain height's continental + ridge octaves moved to a
+            // precomputed coarse global field (centimetre-scale lossy vs the
+            // exact 4D noise), so the baked terrain differs and old snapshots
+            // must be rejected. See `world_core::terrain_fields`.
+            // v3: base flora now rejects placement in river channels (wetness >
+            // `MAX_PLANTABLE_WETNESS`), so the baked plant set differs and old
+            // snapshots — which still seat trees in the water — must be rejected.
+            // v4: cattails (the first aquatic species) are baked into the wet
+            // band along banks, adding plants old snapshots never had.
+            // v5: both moisture octaves moved to the precomputed coarse global
+            // field (mildly lossy bilinear vs the exact 4D noise), shifting baked
+            // biome boundaries, so old snapshots must be rejected. See
+            // `world_core::terrain_fields`.
+            version: 5,
+            seed: config.world.seed,
+            sea_level: config.sea_level,
+            biome: &config.biome,
+            heightmap: &config.heightmap,
+            rivers: &config.rivers,
+            flora: herbarium
+                .plants
+                .iter()
+                .map(|plant| BaseGenerationPlant {
+                    name: &plant.name,
+                    kind: &plant.species.body_plan.kind,
+                    height_range: plant.species.body_plan.max_height,
+                    placement: &plant.placement,
+                })
+                .collect(),
+        }
     }
 }
 
@@ -204,6 +335,7 @@ const SPECIES_PRESETS: &[(&str, &str)] = &[
     ("Shrub", include_str!("plant_gen/species/shrub.json")),
     ("Spruce", include_str!("plant_gen/species/spruce.json")),
     ("Willow", include_str!("plant_gen/species/willow.json")),
+    ("Cattail", include_str!("plant_gen/species/cattail.json")),
 ];
 
 fn default_placement(name: &str) -> PlacementConfig {
@@ -221,6 +353,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Birch" => PlacementConfig {
             biomes: vec!["Forest".into()],
@@ -235,6 +368,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Acacia" => PlacementConfig {
             biomes: vec!["Desert".into(), "Grassland".into()],
@@ -249,6 +383,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Palm" => PlacementConfig {
             biomes: vec!["Grassland".into(), "Forest".into()],
@@ -263,6 +398,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Shrub" => PlacementConfig {
             biomes: vec!["Forest".into(), "Grassland".into()],
@@ -277,6 +413,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Spruce" => PlacementConfig {
             biomes: vec!["Forest".into()],
@@ -291,6 +428,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Willow" => PlacementConfig {
             biomes: vec!["Forest".into(), "Grassland".into()],
@@ -305,6 +443,28 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
+        },
+        "Cattail" => PlacementConfig {
+            // Cattails fringe water in every biome a river or lake can reach.
+            biomes: vec!["Forest".into(), "Grassland".into(), "Desert".into()],
+            weight: 1.0,
+            min_moisture: 0.0,
+            max_moisture: 1.0,
+            // Allow the shallow-water band, which dips to (and just below) sea
+            // level; the aquatic guard handles the wetness range, not altitude.
+            min_altitude: 0.0,
+            max_altitude: 160.0,
+            near_water_boost: 0.0,
+            max_slope: 1.0,
+            // Base-only for v1: a zero spread chance keeps reed beds out of the
+            // lifecycle spread pass, so its wetness guard needs no aquatic
+            // exemption. Reed beds don't migrate fast; revisit later.
+            spread_radius: 0.0,
+            spread_chance: 0.0,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
+            aquatic: true,
         },
         _ => PlacementConfig::default(),
     }

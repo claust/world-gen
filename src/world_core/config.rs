@@ -28,9 +28,20 @@ impl Default for GameConfig {
     }
 }
 
-/// Parameters for the global river field (`world_core::rivers`). Because the
-/// whole `GameConfig` feeds `gen_key`, changing any of these invalidates a
-/// cached base world so plants are re-placed on the new river terrain.
+pub const NATIVE_DEFAULT_RIVER_GRID_RESOLUTION: u32 = 2048;
+pub const WEB_DEFAULT_RIVER_GRID_RESOLUTION: u32 = 1024;
+
+/// Grid nodes per world side for the precomputed low-frequency terrain field
+/// (`world_core::terrain_fields`). The continental and ridge octaves barely
+/// change within a chunk, so they're baked once on this coarse global grid and
+/// bilinearly sampled per vertex instead of evaluated as 4D noise. Matches the
+/// river grid's resolution: 2048 ≈ 32 m/node, 1024 ≈ 64 m/node, coarser on wasm.
+pub const NATIVE_DEFAULT_HEIGHT_FIELD_RESOLUTION: u32 = 2048;
+pub const WEB_DEFAULT_HEIGHT_FIELD_RESOLUTION: u32 = 1024;
+
+/// Parameters for the global river field (`world_core::rivers`). These feed the
+/// base-generation key, so changing any of them invalidates a cached base world
+/// and plants are re-placed on the new river terrain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RiverConfig {
@@ -58,12 +69,12 @@ impl Default for RiverConfig {
     fn default() -> Self {
         // The solve is parallelized with rayon natively but runs single-threaded
         // on wasm, so default to a coarser grid there to keep browser world-load
-        // time reasonable. wasm regenerates its base world locally (it never
-        // downloads), so a platform-specific default can't break cache matching.
+        // time reasonable. The release workflow generates a web-profile
+        // `world_base.bin` with this same value so downloaded snapshots validate.
         #[cfg(not(target_arch = "wasm32"))]
-        let grid_resolution = 2048;
+        let grid_resolution = NATIVE_DEFAULT_RIVER_GRID_RESOLUTION;
         #[cfg(target_arch = "wasm32")]
-        let grid_resolution = 1024;
+        let grid_resolution = WEB_DEFAULT_RIVER_GRID_RESOLUTION;
         Self {
             enabled: true,
             grid_resolution,
@@ -178,6 +189,9 @@ pub struct HeightmapConfig {
     pub moisture_variation_weight: f32,
     pub moisture_variation_offset_x: f64,
     pub moisture_variation_offset_z: f64,
+    /// Grid nodes per world side for the precomputed low-frequency (continental
+    /// + ridge) terrain field. See [`NATIVE_DEFAULT_HEIGHT_FIELD_RESOLUTION`].
+    pub low_freq_field_resolution: u32,
 }
 
 impl Default for HeightmapConfig {
@@ -201,6 +215,10 @@ impl Default for HeightmapConfig {
             moisture_variation_weight: 0.25,
             moisture_variation_offset_x: 31.0,
             moisture_variation_offset_z: -11.0,
+            #[cfg(not(target_arch = "wasm32"))]
+            low_freq_field_resolution: NATIVE_DEFAULT_HEIGHT_FIELD_RESOLUTION,
+            #[cfg(target_arch = "wasm32")]
+            low_freq_field_resolution: WEB_DEFAULT_HEIGHT_FIELD_RESOLUTION,
         }
     }
 }
