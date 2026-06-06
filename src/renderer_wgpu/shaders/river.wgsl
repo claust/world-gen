@@ -175,13 +175,30 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let s2 = sin(u * 0.12 - v * 0.20 - elapsed * 0.65);
     let current = 1.0 + 0.11 * s1 + 0.06 * s2;
 
+    let edge = clamp((input.wetness - RIVER_WET_CUTOFF) / 0.25, 0.0, 1.0);
+
     // River water reads slightly clearer/greener than the deep sea plane.
     let river_color = vec3<f32>(0.08, 0.26, 0.38);
-    let lit = (river_color * shade) * current + material.sun_color.rgb * spec * shadow * 1.0;
+    let water_body = (river_color * shade) * current;
+
+    // Sky reflection (fresnel). The sun glint above only fires when the mirror
+    // angle happens to point at the eye, so off-axis the river was the same dark
+    // blue as the wet bed beneath it and vanished. Real water reads as water
+    // from *any* angle because it reflects the sky — bright and pale toward
+    // grazing angles. Pick the sky color along the reflected view ray (zenith
+    // when looking down onto the surface, horizon when grazing) and blend the
+    // body toward it by a fresnel term raised to the 3rd power — a faster ramp
+    // than Schlick's physical 5th power, chosen so the surface picks up sky
+    // earlier and reads as water at more moderate angles; floored so even
+    // top-down views pick up some sky. Goes dark for free at night as the sky
+    // uniforms dim.
+    let refl = reflect(-view_dir, n);
+    let sky_col = mix(material.sky_horizon.rgb, material.sky_zenith.rgb, clamp(refl.y, 0.0, 1.0));
+    let refl_amount = mix(0.08, 0.85, pow(fresnel, 3.0));
+    let lit = mix(water_body, sky_col, refl_amount) + material.sun_color.rgb * spec * shadow;
 
     // Opacity grows from the bank toward the channel centre and at glancing
     // angles, so shallow edges stay sheer and the deep middle reads as water.
-    let edge = clamp((input.wetness - RIVER_WET_CUTOFF) / 0.25, 0.0, 1.0);
     let alpha = edge * mix(0.45, 0.92, fresnel * fresnel);
 
     let final_color = scene_fog(lit, input.world_position);
