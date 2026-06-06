@@ -1,0 +1,25 @@
+# Jekyll configuration for the FloraForge GitHub Pages site.
+#
+# Jekyll only processes files that have YAML front matter at the top. Each of
+# the three HTML pages opens with `---\n---`, which is enough to trigger Liquid
+# rendering (the {% include nav.html %} calls). Everything else in `web/`
+# (CSS, JS, the wasm bundle dropped in `pkg/` by the release workflow, the
+# prebuilt `world_base.bin`) is copied through verbatim.
+
+title: FloraForge
+
+# Don't auto-generate `<a rel>` etc. — we set these by hand.
+plugins: []
+
+# Exclude tooling that has no place in the deployed site.
+exclude:
+  - README.md
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+
+# Keep wasm-bindgen + base-world artifacts that the release workflow drops into
+# `web/` next to the source pages.
+keep_files:
+  - pkg
+  - world_base.bin
