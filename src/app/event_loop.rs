@@ -81,6 +81,31 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     }
                 }
 
+                // P captures a screenshot and copies it to the system clipboard
+                #[cfg(not(target_arch = "wasm32"))]
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    // Guarded like `M`: `P` is a printable character, so don't
+                    // swallow it from egui text fields (menu seed input, config
+                    // panel, editor, herbarium).
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::KeyP))
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && app.screenshot_pending.is_none()
+                    {
+                        app.screenshot_pending = Some("clipboard-screenshot".to_string());
+                        app.screenshot_to_clipboard = true;
+                        return;
+                    }
+                }
+
                 // Feed events to egui when on start menu, config panel, plant
                 // editor, or the map overlay
                 let egui_wants_event = if app.is_on_menu()

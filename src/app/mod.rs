@@ -110,6 +110,14 @@ pub struct AppState {
     last_telemetry_emit: Instant,
     #[cfg(not(target_arch = "wasm32"))]
     screenshot_pending: Option<String>,
+    /// When set, the next pending screenshot is copied to the system clipboard
+    /// (in addition to being saved to `captures/`). Set by the `P` shortcut.
+    #[cfg(not(target_arch = "wasm32"))]
+    screenshot_to_clipboard: bool,
+    /// Brief on-screen thumbnail confirming a clipboard screenshot was taken;
+    /// rests top-right, then slides out. See `draw_screenshot_toast`.
+    #[cfg(not(target_arch = "wasm32"))]
+    screenshot_toast: Option<ScreenshotToast>,
     /// Directory screenshots are written to: `captures` by default, or
     /// `instances/<name>/captures` when running as a named instance, so
     /// concurrent instances don't overwrite each other's `latest.png`.
@@ -262,6 +270,8 @@ impl AppState {
             last_autosave_seconds: 0.0,
             frame_index: 0,
             screenshot_pending: None,
+            screenshot_to_clipboard: false,
+            screenshot_toast: None,
             captures_dir,
             asset_watcher,
             audio: crate::audio::AudioSystem::new(),
@@ -1670,12 +1680,19 @@ impl AppState {
         // egui overlay pass (renders on top of 3D scene)
         {
             self.ui_registry.clear();
-            let show_egui = is_menu
+            #[allow(unused_mut)]
+            let mut show_egui = is_menu
                 || is_loading
                 || is_herbarium
                 || self.config_panel.is_visible()
                 || is_editor
                 || self.map_open;
+            // The confirmation toast renders during plain gameplay, when egui
+            // would otherwise be skipped, so keep the pass alive while it shows.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                show_egui = show_egui || self.screenshot_toast.is_some();
+            }
             if show_egui {
                 // Refresh the biome map texture from the worker's live progress
                 // before egui runs (needs `ctx` + `&mut self`, which the run
@@ -1696,10 +1713,8 @@ impl AppState {
                     .map(|t| t.elapsed().as_secs_f32())
                     .unwrap_or(0.0);
                 let mut map_teleport_target = None;
-                let full_output = self
-                    .egui_bridge
-                    .ctx()
-                    .run(raw_input, |ctx| match self.screen {
+                let full_output = self.egui_bridge.ctx().run(raw_input, |ctx| {
+                    match self.screen {
                         Screen::StartMenu => {
                             // Capture before drawing: when the settings dialog is
                             // open it's modal, so start-menu buttons must not act
@@ -1766,7 +1781,12 @@ impl AppState {
                                 });
                             }
                         }
-                    });
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(toast) = &self.screenshot_toast {
+                        draw_screenshot_toast(ctx, toast, self.elapsed_seconds);
+                    }
+                });
 
                 self.egui_bridge
                     .handle_platform_output(self.window, &full_output.platform_output);
@@ -1796,6 +1816,17 @@ impl AppState {
                 if settings_closed {
                     self.persist_config();
                 }
+            }
+        }
+
+        // Drop the confirmation toast (and free its egui texture) once it has
+        // finished sliding out.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(toast) = &self.screenshot_toast {
+            if self.elapsed_seconds - toast.created_at
+                >= SCREENSHOT_TOAST_HOLD_S + SCREENSHOT_TOAST_SLIDE_S
+            {
+                self.screenshot_toast = None;
             }
         }
 
@@ -1893,6 +1924,74 @@ impl AppState {
 /// frontier, themed status text, and a live `% • elapsed • chunks` readout. The
 /// map texture (`map_tex`) is updated each frame by `update_loading_map_texture`;
 /// `gen` carries the real per-chunk progress (None before/after the build).
+/// A brief on-screen confirmation that a screenshot was copied to the clipboard:
+/// a thumbnail that rests in the top-right corner, then slides out to the right.
+#[cfg(not(target_arch = "wasm32"))]
+struct ScreenshotToast {
+    texture: egui::TextureHandle,
+    /// `elapsed_seconds` at capture time; drives the hold + slide animation.
+    created_at: f32,
+    /// Thumbnail width / height, so the toast keeps the frame's aspect ratio.
+    aspect: f32,
+}
+
+/// How long the toast holds in place, then how long it takes to slide off-screen.
+#[cfg(not(target_arch = "wasm32"))]
+const SCREENSHOT_TOAST_HOLD_S: f32 = 2.0;
+#[cfg(not(target_arch = "wasm32"))]
+const SCREENSHOT_TOAST_SLIDE_S: f32 = 0.45;
+
+/// Draw the screenshot-confirmation toast: a bordered thumbnail pinned to the
+/// top-right that, after a hold, eases off the right edge while fading out.
+#[cfg(not(target_arch = "wasm32"))]
+fn draw_screenshot_toast(ctx: &egui::Context, toast: &ScreenshotToast, elapsed_s: f32) {
+    use egui::{Color32, CornerRadius, Id, LayerId, Order, Rect, Stroke, StrokeKind};
+
+    let age = elapsed_s - toast.created_at;
+    if !(0.0..SCREENSHOT_TOAST_HOLD_S + SCREENSHOT_TOAST_SLIDE_S).contains(&age) {
+        return;
+    }
+
+    let screen = ctx.content_rect();
+    let margin = 16.0;
+    let width = (screen.width() * 0.22).clamp(160.0, 300.0);
+    let height = width / toast.aspect.max(0.01);
+
+    // Hold, then slide out with an ease-in cubic so it accelerates off-screen.
+    let slide_t = ((age - SCREENSHOT_TOAST_HOLD_S) / SCREENSHOT_TOAST_SLIDE_S).clamp(0.0, 1.0);
+    let ease = slide_t * slide_t * slide_t;
+    let resting_x = screen.right() - margin - width;
+    let x = resting_x + ease * (width + margin + 8.0);
+    let rect = Rect::from_min_size(
+        egui::pos2(x, screen.top() + margin),
+        egui::vec2(width, height),
+    );
+
+    let fade = 1.0 - ease;
+    let a = |v: f32| (v * fade).clamp(0.0, 255.0) as u8;
+
+    let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("screenshot-toast")));
+    painter.rect_filled(
+        rect.expand(3.0),
+        CornerRadius::same(6),
+        Color32::from_black_alpha(a(150.0)),
+    );
+    painter.image(
+        toast.texture.id(),
+        rect,
+        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        Color32::from_white_alpha(a(255.0)),
+    );
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(6),
+        Stroke::new(1.5, Color32::from_white_alpha(a(210.0))),
+        StrokeKind::Inside,
+    );
+    // Keep frames flowing so the animation runs even if nothing else is dirty.
+    ctx.request_repaint();
+}
+
 fn render_loading_ui(
     ctx: &egui::Context,
     progress: f32,
