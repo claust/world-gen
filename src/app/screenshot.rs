@@ -65,6 +65,8 @@ impl AppState {
             .map_err(|_| "channel closed".to_string())
             .and_then(|r| r.map_err(|e| e.to_string()));
 
+        let to_clipboard = std::mem::take(&mut self.screenshot_to_clipboard);
+
         let (ok, message) = match result {
             Ok(()) => {
                 let data = slice.get_mapped_range();
@@ -72,18 +74,49 @@ impl AppState {
                     self.gpu.config.format,
                     wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
                 );
-                match save_screenshot(
-                    &self.captures_dir,
-                    &data,
-                    width,
-                    height,
-                    padded_row,
-                    unpadded_row,
-                    is_bgra,
-                ) {
-                    Ok(filename) => (true, format!("screenshot saved: {filename}")),
+                let pixels = extract_rgba(&data, width, height, padded_row, unpadded_row, is_bgra);
+                // Build the confirmation-toast thumbnail before `pixels` is
+                // consumed by the clipboard copy below.
+                let thumb = if to_clipboard {
+                    Some(thumbnail_image(&pixels, width, height))
+                } else {
+                    None
+                };
+                let outcome = match save_screenshot(&self.captures_dir, &pixels, width, height) {
+                    Ok(filename) => {
+                        if to_clipboard {
+                            match copy_to_clipboard(pixels, width, height) {
+                                Ok(()) => {
+                                    (true, format!("screenshot copied to clipboard: {filename}"))
+                                }
+                                Err(e) => (
+                                    false,
+                                    format!("screenshot saved but clipboard copy failed: {e}"),
+                                ),
+                            }
+                        } else {
+                            (true, format!("screenshot saved: {filename}"))
+                        }
+                    }
                     Err(e) => (false, format!("screenshot save failed: {e}")),
+                };
+                // Pop the on-screen confirmation only once the capture genuinely
+                // succeeded; the texture lives in egui until the toast expires.
+                if outcome.0 {
+                    if let Some(img) = thumb {
+                        let texture = self.egui_bridge.ctx().load_texture(
+                            "screenshot-toast",
+                            img,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.screenshot_toast = Some(super::ScreenshotToast {
+                            texture,
+                            created_at: self.elapsed_seconds,
+                            aspect: width as f32 / height as f32,
+                        });
+                    }
                 }
+                outcome
             }
             Err(e) => (false, format!("screenshot readback failed: {e}")),
         };
@@ -103,17 +136,16 @@ impl AppState {
     }
 }
 
-fn save_screenshot(
-    dir: &std::path::Path,
+/// Unpad the GPU staging buffer into a tightly-packed RGBA8 image, swizzling
+/// from BGRA when that's the surface format.
+fn extract_rgba(
     data: &[u8],
-    width: u32,
+    _width: u32,
     height: u32,
     padded_row: u32,
     unpadded_row: u32,
     bgra: bool,
-) -> Result<String> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
+) -> Vec<u8> {
     let mut pixels = Vec::with_capacity((unpadded_row * height) as usize);
     for row in 0..height {
         let offset = (row * padded_row) as usize;
@@ -126,6 +158,45 @@ fn save_screenshot(
             pixels.extend_from_slice(row_bytes);
         }
     }
+    pixels
+}
+
+/// Downscale a full-resolution RGBA8 frame into a small egui image for the
+/// on-screen "screenshot taken" confirmation toast.
+fn thumbnail_image(pixels: &[u8], width: u32, height: u32) -> egui::ColorImage {
+    const MAX_W: u32 = 320;
+    let tw = MAX_W.min(width).max(1);
+    let th = (((tw as f32) * (height as f32) / (width as f32)).round() as u32).max(1);
+    let src = image::RgbaImage::from_raw(width, height, pixels.to_vec())
+        .expect("rgba buffer length matches dimensions");
+    let resized = image::imageops::resize(&src, tw, th, image::imageops::FilterType::Triangle);
+    egui::ColorImage::from_rgba_unmultiplied(
+        [resized.width() as usize, resized.height() as usize],
+        resized.as_raw(),
+    )
+}
+
+/// Copy a tightly-packed RGBA8 image to the system clipboard so it can be
+/// pasted into other applications.
+fn copy_to_clipboard(pixels: Vec<u8>, width: u32, height: u32) -> Result<()> {
+    let mut clipboard = arboard::Clipboard::new().context("failed to open clipboard")?;
+    clipboard
+        .set_image(arboard::ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: std::borrow::Cow::Owned(pixels),
+        })
+        .context("failed to write image to clipboard")?;
+    Ok(())
+}
+
+fn save_screenshot(
+    dir: &std::path::Path,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     std::fs::create_dir_all(dir).context("failed to create captures dir")?;
 
@@ -157,7 +228,7 @@ fn save_screenshot(
     let path = dir.join(&filename);
     let latest = dir.join("latest.png");
 
-    image::save_buffer(&path, &pixels, width, height, image::ColorType::Rgba8)
+    image::save_buffer(&path, pixels, width, height, image::ColorType::Rgba8)
         .context("failed to encode PNG")?;
     let _ = std::fs::copy(&path, &latest);
 
