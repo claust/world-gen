@@ -21,6 +21,15 @@ pub struct FrameUniform {
     /// Shadow controls: x = 1/shadow_map_size (texel), y = depth bias,
     /// z = shadow strength, w = enabled (1.0 = on, 0.0 = off).
     pub shadow_params: [f32; 4],
+    /// Translation-free world→clip matrix (`proj * view_rotation`, camera at the
+    /// origin). World passes multiply it by `world_pos - camera_position` so the
+    /// large world coordinate is reduced to a small camera-relative value *before*
+    /// the projection, instead of relying on the matrix to cancel a huge camera
+    /// translation in f32. Far from the world origin that cancellation costs most
+    /// of the depth precision, which makes thin coplanar geometry (e.g. the text
+    /// painted on a sign board) z-fight and flicker as the camera pans. This is
+    /// the forward companion to [`Self::inv_view_proj_no_translation`].
+    pub view_proj_no_translation: [[f32; 4]; 4],
 }
 
 /// Shader depth bias applied when sampling the shadow map (in NDC depth units).
@@ -61,8 +70,12 @@ impl FrameUniform {
         // translate(-camera_position), leaving the camera at the origin. The
         // sky pass then reconstructs ray directions from the origin, avoiding
         // the huge-minus-huge subtraction that caused motion jitter.
-        let inv_view_proj_no_translation =
-            (view_proj * Mat4::from_translation(camera_position)).inverse();
+        // `view_proj * translate(+camera)` cancels the view's translate(-camera),
+        // leaving `proj * view_rotation` — the world→clip transform with the
+        // camera pinned at the origin. World passes apply it to camera-relative
+        // positions; the sky pass inverts it (below) to rebuild ray directions.
+        let view_proj_no_translation = view_proj * Mat4::from_translation(camera_position);
+        let inv_view_proj_no_translation = view_proj_no_translation.inverse();
 
         Self {
             view_proj: view_proj.to_cols_array_2d(),
@@ -76,6 +89,7 @@ impl FrameUniform {
                 1.0,
                 shadow_enabled,
             ],
+            view_proj_no_translation: view_proj_no_translation.to_cols_array_2d(),
         }
     }
 }
