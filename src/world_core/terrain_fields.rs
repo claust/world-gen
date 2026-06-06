@@ -15,9 +15,13 @@
 //! centimetre scale, where interpolating after the crease could not (the
 //! V-shaped valley doesn't interpolate). See `docs/CHUNK_GEN_PROFILING.md` (E7).
 //!
-//! The grid wraps toroidally by construction (`rem_euclid` indexing), so these
-//! octaves no longer need the 4D torus trick the per-vertex sampler uses — the
-//! global tile provides the seam for free.
+//! Per-vertex sampling of these two octaves is now a plain bilinear lookup with
+//! `rem_euclid` index wrap — no 4D noise eval at all. Seamlessness across the
+//! world-wrap boundary is not free from the index wrap alone: it holds because
+//! the one-time bake samples the *same* 4D torus mapping the point sampler used
+//! (see [`TerrainFields::torus_raw`]), so node 0 and node `res` carry identical
+//! values. `rem_euclid` then just wraps the lookup onto that already-periodic
+//! grid. The full-res detail octave still evaluates the 4D torus per vertex.
 
 use std::collections::HashMap;
 use std::f64::consts::TAU;
@@ -65,7 +69,7 @@ impl TerrainFields {
     /// node. Node `i` sits at world `i * cell` (`cell = L / res`), matching the
     /// bilinear sampler and `RiverField`'s node convention.
     fn build(seed: u32, cfg: &HeightmapConfig) -> Self {
-        let res = (cfg.low_freq_field_resolution as usize).max(16);
+        let res = effective_resolution(cfg);
         let n2 = res * res;
         let cell = WORLD_SIZE_METERS as f32 / res as f32;
 
@@ -203,17 +207,26 @@ pub enum FieldKind {
     Ridge,
 }
 
+/// Node count per axis the grid is actually built at: the configured resolution
+/// floored at 16 so a pathological tiny value still yields a usable grid. Both
+/// [`TerrainFields::build`] and [`cache_key`] go through this, so two configs
+/// that clamp to the same resolution share one cached field instead of building
+/// identical grids under different keys.
+fn effective_resolution(cfg: &HeightmapConfig) -> usize {
+    (cfg.low_freq_field_resolution as usize).max(16)
+}
+
 /// Hash the inputs that determine the grid contents: seed, the two octave
-/// frequencies (the torus mapping uses nothing else), and the resolution.
-/// Amplitudes, the detail octave, and moisture are applied per vertex and don't
-/// affect the stored raw grids, so they're excluded — a tweak to them reuses the
-/// cached field instead of pointlessly rebuilding it.
+/// frequencies (the torus mapping uses nothing else), and the effective
+/// resolution. Amplitudes, the detail octave, and moisture are applied per
+/// vertex and don't affect the stored raw grids, so they're excluded — a tweak
+/// to them reuses the cached field instead of pointlessly rebuilding it.
 fn cache_key(seed: u32, cfg: &HeightmapConfig) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     seed.hash(&mut h);
     cfg.continental.frequency.to_bits().hash(&mut h);
     cfg.ridge.frequency.to_bits().hash(&mut h);
-    cfg.low_freq_field_resolution.hash(&mut h);
+    effective_resolution(cfg).hash(&mut h);
     h.finish()
 }
