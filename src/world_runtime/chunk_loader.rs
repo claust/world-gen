@@ -7,6 +7,7 @@ use crate::world_core::chunk::ChunkData;
 use crate::world_core::chunk_generator::ChunkGenerator;
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::PlantRegistry;
+use crate::world_core::rivers::RiverField;
 
 // ---------------------------------------------------------------------------
 // ChunkLoader trait — abstracts platform-specific chunk generation strategy
@@ -18,6 +19,7 @@ pub(super) trait ChunkLoader {
         threads: usize,
         config: Arc<GameConfig>,
         registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
     ) -> anyhow::Result<Self>
     where
         Self: Sized;
@@ -45,6 +47,7 @@ mod threaded {
         pending: HashSet<IVec2>,
         config: Arc<GameConfig>,
         registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
     }
 
     impl ChunkLoader for ThreadedLoader {
@@ -53,6 +56,7 @@ mod threaded {
             threads: usize,
             config: Arc<GameConfig>,
             registry: Arc<PlantRegistry>,
+            rivers: Arc<RiverField>,
         ) -> anyhow::Result<Self> {
             let _ = seed; // seed is passed per-dispatch, not stored
             let pool = ThreadPoolBuilder::new()
@@ -67,6 +71,7 @@ mod threaded {
                 pending: HashSet::new(),
                 config,
                 registry,
+                rivers,
             })
         }
 
@@ -78,8 +83,9 @@ mod threaded {
             let tx = self.sender.clone();
             let config = Arc::clone(&self.config);
             let registry = Arc::clone(&self.registry);
+            let rivers = Arc::clone(&self.rivers);
             self.pool.spawn(move || {
-                let generator = ChunkGenerator::new(seed, &config, registry);
+                let generator = ChunkGenerator::new(seed, &config, registry, rivers);
                 let chunk = generator.generate_chunk(coord);
                 let _ = tx.send(chunk);
             });
@@ -117,6 +123,7 @@ mod sync {
         queue: Vec<IVec2>,
         config: Arc<GameConfig>,
         registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
     }
 
     impl ChunkLoader for SyncLoader {
@@ -125,12 +132,14 @@ mod sync {
             _threads: usize,
             config: Arc<GameConfig>,
             registry: Arc<PlantRegistry>,
+            rivers: Arc<RiverField>,
         ) -> anyhow::Result<Self> {
             Ok(Self {
                 seed,
                 queue: Vec::new(),
                 config,
                 registry,
+                rivers,
             })
         }
 
@@ -141,8 +150,12 @@ mod sync {
         }
 
         fn poll(&mut self) -> Vec<ChunkData> {
-            let generator =
-                ChunkGenerator::new(self.seed, &self.config, Arc::clone(&self.registry));
+            let generator = ChunkGenerator::new(
+                self.seed,
+                &self.config,
+                Arc::clone(&self.registry),
+                Arc::clone(&self.rivers),
+            );
             let count = self.queue.len().min(2);
             let coords: Vec<IVec2> = self.queue.drain(..count).collect();
             coords

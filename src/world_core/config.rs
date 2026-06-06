@@ -9,6 +9,7 @@ pub struct GameConfig {
     pub sea_level: f32,
     pub biome: BiomeConfig,
     pub heightmap: HeightmapConfig,
+    pub rivers: RiverConfig,
     pub houses: HousesConfig,
     pub audio: AudioConfig,
 }
@@ -20,8 +21,46 @@ impl Default for GameConfig {
             sea_level: 40.0,
             biome: BiomeConfig::default(),
             heightmap: HeightmapConfig::default(),
+            rivers: RiverConfig::default(),
             houses: HousesConfig::default(),
             audio: AudioConfig::default(),
+        }
+    }
+}
+
+/// Parameters for the global river field (`world_core::rivers`). Because the
+/// whole `GameConfig` feeds `gen_key`, changing any of these invalidates a
+/// cached base world so plants are re-placed on the new river terrain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RiverConfig {
+    /// Master switch for river carving.
+    pub enabled: bool,
+    /// Cells per world side for the hydrology solve. Higher = finer (narrower)
+    /// rivers but a longer one-time solve at world load. 1024 ≈ 64 m/cell.
+    pub grid_resolution: u32,
+    /// Box-blur radius (cells) applied to the routing surface so flow
+    /// concentrates into trunk rivers instead of fragmenting on detail noise.
+    pub smooth_radius: u32,
+    /// Box-blur iterations (more ≈ a wider gaussian).
+    pub smooth_iters: u32,
+    /// Upstream drainage area (m²) a cell must collect before it becomes a
+    /// river. Smaller = denser network. Resolution-independent.
+    pub min_drainage_area_m2: f32,
+    /// Channel depth (metres) carved for the largest rivers; smaller rivers
+    /// carve proportionally less.
+    pub max_carve_depth: f32,
+}
+
+impl Default for RiverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            grid_resolution: 2048,
+            smooth_radius: 2,
+            smooth_iters: 2,
+            min_drainage_area_m2: 150_000.0,
+            max_carve_depth: 14.0,
         }
     }
 }

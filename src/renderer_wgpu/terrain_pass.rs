@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use glam::IVec2;
 
 use super::frustum::Frustum;
-use super::geometry::Vertex;
 use super::pipeline::{create_render_pipeline, create_shadow_pipeline};
-use super::terrain_compute::{GpuTerrainChunk, TerrainComputePipeline};
+use super::terrain_compute::{GpuTerrainChunk, TerrainComputePipeline, TERRAIN_VERTEX_FLOATS};
 use crate::world_core::chunk::{ChunkData, CHUNK_GRID_RESOLUTION};
 
 pub struct TerrainPass {
@@ -41,8 +40,10 @@ impl TerrainPass {
             push_constant_ranges: &[],
         });
 
+        // Matches the compute shader's per-vertex layout: position(3),
+        // normal(3), biome_data(3), river wetness(1) = TERRAIN_VERTEX_FLOATS.
         let vertex_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as u64,
+            array_stride: (TERRAIN_VERTEX_FLOATS * 4) as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 wgpu::VertexAttribute {
@@ -59,6 +60,11 @@ impl TerrainPass {
                     offset: 24,
                     shader_location: 2,
                     format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 36,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32,
                 },
             ],
         };
@@ -119,6 +125,7 @@ impl TerrainPass {
             let total = CHUNK_GRID_RESOLUTION * CHUNK_GRID_RESOLUTION;
             if chunk.terrain.heights.len() == total
                 && chunk.terrain.moisture.len() == total
+                && chunk.terrain.river.len() == total
                 && chunk.terrain.max_height >= chunk.terrain.min_height
             {
                 let gpu = self.compute.generate_chunk(
@@ -127,6 +134,7 @@ impl TerrainPass {
                     *coord,
                     &chunk.terrain.heights,
                     &chunk.terrain.moisture,
+                    &chunk.terrain.river,
                 );
                 self.chunks.insert(*coord, gpu);
                 dispatched = true;
