@@ -1,0 +1,667 @@
+/* FloraForge home page styles. Shared as an external asset so GitHub Pages stays static while the landing page theme is reusable. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --green-deep: #081a0c;
+    --green-dark: #132913;
+    --green-mid: #1e4d2b;
+    --green-bright: #3ecf6e;
+    --green-glow: #7cff9f;
+    --cream: #f0ede4;
+    --sand: #c7b99d;
+    --mist: rgba(240, 237, 228, 0.72);
+    --panel: rgba(18, 35, 20, 0.72);
+    --panel-strong: rgba(11, 24, 13, 0.92);
+    --line: rgba(62, 207, 110, 0.14);
+    --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+}
+
+html {
+    background: var(--green-deep);
+    color: var(--cream);
+    scroll-behavior: smooth;
+}
+
+body {
+    min-height: 100vh;
+    font-family: "DM Sans", sans-serif;
+    background:
+        radial-gradient(circle at top center, rgba(124, 255, 159, 0.16), transparent 36%),
+        linear-gradient(180deg, #09190b 0%, #0d1f0f 40%, #08150a 100%);
+    color: var(--cream);
+    overflow-x: hidden;
+}
+
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 1;
+}
+
+body[data-mode="play"] {
+    overflow: hidden;
+}
+
+a {
+    color: inherit;
+    text-decoration: none;
+}
+
+.content {
+    position: relative;
+    z-index: 2;
+}
+
+.page-shell {
+    transition: opacity 280ms ease, transform 280ms ease;
+}
+
+body[data-mode="play"] .page-shell {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-16px);
+}
+
+.hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 2rem;
+    position: relative;
+    overflow: hidden;
+}
+
+.hero::after {
+    content: "";
+    position: absolute;
+    bottom: -260px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(76vw, 960px);
+    height: min(76vw, 960px);
+    background: radial-gradient(circle, rgba(62, 207, 110, 0.22) 0%, transparent 68%);
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+.hero-inner,
+.section-inner,
+.footer-inner {
+    width: min(1120px, 100%);
+    margin: 0 auto;
+}
+
+.topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 6rem;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    font-family: "Space Grotesk", sans-serif;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+/* App icon: same flat two-tier conifer mark used by the favicon and
+   the macOS app icon, so the brand is consistent everywhere. */
+.brand-mark {
+    width: 2.4rem;
+    height: 2.4rem;
+    border-radius: 0.6rem;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b2010'/%3E%3Cpath d='M32 12 44 34H20L32 12Zm0 12 16 28H16L32 24Z' fill='%233ecf6e'/%3E%3C/svg%3E") center / cover no-repeat;
+    box-shadow: 0 0 22px rgba(62, 207, 110, 0.18);
+}
+
+.top-links {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    font-size: 0.95rem;
+    color: var(--mist);
+}
+
+.top-links a {
+    border-bottom: 1px solid transparent;
+    transition: color 180ms ease, border-color 180ms ease;
+}
+
+.top-links a:hover {
+    color: var(--green-glow);
+    border-color: rgba(124, 255, 159, 0.4);
+}
+
+.hero-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+    gap: 3rem;
+    align-items: center;
+}
+
+.hero-tag,
+.section-label {
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 0.8rem;
+    font-weight: 500;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--green-bright);
+    opacity: 0.84;
+}
+
+.hero-tag {
+    margin-bottom: 1.8rem;
+}
+
+h1,
+h2,
+h3 {
+    font-family: "Space Grotesk", sans-serif;
+    letter-spacing: -0.03em;
+}
+
+h1 {
+    font-size: clamp(3.4rem, 8vw, 6.7rem);
+    line-height: 0.94;
+    margin-bottom: 1.7rem;
+}
+
+.accent {
+    color: var(--green-bright);
+}
+
+.hero-copy {
+    max-width: 620px;
+    color: var(--sand);
+    font-size: clamp(1.08rem, 2.4vw, 1.34rem);
+    line-height: 1.65;
+    margin-bottom: 2.4rem;
+}
+
+.hero-actions {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 2rem;
+}
+
+.button {
+    appearance: none;
+    border: 0;
+    cursor: pointer;
+    border-radius: 999px;
+    padding: 1rem 1.45rem;
+    font: inherit;
+    font-weight: 500;
+    transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.button:hover {
+    transform: translateY(-1px);
+}
+
+.button:focus-visible {
+    outline: 2px solid var(--green-glow);
+    outline-offset: 4px;
+}
+
+.button-primary {
+    background: linear-gradient(135deg, var(--green-bright), var(--green-glow));
+    color: #06210e;
+    box-shadow: 0 18px 50px rgba(62, 207, 110, 0.25);
+}
+
+.button-secondary {
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--cream);
+    border: 1px solid rgba(240, 237, 228, 0.12);
+}
+
+.hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.85rem;
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 0.82rem;
+    color: var(--mist);
+}
+
+.hero-meta span {
+    padding: 0.55rem 0.8rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(62, 207, 110, 0.12);
+}
+
+.hero-panel {
+    position: relative;
+    border-radius: 28px;
+    border: 1px solid rgba(62, 207, 110, 0.14);
+    background:
+        linear-gradient(180deg, rgba(30, 77, 43, 0.24), rgba(11, 22, 13, 0.86)),
+        radial-gradient(circle at top left, rgba(124, 255, 159, 0.18), transparent 46%);
+    box-shadow: var(--shadow);
+    padding: 1.5rem;
+    overflow: hidden;
+}
+
+.hero-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+        linear-gradient(180deg, rgba(248, 202, 143, 0.12), transparent 34%),
+        linear-gradient(135deg, rgba(12, 48, 23, 0.4), transparent 60%);
+    pointer-events: none;
+}
+
+.hero-panel-inner {
+    position: relative;
+    min-height: 460px;
+    border-radius: 22px;
+    padding: 1.4rem;
+    background:
+        radial-gradient(circle at 50% 18%, rgba(247, 197, 145, 0.32), transparent 28%),
+        linear-gradient(180deg, #b9967c 0%, #c09a67 28%, #406631 54%, #0e2b13 100%);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    overflow: hidden;
+}
+
+.hero-panel-inner::before {
+    content: "";
+    position: absolute;
+    inset: auto -8% -10% -8%;
+    height: 58%;
+    background:
+        radial-gradient(circle at 20% 26%, rgba(89, 135, 67, 0.9) 0 6%, transparent 7%),
+        radial-gradient(circle at 28% 35%, rgba(53, 113, 45, 0.94) 0 7%, transparent 8%),
+        radial-gradient(circle at 45% 22%, rgba(57, 120, 47, 0.94) 0 9%, transparent 10%),
+        radial-gradient(circle at 62% 28%, rgba(36, 86, 36, 0.94) 0 11%, transparent 12%),
+        radial-gradient(circle at 78% 24%, rgba(26, 67, 28, 0.94) 0 13%, transparent 14%),
+        radial-gradient(circle at 88% 38%, rgba(49, 109, 51, 0.94) 0 9%, transparent 10%),
+        linear-gradient(180deg, transparent 0 26%, rgba(18, 47, 18, 0.35) 40%, rgba(10, 29, 11, 0.84) 100%);
+    filter: blur(0.2px);
+}
+
+.hero-panel-copy,
+.hero-panel-overlay {
+    position: relative;
+    z-index: 1;
+}
+
+.hero-panel-copy {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.82rem;
+    font-family: "Space Grotesk", sans-serif;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.hero-panel-overlay {
+    align-self: flex-start;
+    padding: 0.95rem 1rem;
+    border-radius: 18px;
+    background: rgba(7, 16, 9, 0.64);
+    border: 1px solid rgba(240, 237, 228, 0.1);
+    backdrop-filter: blur(10px);
+    max-width: 290px;
+}
+
+.hero-panel-overlay strong {
+    display: block;
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 1rem;
+    margin-bottom: 0.45rem;
+}
+
+.hero-panel-overlay p {
+    color: rgba(240, 237, 228, 0.78);
+    line-height: 1.55;
+    font-size: 0.93rem;
+}
+
+.divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--green-mid), transparent);
+    margin: 0 2rem;
+}
+
+.section {
+    padding: 7rem 2rem;
+}
+
+.concept-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 4rem;
+    align-items: start;
+}
+
+h2 {
+    font-size: clamp(2rem, 4vw, 3.1rem);
+    line-height: 1.08;
+    margin: 1.1rem 0 1.4rem;
+}
+
+.lead {
+    font-size: 1.04rem;
+    color: var(--sand);
+    line-height: 1.85;
+}
+
+.concept-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    padding-top: 0.7rem;
+}
+
+.concept-card {
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+}
+
+.concept-card h3 {
+    font-size: 1.08rem;
+    color: var(--green-bright);
+    margin-bottom: 0.7rem;
+}
+
+.concept-card p {
+    color: var(--sand);
+    line-height: 1.65;
+    font-size: 0.96rem;
+}
+
+.how {
+    background: linear-gradient(180deg, rgba(9, 24, 11, 0.18), rgba(10, 19, 11, 0.7));
+}
+
+.how-steps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.5rem;
+    margin-top: 3rem;
+}
+
+.how-step {
+    padding: 1.8rem;
+    border-radius: 20px;
+    background: rgba(30, 77, 43, 0.14);
+    border: 1px solid rgba(62, 207, 110, 0.1);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.how-step-num {
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 3.4rem;
+    font-weight: 700;
+    line-height: 1;
+    color: rgba(124, 255, 159, 0.18);
+    margin-bottom: 1rem;
+}
+
+.how-step h3 {
+    font-size: 1.16rem;
+    margin-bottom: 0.65rem;
+}
+
+.how-step p {
+    color: var(--sand);
+    line-height: 1.7;
+    font-size: 0.96rem;
+}
+
+.tech {
+    padding: 4rem 2rem;
+    border-top: 1px solid rgba(62, 207, 110, 0.08);
+    border-bottom: 1px solid rgba(62, 207, 110, 0.08);
+}
+
+.tech-inner {
+    width: min(900px, 100%);
+    margin: 0 auto;
+    text-align: center;
+}
+
+.tech-pills {
+    display: flex;
+    justify-content: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.2rem;
+    font-family: "Space Grotesk", sans-serif;
+}
+
+.tech-pills span {
+    padding: 0.65rem 0.9rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(62, 207, 110, 0.12);
+    color: var(--mist);
+}
+
+.tech p {
+    color: var(--sand);
+    max-width: 720px;
+    margin: 0 auto;
+    line-height: 1.7;
+}
+
+.cta {
+    padding: 7rem 2rem 6rem;
+    text-align: center;
+}
+
+.cta h2 {
+    margin-bottom: 1rem;
+}
+
+.cta p {
+    max-width: 620px;
+    margin: 0 auto 2rem;
+    color: var(--sand);
+    line-height: 1.8;
+}
+
+footer {
+    padding: 2rem;
+}
+
+.footer-inner {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    border-top: 1px solid rgba(62, 207, 110, 0.08);
+    padding-top: 1.4rem;
+    color: rgba(240, 237, 228, 0.56);
+    font-size: 0.92rem;
+}
+
+.game-shell {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    display: grid;
+    place-items: center;
+    background:
+        radial-gradient(circle at top center, rgba(124, 255, 159, 0.16), transparent 34%),
+        linear-gradient(180deg, #08160a 0%, #050b06 100%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 260ms ease;
+}
+
+body[data-mode="play"] .game-shell {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.game-status {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 2rem;
+    text-align: center;
+    z-index: 2;
+    transition: opacity 200ms ease;
+}
+
+.game-status[hidden] {
+    display: none;
+}
+
+.game-status-card {
+    width: min(520px, 100%);
+    padding: 2rem;
+    border-radius: 24px;
+    background: var(--panel);
+    border: 1px solid rgba(62, 207, 110, 0.14);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(16px);
+}
+
+.game-status-card h2 {
+    margin: 0 0 0.8rem;
+    font-size: clamp(1.8rem, 4vw, 2.4rem);
+}
+
+.game-status-card p {
+    color: var(--sand);
+    line-height: 1.7;
+}
+
+.status-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7rem;
+    margin-bottom: 1rem;
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 0.82rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--green-bright);
+}
+
+.status-line::before {
+    content: "";
+    width: 0.75rem;
+    height: 0.75rem;
+    border-radius: 999px;
+    border: 2px solid rgba(124, 255, 159, 0.28);
+    border-top-color: var(--green-glow);
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.status-actions {
+    display: flex;
+    justify-content: center;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+    margin-top: 1.6rem;
+}
+
+.error-box {
+    margin-top: 1rem;
+    padding: 0.9rem 1rem;
+    border-radius: 14px;
+    background: rgba(116, 15, 15, 0.28);
+    border: 1px solid rgba(255, 127, 127, 0.18);
+    color: #ffd2d2;
+    font-size: 0.95rem;
+    line-height: 1.55;
+}
+
+canvas {
+    width: 100vw;
+    height: 100vh;
+    display: block;
+    touch-action: none;
+    opacity: 0;
+    transition: opacity 220ms ease;
+}
+
+body[data-game-ready="true"] canvas {
+    opacity: 1;
+}
+
+@media (max-width: 980px) {
+    .hero-grid,
+    .concept-grid,
+    .how-steps {
+        grid-template-columns: 1fr;
+    }
+
+    .topbar {
+        margin-bottom: 4rem;
+    }
+
+    .hero-panel-inner {
+        min-height: 360px;
+    }
+}
+
+@media (max-width: 640px) {
+    .hero,
+    .section,
+    .cta,
+    .tech,
+    footer {
+        padding-left: 1.2rem;
+        padding-right: 1.2rem;
+    }
+
+    .hero {
+        padding-top: 1.3rem;
+    }
+
+    .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .hero-actions,
+    .status-actions {
+        flex-direction: column;
+    }
+
+    .button {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .hero-panel {
+        padding: 1rem;
+    }
+
+    .hero-panel-inner {
+        min-height: 320px;
+        padding: 1rem;
+    }
+
+    .divider {
+        margin: 0 1.2rem;
+    }
+}
