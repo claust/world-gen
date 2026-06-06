@@ -53,6 +53,12 @@ fn sdf_coverage(dist: f32) -> f32 {
     return clamp(0.5 - dist / aa, 0.0, 1.0);
 }
 
+// Whether `id` (an `sdf.x` value) names shape `want`. The ids are integers, so a 0.5
+// window matches exactly one and lets unknown ids fall through to a transparent default.
+fn is_shape(id: f32, want: f32) -> bool {
+    return abs(id - want) < 0.5;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Sample unconditionally (uniform control flow required by WebGPU). Vertex kinds:
@@ -63,31 +69,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if (in.sdf.x > 0.5) {
         let p = in.uv;
-        var dist: f32;
-        if (in.sdf.x < SDF_DISC - 0.5) {
-            // Rhombus (plain or seam-fading): boundary |x| + |y| = 1.
-            dist = abs(p.x) + abs(p.y) - 1.0;
-        } else if (in.sdf.x < SDF_RING - 0.5) {
+        let shape = in.sdf.x;
+        // Unknown ids stay fully transparent, so adding/reordering shape constants can
+        // never silently fall through to the wrong primitive.
+        var alpha = 0.0;
+
+        if (is_shape(shape, SDF_DIAMOND) || is_shape(shape, SDF_DIAMOND_SEAM)) {
+            // Rhombus: boundary |x| + |y| = 1.
+            alpha = sdf_coverage(abs(p.x) + abs(p.y) - 1.0);
+            // The seam-fading half additionally fades in across the E–W seam (local
+            // y = 0), anti-aliasing the divider where it overlays the layer below.
+            if (is_shape(shape, SDF_DIAMOND_SEAM)) {
+                let seam_aa = max(fwidth(p.y), 1e-5);
+                alpha *= clamp(0.5 + p.y / seam_aa, 0.0, 1.0);
+            }
+        } else if (is_shape(shape, SDF_DISC)) {
             // Disc: boundary length(p) = 1.
-            dist = length(p) - 1.0;
-        } else if (in.sdf.x < SDF_BOX - 0.5) {
+            alpha = sdf_coverage(length(p) - 1.0);
+        } else if (is_shape(shape, SDF_RING)) {
             // Ring: intersection of the unit disc and the outside of the inner disc,
             // whose normalized radius is sdf.y.
             let r = length(p);
-            dist = max(r - 1.0, in.sdf.y - r);
-        } else {
+            alpha = sdf_coverage(max(r - 1.0, in.sdf.y - r));
+        } else if (is_shape(shape, SDF_BOX)) {
             // Box: boundary max(|x|, |y|) = 1.
-            dist = max(abs(p.x), abs(p.y)) - 1.0;
+            alpha = sdf_coverage(max(abs(p.x), abs(p.y)) - 1.0);
         }
 
-        var alpha = sdf_coverage(dist);
-
-        // The seam-fading diamond half additionally fades in across the E–W seam
-        // (local y = 0), anti-aliasing the divider where it overlays the layer below.
-        if (in.sdf.x > SDF_DIAMOND_SEAM - 0.5 && in.sdf.x < SDF_DIAMOND_SEAM + 0.5) {
-            let seam_aa = max(fwidth(p.y), 1e-5);
-            alpha *= clamp(0.5 + p.y / seam_aa, 0.0, 1.0);
-        }
         return vec4<f32>(in.color.rgb, in.color.a * alpha);
     }
 
