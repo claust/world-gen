@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use glam::IVec2;
 
-use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
+use crate::world_core::chunk::{
+    ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, RIVER_SURFACE_THRESHOLD,
+};
 use crate::world_core::config::HeightmapConfig;
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::layer::Layer;
@@ -53,8 +55,10 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         // sampling is a cheap bilinear lookup, so a serial walk here is fine.
         let mut heights = Vec::with_capacity(total);
         let mut river = Vec::with_capacity(total);
+        let mut river_flow = Vec::with_capacity(total);
         let mut min_height = f32::MAX;
         let mut max_height = f32::MIN;
+        let mut has_river = false;
         for (idx, &raw) in raw_heights.iter().enumerate() {
             let x = idx % side;
             let z = idx / side;
@@ -64,6 +68,15 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
             let h = raw - carve;
             heights.push(h);
             river.push(wet);
+            // Flow direction only matters where there is actually a river surface
+            // to animate; skip the second lookup for dry vertices.
+            if wet > RIVER_SURFACE_THRESHOLD {
+                has_river = true;
+                let (fx, fz) = self.rivers.sample_flow(world_x, world_z);
+                river_flow.push([fx, fz]);
+            } else {
+                river_flow.push([0.0, 0.0]);
+            }
             min_height = min_height.min(h);
             max_height = max_height.max(h);
         }
@@ -72,7 +85,9 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
             heights,
             moisture,
             river,
+            river_flow,
             has_water: min_height < self.sea_level,
+            has_river,
             min_height,
             max_height,
         }

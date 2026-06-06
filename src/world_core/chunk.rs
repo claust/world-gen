@@ -23,6 +23,11 @@ pub const WORLD_SIZE_METERS: f64 = WORLD_SIZE_CHUNKS as f64 * CHUNK_SIZE_METERS 
 /// Global water surface height. Any terrain below this level is submerged.
 pub const SEA_LEVEL: f32 = 40.0;
 
+/// Minimum per-vertex river wetness for a vertex to count as carrying flowing
+/// water. Below this the riverbed tint fades out and no water surface is drawn,
+/// so it doubles as the cutoff for `ChunkTerrain::has_river` and the river mesh.
+pub const RIVER_SURFACE_THRESHOLD: f32 = 0.04;
+
 /// Map any (possibly unbounded) raw chunk coordinate to its canonical id in
 /// `[0, WORLD_SIZE_CHUNKS)` on both axes. Raw chunk ids an integer number of
 /// laps apart collapse to the same canonical id, so they share generated
@@ -103,10 +108,17 @@ pub struct ChunkTerrain {
     /// Per-vertex river wetness in `0..1`, parallel to `heights`. Drives the
     /// riverbed tint in the terrain shader; `0` everywhere when rivers are off.
     pub river: Vec<f32>,
+    /// Per-vertex normalized downstream flow direction in world space (x, z),
+    /// parallel to `heights`. `(0, 0)` away from rivers. Drives the streaming
+    /// animation of the river water surface.
+    pub river_flow: Vec<[f32; 2]>,
     pub min_height: f32,
     pub max_height: f32,
     /// `true` when any vertex in this chunk is below `SEA_LEVEL`.
     pub has_water: bool,
+    /// `true` when any vertex in this chunk carries meaningful river wetness, so
+    /// the renderer can skip building a river water surface for dry chunks.
+    pub has_river: bool,
 }
 
 impl ChunkTerrain {
