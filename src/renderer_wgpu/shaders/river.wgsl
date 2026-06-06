@@ -29,6 +29,10 @@ struct MaterialUniform {
 @group(1) @binding(0) var<uniform> material: MaterialUniform;
 @group(2) @binding(0) var shadow_map: texture_depth_2d;
 @group(2) @binding(1) var shadow_sampler: sampler_comparison;
+// Flow-map normal texture (Option D): a tiling water normal map advected along
+// the per-vertex flow vector with the two-phase cross-fade technique.
+@group(3) @binding(0) var river_normal_tex: texture_2d<f32>;
+@group(3) @binding(1) var river_normal_sampler: sampler;
 
 // 3x3 PCF shadow lookup. Returns 1.0 (fully lit) when outside the shadow
 // frustum or when shadows are disabled (night).
@@ -49,6 +53,11 @@ fn sample_shadow(world_pos: vec3<f32>, n_dot_l: f32) -> f32 {
         }
     }
     return select(sum / 9.0, 1.0, outside);
+}
+
+// Decode a tangent-space normal (Z up) from the tiling flow-map texture.
+fn sample_flow_normal(uv: vec2<f32>) -> vec3<f32> {
+    return textureSample(river_normal_tex, river_normal_sampler, uv).xyz * 2.0 - 1.0;
 }
 
 struct VertexInput {
@@ -108,15 +117,42 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let p2 = u * 0.90 + v * 0.25 - elapsed * 2.7;
     let p3 = v * 0.60 - elapsed * 0.7;
 
-    // Ripple height field and its slope along the flow frame, converted to a
-    // perturbed world normal. Amplitudes are kept modest for a clean look but
-    // big enough that the sun glint visibly rides the ripples downstream.
-    let a1 = 0.11;
-    let a2 = 0.07;
-    let a3 = 0.04;
+    // Coarse analytic ripple height field and its slope along the flow frame.
+    // With the flow-map (below) now carrying the fine micro-surface detail, this
+    // analytic layer is kept only as a gentle large-scale undulation; amplitudes
+    // are reduced from the texture-free version so the two layers don't fight.
+    let a1 = 0.07;
+    let a2 = 0.045;
+    let a3 = 0.025;
     let dh_du = a1 * 0.45 * cos(p1) + a2 * 0.90 * cos(p2);
     let dh_dv = a2 * 0.25 * cos(p2) + a3 * 0.60 * cos(p3);
-    let slope = f * dh_du + perp * dh_dv;
+    let coarse_slope = f * dh_du + perp * dh_dv;
+
+    // Flow map (Option D): advect a tiling water normal map along the flow vector
+    // using Valve's two-phase cross-fade. Two samples a half-cycle apart, each
+    // displaced from -0.5..+0.5 of a cycle along `f`, are blended by a triangle
+    // wave so neither phase ever accumulates more than half a cycle of stretch —
+    // this is what keeps the surface from swimming around bends and confluences.
+    let uv = input.world_position.xz * 0.16;
+    let flow_rate = 0.11;      // phase cycles per second
+    let displace = 1.3;        // max UV displacement over a cycle, along flow
+    let cyc = elapsed * flow_rate;
+    let phase0 = fract(cyc);
+    let phase1 = fract(cyc + 0.5);
+    let blend = abs(1.0 - 2.0 * phase0);
+    let off0 = f * (phase0 - 0.5) * displace;
+    let off1 = f * (phase1 - 0.5) * displace;
+    let tn = mix(sample_flow_normal(uv - off0), sample_flow_normal(uv - off1), blend);
+
+    // Fade the fine flow-map detail with distance: mips smooth it, and easing it
+    // toward the coarse layer past ~80 m kills grazing-angle ripple aliasing.
+    let cam_dist = length(frame.camera_position.xyz - input.world_position);
+    let fm_fade = clamp(1.0 - (cam_dist - 80.0) / 320.0, 0.0, 1.0);
+
+    // The flow-map normal's XY (tangent-space, world-aligned) is a surface slope;
+    // combine it with the coarse analytic slope into one perturbed world normal.
+    let fm_slope = vec2<f32>(tn.x, tn.y) * (0.85 * fm_fade);
+    let slope = coarse_slope + fm_slope;
     let n = normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
 
     let l = normalize(material.light_direction.xyz);

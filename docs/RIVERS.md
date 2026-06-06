@@ -45,30 +45,36 @@ The streaming cue, all in `river.wgsl`, driven by the per-vertex flow vector and
 Procedural only (no textures, no foam). Verified moving: with camera and sun
 frozen, ~135k px in the water region change over a 5 s gap.
 
-### Option D — Flow maps (textures) ⏳ deferred
-Replace/augment C's analytic sine ripples with a **sampled normal (or dU/dV)
-map advected along the flow vector**, using the two-phase cross-fade technique
-(Valve's "Water Flow Over Arbitrary Surfaces", Portal 2). The procedural sines
-visibly stretch and swim around bends and confluences; flow maps fix that and
-add real micro-surface detail.
+### Option D — Flow maps (textures) ✅ implemented
+Augments C's analytic sine ripples with a **sampled normal map advected along
+the flow vector**, using the two-phase cross-fade technique (Valve's "Water Flow
+Over Arbitrary Surfaces", Portal 2). The procedural sines visibly stretched and
+swam around bends and confluences; the flow map fixes that and adds real
+micro-surface detail. C's coarse analytic ripple is kept at reduced amplitude as
+a large-scale undulation layer; the current streaks are unchanged.
 
-What goes into it:
-- **Asset:** a small tiling normal/dU-dV water texture (same spirit as the biome
-  atlas — one modest texture, not per-river art).
-- **Binding:** add a texture + sampler to the river pass (new bind group, or
-  fold into an existing slot). The river vertex already carries `flow` and
-  `wetness`; UVs come from world `XZ × scale`.
-- **Advection:** sample the map twice at UVs offset by `flow · phase`, with two
-  phases a half-cycle apart, cross-faded by a triangle wave of `frac(time·rate)`.
-  This keeps the texture from accumulating unbounded stretch as it scrolls — each
-  phase resets before it distorts too far.
-- **Use the sampled normal** for lighting/glint instead of (or blended with) the
-  analytic ripple normal; keep C's current streaks as a coarse large-scale layer
-  over the fine texture.
+What went into it:
+- **Asset:** a small tiling water normal map, generated procedurally on the CPU
+  (`renderer_wgpu::river_normal_texture`, same spirit as the terrain atlas — one
+  modest 256² texture, not per-river art). Normals come from the gradient of a
+  seamlessly-tiling FBM height field; a full CPU-built mip chain lets the fine
+  ripples filter cleanly into the distance instead of aliasing.
+- **Binding:** a texture + sampler at **group 3** of the river pass (groups 0–2
+  are frame/material/shadow). The river vertex already carries `flow` and
+  `wetness`; UVs are world `XZ × 0.16` (~6 m tile), `Repeat`-wrapped.
+- **Advection:** sample the map twice at UVs offset along `flow` by
+  `(phase − 0.5) · displace`, with two phases a half-cycle apart, cross-faded by
+  a triangle wave `abs(1 − 2·frac(time·rate))`. Each phase only ever scrolls ±½ a
+  cycle, so neither accumulates unbounded stretch — this is what stops the swim.
+- **Lighting:** the sampled tangent-space normal's XY is treated as a surface
+  slope and added to the coarse analytic slope, then the combined normal drives
+  the existing diffuse/glint/fresnel. A distance fade eases the fine detail
+  toward the coarse layer past ~80 m to kill grazing-angle ripple aliasing.
 
-Prereqs: none beyond what's baked — the normalized flow field already exists.
-Effort: moderate (asset + one binding + shader sampling). Impact: high — this is
-what makes the surface read as genuinely flowing rather than gently rippling.
+gen_key-neutral: no baked data, no geometry change — purely a runtime texture +
+shader sampling. Verified in-engine on the largest world rivers (close-up shows
+the rippled normal detail and clean bank fade; ~127k px change over a 5 s gap
+with camera and sun frozen confirms it still streams downstream).
 
 ### Option E — Foam / whitewater ⏳ deferred
 Additive white foam, the single strongest readability cue — the eye locks onto
@@ -98,8 +104,9 @@ doesn't change carved heights). Impact: very high — foam sells "rushing river.
 ## Recommended phasing
 
 1. **A + B + C** — done. Water surface that visibly streams downhill.
-2. **D** — flow maps for convincing surface detail around bends. Adds the first
-   texture binding to the river pass, which E1 can then reuse.
+2. **D** — done. Flow-map normal texture for convincing surface detail around
+   bends; added the first texture binding (group 3) to the river pass, which E1
+   can now reuse.
 3. **E1** — shoreline foam (reuses D's texture binding, no new baked data).
 4. **E2** — whitewater, once a baked flow-speed/slope scalar is added to
    `RiverField`.
@@ -128,6 +135,12 @@ E2 is the only one that needs new baked data (a speed/slope grid).
   across), travels ripples + light/dark current streaks along it, and fades alpha
   from the bank (`wetness`) and at glancing angles (fresnel). Uses `frame.time.x`,
   so it animates regardless of `day_speed`.
-- **Known gaps (D/E, not in this phase):** no textured surface detail (sines
-  stretch around tight bends) and no foam; far-distance ripples show mild
-  grazing-angle banding that a flow-map normal + distance fade would smooth.
+- **Flow map (D):** `river.wgsl` samples the tiling normal map
+  (`renderer_wgpu::river_normal_texture`, group 3) twice along the per-vertex
+  `flow` with the two-phase cross-fade, blends the result into the coarse
+  analytic slope, and fades the fine detail by camera distance. This added
+  micro-surface detail, fixed the bend/confluence swim, and — with mips +
+  distance fade — smoothed the far grazing-angle banding C left behind.
+- **Known gaps (E, not yet done):** no foam/whitewater. Shoreline foam (E1) can
+  reuse D's group-3 texture binding and the per-vertex `wetness`; whitewater (E2)
+  still needs a baked flow-speed/slope scalar in `RiverField`.
