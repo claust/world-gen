@@ -111,6 +111,23 @@ impl WorldRuntime {
         Ok(world)
     }
 
+    /// Build a world in the browser from an already-downloaded base snapshot.
+    /// Unlike [`new`], which reads `world_base` from storage (web `localStorage`
+    /// can't hold it), the snapshot is fetched asynchronously by the caller and
+    /// handed in as `base_bytes`; a `None` (or a snapshot that fails validation)
+    /// falls back to single-threaded local generation. No base cache is written
+    /// back — the browser HTTP cache covers repeat downloads.
+    #[cfg(target_arch = "wasm32")]
+    pub fn new_web(
+        config: &GameConfig,
+        save: Option<&SaveData>,
+        registry: Arc<PlantRegistry>,
+        base_bytes: Option<Vec<u8>>,
+        gen_key: u64,
+    ) -> anyhow::Result<Self> {
+        Self::build(config, save, 1, registry, None, base_bytes, gen_key, None)
+    }
+
     /// Build a world from fully-owned, `Send` inputs so the whole generation can
     /// run on a worker thread off the event loop. `spread_bytes` is the persisted
     /// spread blob, read from storage on the main thread (storage handles are not
