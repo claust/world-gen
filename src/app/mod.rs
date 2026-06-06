@@ -958,9 +958,9 @@ impl AppState {
 
     /// Build the static, relief-shaded world map shown by the `M`-key overlay.
     /// Resamples the world's continuous heightmap at high resolution (smooth
-    /// coastlines, hillshade relief, depth-graded water) instead of reusing the
-    /// blocky per-chunk loading map. Falls back to the loading map if the world
-    /// somehow isn't ready yet.
+    /// coastlines, hypsometric elevation tints, flat sea, hillshade relief)
+    /// instead of reusing the blocky per-chunk loading map. Falls back to the
+    /// loading map if the world somehow isn't ready yet.
     fn build_world_map_texture(&mut self) {
         let res = crate::world_runtime::WORLD_MAP_RES;
         let Some(world) = &self.world else {

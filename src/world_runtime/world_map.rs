@@ -174,7 +174,7 @@ pub fn render_world_map(heightmap: &Heightmap, sea_level: f32, res: usize) -> Ve
         .iter()
         .copied()
         .filter(|&h| h >= sea_level)
-        .fold(sea_level + 1.0, f32::max);
+        .fold(sea_level, f32::max);
     let land_span = (max_land - sea_level).max(1.0);
 
     // Light from the upper-left (north-west), the cartographic convention for
