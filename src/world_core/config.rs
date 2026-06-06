@@ -31,6 +31,14 @@ impl Default for GameConfig {
 pub const NATIVE_DEFAULT_RIVER_GRID_RESOLUTION: u32 = 2048;
 pub const WEB_DEFAULT_RIVER_GRID_RESOLUTION: u32 = 1024;
 
+/// Grid nodes per world side for the precomputed low-frequency terrain field
+/// (`world_core::terrain_fields`). The continental and ridge octaves barely
+/// change within a chunk, so they're baked once on this coarse global grid and
+/// bilinearly sampled per vertex instead of evaluated as 4D noise. Matches the
+/// river grid's resolution: 2048 ≈ 32 m/node, 1024 ≈ 64 m/node, coarser on wasm.
+pub const NATIVE_DEFAULT_HEIGHT_FIELD_RESOLUTION: u32 = 2048;
+pub const WEB_DEFAULT_HEIGHT_FIELD_RESOLUTION: u32 = 1024;
+
 /// Parameters for the global river field (`world_core::rivers`). These feed the
 /// base-generation key, so changing any of them invalidates a cached base world
 /// and plants are re-placed on the new river terrain.
@@ -181,6 +189,9 @@ pub struct HeightmapConfig {
     pub moisture_variation_weight: f32,
     pub moisture_variation_offset_x: f64,
     pub moisture_variation_offset_z: f64,
+    /// Grid nodes per world side for the precomputed low-frequency (continental
+    /// + ridge) terrain field. See [`NATIVE_DEFAULT_HEIGHT_FIELD_RESOLUTION`].
+    pub low_freq_field_resolution: u32,
 }
 
 impl Default for HeightmapConfig {
@@ -204,6 +215,10 @@ impl Default for HeightmapConfig {
             moisture_variation_weight: 0.25,
             moisture_variation_offset_x: 31.0,
             moisture_variation_offset_z: -11.0,
+            #[cfg(not(target_arch = "wasm32"))]
+            low_freq_field_resolution: NATIVE_DEFAULT_HEIGHT_FIELD_RESOLUTION,
+            #[cfg(target_arch = "wasm32")]
+            low_freq_field_resolution: WEB_DEFAULT_HEIGHT_FIELD_RESOLUTION,
         }
     }
 }

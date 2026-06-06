@@ -211,7 +211,11 @@ struct BaseGenerationPlant<'a> {
 impl<'a> BaseGenerationInputs<'a> {
     fn new(herbarium: &'a Herbarium, config: &'a GameConfig) -> Self {
         Self {
-            version: 1,
+            // v2: terrain height's continental + ridge octaves moved to a
+            // precomputed coarse global field (centimetre-scale lossy vs the
+            // exact 4D noise), so the baked terrain differs and old snapshots
+            // must be rejected. See `world_core::terrain_fields`.
+            version: 2,
             seed: config.world.seed,
             sea_level: config.sea_level,
             biome: &config.biome,
