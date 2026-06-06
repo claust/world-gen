@@ -25,7 +25,7 @@ use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::GrowthStage;
-use crate::world_core::rivers::RiverField;
+use crate::world_core::rivers::{RiverField, MAX_PLANTABLE_WETNESS};
 
 /// Packed per-plant record — **16 bytes** (`repr(C)`), validated against the
 /// real plant count in the M0 feasibility spike.
@@ -164,6 +164,10 @@ pub struct PlantWorld {
     /// Terrain + rules for validating spread landings without the full per-chunk
     /// grid: the heightmap is point-sampled at each seedling position.
     heightmap: Heightmap,
+    /// Global river field, retained so the spread landing pass can reject
+    /// seedlings that fall in a river channel — the same guard base flora
+    /// applies via the per-chunk `terrain.river` grid.
+    rivers: Arc<RiverField>,
     biome_config: BiomeConfig,
     sea_level: f32,
     seed: u32,
@@ -215,7 +219,8 @@ impl PlantWorld {
 
         let n = WORLD_SIZE_CHUNKS;
         let total = (n as usize) * (n as usize);
-        let generator = ChunkGenerator::new(seed, config, Arc::clone(&registry), rivers);
+        let generator =
+            ChunkGenerator::new(seed, config, Arc::clone(&registry), Arc::clone(&rivers));
 
         // Pack one canonical chunk's base flora (and classify its centre biome);
         // terrain/biome maps are transient.
@@ -302,6 +307,7 @@ impl PlantWorld {
             cell_bytes,
             registry,
             heightmap: Heightmap::new(seed, config.heightmap.clone()),
+            rivers,
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed,
@@ -431,6 +437,7 @@ impl PlantWorld {
         // Phase 2: validate + append, one chunk per task (chunk Vecs are disjoint).
         let ctx = SpreadContext {
             heightmap: &self.heightmap,
+            rivers: &self.rivers,
             registry: &self.registry,
             biome_config: &self.biome_config,
             sea_level: self.sea_level,
@@ -730,8 +737,9 @@ impl PlantWorld {
         expected_seed: u32,
         config: &GameConfig,
         registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
     ) -> Option<Self> {
-        match Self::read_base(bytes, gen_key, expected_seed, config, registry) {
+        match Self::read_base(bytes, gen_key, expected_seed, config, registry, rivers) {
             Ok(world) => Some(world),
             Err(err) => {
                 log::warn!("ignoring cached base world: {err}");
@@ -746,6 +754,7 @@ impl PlantWorld {
         expected_seed: u32,
         config: &GameConfig,
         registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
     ) -> anyhow::Result<Self> {
         let mut cur = Cursor::new(buf);
         if cur.read_u32()? != BASE_MAGIC {
@@ -855,6 +864,7 @@ impl PlantWorld {
             cell_bytes,
             registry,
             heightmap: Heightmap::new(seed, config.heightmap.clone()),
+            rivers,
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed,
@@ -911,6 +921,7 @@ struct SpreadCandidate {
 
 struct SpreadContext<'a> {
     heightmap: &'a Heightmap,
+    rivers: &'a RiverField,
     registry: &'a PlantRegistry,
     biome_config: &'a BiomeConfig,
     sea_level: f32,
@@ -1006,6 +1017,11 @@ fn land_chunk_candidates(
             || height < placement.min_altitude
             || height > placement.max_altitude
         {
+            continue;
+        }
+        // Reject seedlings that land in a river channel — mirrors the base-flora
+        // guard so spread can't slowly recolonise the water the base pass kept clear.
+        if ctx.rivers.sample(candidate.world_x, candidate.world_z).1 > MAX_PLANTABLE_WETNESS {
             continue;
         }
         let moisture = ctx
@@ -1495,6 +1511,7 @@ mod tests {
             cell_bytes,
             registry: reg,
             heightmap: Heightmap::new(7, config.heightmap.clone()),
+            rivers: Arc::new(RiverField::empty()),
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed: 7,
@@ -1626,6 +1643,7 @@ mod tests {
                 world.seed,
                 &config,
                 Arc::clone(&reg),
+                Arc::new(RiverField::empty()),
             )
             .expect("a matching snapshot loads");
             assert_eq!(restored.population(), world.population());
@@ -1645,7 +1663,8 @@ mod tests {
                     gen_key ^ 1,
                     world.seed,
                     &config,
-                    registry()
+                    registry(),
+                    Arc::new(RiverField::empty()),
                 )
                 .is_none(),
                 "a changed generation key must invalidate the cache"
@@ -1656,7 +1675,8 @@ mod tests {
                     gen_key,
                     world.seed + 1,
                     &config,
-                    registry()
+                    registry(),
+                    Arc::new(RiverField::empty()),
                 )
                 .is_none(),
                 "a different seed must invalidate the cache"
@@ -1891,6 +1911,7 @@ mod tests {
 
         let ctx = SpreadContext {
             heightmap: &world.heightmap,
+            rivers: &world.rivers,
             registry: &reg,
             biome_config: &world.biome_config,
             sea_level: world.sea_level,

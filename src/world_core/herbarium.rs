@@ -215,7 +215,10 @@ impl<'a> BaseGenerationInputs<'a> {
             // precomputed coarse global field (centimetre-scale lossy vs the
             // exact 4D noise), so the baked terrain differs and old snapshots
             // must be rejected. See `world_core::terrain_fields`.
-            version: 2,
+            // v3: base flora now rejects placement in river channels (wetness >
+            // `MAX_PLANTABLE_WETNESS`), so the baked plant set differs and old
+            // snapshots — which still seat trees in the water — must be rejected.
+            version: 3,
             seed: config.world.seed,
             sea_level: config.sea_level,
             biome: &config.biome,
