@@ -157,10 +157,10 @@ impl Storage for FileStorage {
 ///
 /// Note: a downloaded snapshot is only *used* if it passes the same validation
 /// as the local cache (`PlantWorld::from_base_snapshot`): its embedded seed and
-/// generation key must match the current `config.world.seed` and herbarium/config.
-/// If they don't, the download is silently rejected and the game generates
-/// locally — so a hosted file must be built from the matching seed/config, and a
-/// stale-URL or wrong-platform mismatch degrades safely to local generation.
+/// generation key must match the current base-generation inputs. If they don't,
+/// the download is silently rejected and the game generates locally — so a hosted
+/// file must be built from the matching generation inputs, and a stale-URL or
+/// wrong-platform mismatch degrades safely to local generation.
 #[cfg(not(target_arch = "wasm32"))]
 pub const BASE_WORLD_URL: &str = match option_env!("WORLD_BASE_URL") {
     Some(url) => url,
@@ -257,6 +257,8 @@ pub fn fetch_base_world() -> Option<Vec<u8>> {
 /// `Access-Control-Allow-Origin`, so the cross-origin release URL the native
 /// build uses is unreadable from a page — and lets the browser HTTP cache serve
 /// repeat New Games from disk (web `localStorage` can't hold a ~31 MiB blob).
+/// The expected generation key is appended as a query string so browsers don't
+/// reuse a stale snapshot after generation inputs change between deploys.
 ///
 /// Returns the raw bytes on a `200`, or `None` on any failure (missing file,
 /// network error, non-ok status) so the caller falls back to local generation.
@@ -264,12 +266,13 @@ pub fn fetch_base_world() -> Option<Vec<u8>> {
 ///
 /// Async: must be awaited on the browser event loop (there is no worker thread).
 #[cfg(target_arch = "wasm32")]
-pub async fn fetch_base_world_async() -> Option<Vec<u8>> {
+pub async fn fetch_base_world_async(gen_key: u64) -> Option<Vec<u8>> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
 
     let window = web_sys::window()?;
-    let request = match web_sys::Request::new_with_str("world_base.bin") {
+    let url = format!("world_base.bin?gen={gen_key:016x}");
+    let request = match web_sys::Request::new_with_str(&url) {
         Ok(req) => req,
         Err(err) => {
             log::warn!("base world: building fetch request failed: {err:?}");
