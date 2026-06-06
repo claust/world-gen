@@ -54,6 +54,7 @@ struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) biome_data: vec3<f32>,
+    @location(3) wetness: f32,
 };
 
 struct VertexOutput {
@@ -62,6 +63,7 @@ struct VertexOutput {
     @location(1) @interpolate(flat) biome_ids: vec2<f32>,
     @location(2) blend_factor: f32,
     @location(3) world_position: vec3<f32>,
+    @location(4) wetness: f32,
 };
 
 @vertex
@@ -72,6 +74,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     out.biome_ids = input.biome_data.xy;
     out.blend_factor = input.biome_data.z;
     out.world_position = input.position;
+    out.wetness = input.wetness;
     return out;
 }
 
@@ -104,7 +107,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let color_a = sample_biome(biome_a, input.world_position);
     let color_b = sample_biome(biome_b, input.world_position);
-    let albedo = mix(color_a, color_b, blend_factor);
+    let biome_albedo = mix(color_a, color_b, blend_factor);
+
+    // Tint riverbeds toward water. `wetness` ramps 0..1 from bank to channel
+    // centre, so the carved valley reads as a river from above and the ground.
+    // A deep, desaturated blue keeps it reading as water once lit, rather than
+    // washing out to pale teal under the midday sun.
+    let river_color = vec3<f32>(0.09, 0.24, 0.42);
+    let albedo = mix(biome_albedo, river_color, clamp(input.wetness, 0.0, 1.0) * 0.9);
 
     let n = normalize(input.world_normal);
     let l = normalize(material.light_direction.xyz);
