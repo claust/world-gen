@@ -36,8 +36,10 @@ impl Default for GameConfig {
 pub struct RiverConfig {
     /// Master switch for river carving.
     pub enabled: bool,
-    /// Cells per world side for the hydrology solve. Higher = finer (narrower)
-    /// rivers but a longer one-time solve at world load. 1024 ≈ 64 m/cell.
+    /// Grid nodes per world side for the hydrology solve. Higher = finer
+    /// (narrower) rivers but a longer one-time solve at world load. 2048 ≈
+    /// 32 m/node, 1024 ≈ 64 m/node. The default is lower on wasm, where the
+    /// solve runs single-threaded.
     pub grid_resolution: u32,
     /// Box-blur radius (cells) applied to the routing surface so flow
     /// concentrates into trunk rivers instead of fragmenting on detail noise.
@@ -54,9 +56,17 @@ pub struct RiverConfig {
 
 impl Default for RiverConfig {
     fn default() -> Self {
+        // The solve is parallelized with rayon natively but runs single-threaded
+        // on wasm, so default to a coarser grid there to keep browser world-load
+        // time reasonable. wasm regenerates its base world locally (it never
+        // downloads), so a platform-specific default can't break cache matching.
+        #[cfg(not(target_arch = "wasm32"))]
+        let grid_resolution = 2048;
+        #[cfg(target_arch = "wasm32")]
+        let grid_resolution = 1024;
         Self {
             enabled: true,
-            grid_resolution: 2048,
+            grid_resolution,
             smooth_radius: 2,
             smooth_iters: 2,
             min_drainage_area_m2: 150_000.0,

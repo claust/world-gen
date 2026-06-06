@@ -58,7 +58,8 @@ impl RiverField {
         let cell = WORLD_SIZE_METERS as f32 / res as f32;
         let hm = Heightmap::new(seed, config.heightmap.clone());
 
-        // 1. Sample raw terrain height at each grid cell centre (parallel).
+        // 1. Sample raw terrain height at each grid node, spaced `cell` apart
+        //    (parallel). Node i sits at world `i * cell`, matching `sample`.
         let sample_cell = |i: usize| -> f32 {
             let x = (i % res) as f32 * cell;
             let z = (i / res) as f32 * cell;
@@ -121,7 +122,9 @@ impl RiverField {
         }
         let res = self.res;
         let cell = WORLD_SIZE_METERS as f32 / res as f32;
-        // Grid cell coordinates (cell centres sit on integer indices).
+        // Grid-node coordinates: node i sits at world `i * cell`, so dividing by
+        // `cell` puts nodes on integer indices and `tx`/`tz` are the fractions
+        // between them.
         let gx = x / cell;
         let gz = z / cell;
         let x0 = gx.floor();
