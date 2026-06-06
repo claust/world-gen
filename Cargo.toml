@@ -44,6 +44,15 @@ wgpu = "27"
 winit = "0.29"
 egui-wgpu = { version = "0.33", default-features = false }
 
+# Dev-only: the MSDF font-atlas baker (`examples/bake_hud_font.rs`). These pull in
+# nalgebra etc. but compile ONLY for the example — the shipped game/wasm binary
+# loads the pre-baked `assets/fonts/hud_atlas.*` and never depends on them.
+[dev-dependencies]
+fdsm = "0.8"
+fdsm-ttf-parser = "0.2"
+ttf-parser = "0.25"
+nalgebra = "0.34"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 
