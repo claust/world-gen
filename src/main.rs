@@ -158,7 +158,10 @@ fn generate_base_world(out_path: &str) -> anyhow::Result<()> {
         .unwrap_or(4);
 
     log::info!("generating base world (seed {seed}, gen_key {gen_key:#018x}, {threads} threads)…");
-    let world = PlantWorld::generate_base(seed, &config, registry, threads, None);
+    let rivers = Arc::new(world_gen::world_core::rivers::RiverField::generate(
+        seed, &config,
+    ));
+    let world = PlantWorld::generate_base(seed, &config, registry, rivers, threads, None);
     // This is the snapshot shipped on GitHub and downloaded by clients, so use
     // the high download quality to minimize the download (the encode cost is
     // paid here in CI, never on a player's machine).
