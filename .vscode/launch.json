@@ -5,7 +5,7 @@
       "type": "lldb",
       "request": "launch",
       "name": "Debug FloraForge",
-      "program": "${workspaceFolder}/target/debug/world-gen",
+      "program": "${workspaceFolder}/target/debug/FloraForge",
       "cwd": "${workspaceFolder}",
       "env": {
         "PATH": "${env:HOME}/.cargo/bin:${env:PATH}",
@@ -21,7 +21,7 @@
       "type": "lldb",
       "request": "launch",
       "name": "Run FloraForge (release)",
-      "program": "${workspaceFolder}/target/release/world-gen",
+      "program": "${workspaceFolder}/target/release/FloraForge",
       "cwd": "${workspaceFolder}",
       "env": {
         "PATH": "${env:HOME}/.cargo/bin:${env:PATH}",
