@@ -13,6 +13,10 @@ pub struct BranchSegment {
     pub start_radius: f32,
     pub end_radius: f32,
     pub depth: u32,
+    /// Tint this segment with the species' leaf colour instead of bark. Used by
+    /// the `reed` body plan so green stalks (leaf) and brown seed-heads (bark)
+    /// can share one segment list. Bark is the default for every woody species.
+    pub use_leaf_color: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +93,10 @@ fn branch_dir_3d(parent_dir: Vec3, insert_angle_rad: f32, rot_rad: f32) -> Vec3 
 }
 
 pub fn generate_tree(spec: &SpeciesConfig, seed: u32) -> TreeData {
+    if spec.body_plan.kind == "reed" {
+        return generate_reed(spec, seed);
+    }
+
     let mut rng = StdRng::seed_from_u64(hash4(seed, 0x504C_414E, 0x5452_4545, 0) as u64);
     let mut segments = Vec::new();
     let mut foliage = Vec::new();
@@ -123,6 +131,102 @@ pub fn generate_tree(spec: &SpeciesConfig, seed: u32) -> TreeData {
         segments,
         foliage,
         height,
+    }
+}
+
+/// Cattail / reed body plan: a clump of tall, thin, gently-curved stalks fanning
+/// from a small shared base, most of them carrying a brown sausage-shaped seed
+/// head near the tip. One clump = one `PlantInstance`, so "several stalks
+/// together" is intrinsic to the model and reed beds emerge from stacking clumps.
+///
+/// Reuses [`BranchSegment`] cylinders (no SDF foliage): stalks are tinted with
+/// the leaf colour (`use_leaf_color`) and seed-heads with the bark colour.
+fn generate_reed(spec: &SpeciesConfig, seed: u32) -> TreeData {
+    use std::f32::consts::TAU;
+
+    let mut rng = StdRng::seed_from_u64(hash4(seed, 0x5245_4544, 0x4341_5454, 0) as u64);
+    let mut segments = Vec::new();
+
+    let clump_height = rng.random_range(spec.body_plan.max_height[0]..spec.body_plan.max_height[1]);
+    // Per-clump stalk count, jittered around the preset so no two clumps match.
+    let base_count = spec.body_plan.stem_count.max(3) as i32;
+    let stalk_count = (base_count + rng.random_range(-2..=2)).max(3) as u32;
+    let stalk_radius = clump_height * spec.trunk.thickness_ratio;
+    // Footprint the stalks fan out across at the base.
+    let clump_radius = clump_height * 0.05;
+    // Fraction of stalks that carry a seed head (the rest stay bare green).
+    let spike_fraction = spec.foliage.coverage.clamp(0.0, 1.0);
+
+    let n_seg = 6;
+    for _ in 0..stalk_count {
+        let h = clump_height * rng.random_range(0.7..1.1);
+        let r0 = stalk_radius * rng.random_range(0.8..1.2);
+
+        // Base offset within the clump footprint (sqrt for uniform area spread).
+        let base_ang = rng.random::<f32>() * TAU;
+        let base_off = rng.random::<f32>().sqrt() * clump_radius;
+        let base = Vec3::new(base_ang.cos() * base_off, 0.0, base_ang.sin() * base_off);
+
+        // Gentle lean: a horizontal direction the stalk bends toward, growing
+        // quadratically with height so the base stays near-vertical.
+        let lean_ang = rng.random::<f32>() * TAU;
+        let lean_dir = Vec3::new(lean_ang.cos(), 0.0, lean_ang.sin());
+        let top_lateral = h * rng.random_range(0.05..0.22);
+
+        let stalk_point = |t: f32| -> Vec3 {
+            base + Vec3::new(0.0, h * t, 0.0) + lean_dir * (top_lateral * t * t)
+        };
+
+        // Thin tapered cylinder, near-zero at the tip.
+        for i in 0..n_seg {
+            let t0 = i as f32 / n_seg as f32;
+            let t1 = (i + 1) as f32 / n_seg as f32;
+            let r_start = (r0 * (1.0 - 0.85 * t0)).max(0.004);
+            let r_end = (r0 * (1.0 - 0.85 * t1)).max(0.003);
+            segments.push(BranchSegment {
+                start: stalk_point(t0),
+                end: stalk_point(t1),
+                start_radius: r_start,
+                end_radius: r_end,
+                depth: 0,
+                use_leaf_color: true,
+            });
+        }
+
+        // Brown seed head: a fat, tapered "sausage" wrapped around the stalk just
+        // below the tip. Built as two cylinders (widen up to the middle, taper to
+        // the top) so it reads rounded rather than like a stubby pole.
+        if rng.random::<f32>() < spike_fraction {
+            let spike_bot = 0.66;
+            let spike_top = 0.84;
+            let spike_mid = (spike_bot + spike_top) * 0.5;
+            let p_bot = stalk_point(spike_bot);
+            let p_mid = stalk_point(spike_mid);
+            let p_top = stalk_point(spike_top);
+            let fat = (r0 * 3.0).max(0.018);
+            segments.push(BranchSegment {
+                start: p_bot,
+                end: p_mid,
+                start_radius: fat * 0.4,
+                end_radius: fat,
+                depth: 0,
+                use_leaf_color: false,
+            });
+            segments.push(BranchSegment {
+                start: p_mid,
+                end: p_top,
+                start_radius: fat,
+                end_radius: fat * 0.35,
+                depth: 0,
+                use_leaf_color: false,
+            });
+        }
+    }
+
+    TreeData {
+        segments,
+        foliage: Vec::new(),
+        height: clump_height,
     }
 }
 
@@ -172,6 +276,7 @@ fn generate_stem(
             start_radius: r0,
             end_radius: r1,
             depth: 0,
+            use_leaf_color: false,
         });
         pos = next;
         trunk_pts.push(pos);
@@ -313,6 +418,7 @@ fn generate_branch(
         start_radius: thickness,
         end_radius: end_r,
         depth,
+        use_leaf_color: false,
     });
 
     if depth >= spec.branching.max_depth {
@@ -444,6 +550,7 @@ fn generate_fronds(
             start_radius: top_radius * 0.25,
             end_radius: top_radius * 0.05,
             depth: 1,
+            use_leaf_color: false,
         });
 
         for j in 0..5 {

@@ -19,6 +19,12 @@ pub struct PlacementConfig {
     pub spread_chance: f32,
     pub seedling_hours: f32,
     pub young_hours: f32,
+    /// Aquatic species (cattails) spawn *in* the river/lake margin that land
+    /// plants avoid: the base-flora pass seats them in the wet band above
+    /// `MAX_PLANTABLE_WETNESS` and allows them below sea level, the mirror image
+    /// of the land guard. Land species leave this `false`.
+    #[serde(default)]
+    pub aquatic: bool,
 }
 
 #[cfg(test)]
@@ -54,10 +60,18 @@ mod tests {
         assert!(!herbarium.plants.is_empty());
 
         for entry in herbarium.plants {
-            assert_eq!(entry.placement.spread_radius, 25.0);
-            assert_eq!(entry.placement.spread_chance, 0.3);
+            // Growth-stage durations are shared by every species.
             assert_eq!(entry.placement.seedling_hours, 48.0);
             assert_eq!(entry.placement.young_hours, 96.0);
+            // Aquatic species (cattails) are base-only: they deliberately opt out
+            // of the lifecycle spread pass, so the spread defaults don't apply.
+            if entry.placement.aquatic {
+                assert_eq!(entry.placement.spread_radius, 0.0);
+                assert_eq!(entry.placement.spread_chance, 0.0);
+            } else {
+                assert_eq!(entry.placement.spread_radius, 25.0);
+                assert_eq!(entry.placement.spread_chance, 0.3);
+            }
         }
     }
 
@@ -139,6 +153,7 @@ impl Default for PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         }
     }
 }
@@ -218,7 +233,9 @@ impl<'a> BaseGenerationInputs<'a> {
             // v3: base flora now rejects placement in river channels (wetness >
             // `MAX_PLANTABLE_WETNESS`), so the baked plant set differs and old
             // snapshots — which still seat trees in the water — must be rejected.
-            version: 3,
+            // v4: cattails (the first aquatic species) are baked into the wet
+            // band along banks, adding plants old snapshots never had.
+            version: 4,
             seed: config.world.seed,
             sea_level: config.sea_level,
             biome: &config.biome,
@@ -314,6 +331,7 @@ const SPECIES_PRESETS: &[(&str, &str)] = &[
     ("Shrub", include_str!("plant_gen/species/shrub.json")),
     ("Spruce", include_str!("plant_gen/species/spruce.json")),
     ("Willow", include_str!("plant_gen/species/willow.json")),
+    ("Cattail", include_str!("plant_gen/species/cattail.json")),
 ];
 
 fn default_placement(name: &str) -> PlacementConfig {
@@ -331,6 +349,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Birch" => PlacementConfig {
             biomes: vec!["Forest".into()],
@@ -345,6 +364,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Acacia" => PlacementConfig {
             biomes: vec!["Desert".into(), "Grassland".into()],
@@ -359,6 +379,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Palm" => PlacementConfig {
             biomes: vec!["Grassland".into(), "Forest".into()],
@@ -373,6 +394,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Shrub" => PlacementConfig {
             biomes: vec!["Forest".into(), "Grassland".into()],
@@ -387,6 +409,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Spruce" => PlacementConfig {
             biomes: vec!["Forest".into()],
@@ -401,6 +424,7 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
         },
         "Willow" => PlacementConfig {
             biomes: vec!["Forest".into(), "Grassland".into()],
@@ -415,6 +439,28 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            aquatic: false,
+        },
+        "Cattail" => PlacementConfig {
+            // Cattails fringe water in every biome a river or lake can reach.
+            biomes: vec!["Forest".into(), "Grassland".into(), "Desert".into()],
+            weight: 1.0,
+            min_moisture: 0.0,
+            max_moisture: 1.0,
+            // Allow the shallow-water band, which dips to (and just below) sea
+            // level; the aquatic guard handles the wetness range, not altitude.
+            min_altitude: 0.0,
+            max_altitude: 160.0,
+            near_water_boost: 0.0,
+            max_slope: 1.0,
+            // Base-only for v1: a zero spread chance keeps reed beds out of the
+            // lifecycle spread pass, so its wetness guard needs no aquatic
+            // exemption. Reed beds don't migrate fast; revisit later.
+            spread_radius: 0.0,
+            spread_chance: 0.0,
+            seedling_hours: 48.0,
+            young_hours: 96.0,
+            aquatic: true,
         },
         _ => PlacementConfig::default(),
     }

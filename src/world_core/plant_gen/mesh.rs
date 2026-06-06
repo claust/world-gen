@@ -12,15 +12,22 @@ pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> (Vec<PlantVertex>, V
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    // Bark color (linear RGB)
+    // Bark color (linear RGB), plus leaf colour for segments that opt into it
+    // (reed stalks are green; their seed-heads stay bark brown).
     let bark_linear = hsl_to_linear(spec.color.bark.h, spec.color.bark.s, spec.color.bark.l);
+    let leaf_linear = hsl_to_linear(spec.color.leaf.h, spec.color.leaf.s, spec.color.leaf.l);
 
     for seg in &data.segments {
+        let base = if seg.use_leaf_color {
+            leaf_linear
+        } else {
+            bark_linear
+        };
         let depth_darken = 1.0 - seg.depth as f32 * 0.05;
         let color = [
-            bark_linear[0] * depth_darken,
-            bark_linear[1] * depth_darken,
-            bark_linear[2] * depth_darken,
+            base[0] * depth_darken,
+            base[1] * depth_darken,
+            base[2] * depth_darken,
         ];
         add_cylinder(
             seg.start,
