@@ -1,5 +1,6 @@
 // River water surface pass: see shaders/river.wgsl for the animated surface.
-// Its dry-fringe cutoff mirrors RIVER_SURFACE_THRESHOLD used here.
+// Its dry-fringe cutoff mirrors the RIVER_SURFACE_THRESHOLD that
+// `river_water_depth` applies when lifting the surface above the bed.
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
@@ -10,14 +11,8 @@ use super::frustum::Frustum;
 use super::pipeline::create_water_pipeline;
 use super::river_normal_texture::RiverNormalTexture;
 use crate::world_core::chunk::{
-    ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, RIVER_SURFACE_THRESHOLD,
+    river_water_depth, ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
 };
-
-/// Lift of the river water surface above the carved bed, in metres. The sheet
-/// hugs the bed at the banks (low wetness) and rises toward the channel centre
-/// (high wetness), so deeper channels fill more and the surface self-levels.
-const RIVER_MIN_DEPTH: f32 = 0.35;
-const RIVER_DEPTH_SCALE: f32 = 6.0;
 
 /// One vertex of the river water surface. Carries the downstream flow direction
 /// and wetness so the shader can animate the streaming ripples and fade the
@@ -170,11 +165,7 @@ impl RiverPass {
                     // Lift the surface above the carved bed only where there is
                     // actually water; dry vertices stay at the bed and are
                     // discarded by the shader.
-                    let depth = if wet > RIVER_SURFACE_THRESHOLD {
-                        RIVER_MIN_DEPTH + wet * RIVER_DEPTH_SCALE
-                    } else {
-                        0.0
-                    };
+                    let depth = river_water_depth(wet);
                     vertices.push(RiverVertex {
                         position: [wx, terrain.heights[idx] + depth, wz],
                         flow: terrain.river_flow[idx],
