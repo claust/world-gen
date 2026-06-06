@@ -139,6 +139,10 @@ pub enum CommandKind {
         yaw: f32,
         pitch: f32,
     },
+    MapRightClick {
+        u: f32,
+        v: f32,
+    },
     FindNearest {
         kind: ObjectKind,
     },
