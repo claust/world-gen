@@ -6,7 +6,8 @@ use super::sampling::{
 use crate::world_core::biome::Biome;
 use crate::world_core::biome_map::BiomeMap;
 use crate::world_core::chunk::{
-    canonical_chunk, ChunkTerrain, PlantInstance, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
+    canonical_chunk, river_water_depth, ChunkTerrain, PlantInstance, CHUNK_GRID_RESOLUTION,
+    CHUNK_SIZE_METERS,
 };
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::layer::Layer;
@@ -348,6 +349,19 @@ impl FloraLayer {
                 ));
                 let plant_height = species.height_range[0]
                     + height_rnd * (species.height_range[1] - species.height_range[0]);
+
+                // Aquatic plants are rooted at the carved bed, so their head only
+                // breaks the surface when the stem outgrows the water. Gate on the
+                // actual sampled height (not the species range) so tall stems can
+                // stand a little deeper while short ones drop out at the margins,
+                // giving a soft fade-out at the channel edge instead of a hard ring.
+                // HEAD_CLEARANCE keeps the brown spike clear of the surface rather
+                // than merely touching it.
+                const HEAD_CLEARANCE: f32 = 0.4;
+                let water_depth = river_water_depth(wetness);
+                if plant_height < water_depth + HEAD_CLEARANCE {
+                    continue;
+                }
 
                 let rotation = hash_to_unit_float(hash4(
                     self.seed.wrapping_add(1117 + seed_offset),
