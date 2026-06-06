@@ -52,7 +52,7 @@ jobs:
           key: generate-base
 
       - name: Build generator
-        run: cargo build --release --bin world-gen
+        run: cargo build --release --bin FloraForge
 
       - name: Generate world_base.bin
         run: |
@@ -63,7 +63,7 @@ jobs:
           # artifacts (not in the checkout); this rm is a guard against a stray copy
           # producing a generation key no shipped client would match.
           rm -f herbarium.json config.json
-          ./target/release/world-gen --generate-base world_base.bin
+          ./target/release/FloraForge --generate-base world_base.bin
 
       - name: Upload world-base artifact
         uses: actions/upload-artifact@v5
