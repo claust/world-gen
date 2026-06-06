@@ -336,18 +336,6 @@ fn format_compact_count(count: usize) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::format_compact_count;
-
-    #[test]
-    fn compact_count_keeps_hud_plant_totals_readable() {
-        assert_eq!(format_compact_count(3_129), "3129");
-        assert_eq!(format_compact_count(14_165_889), "14.2m");
-        assert_eq!(format_compact_count(29_532), "29532");
-    }
-}
-
 /// Pushes a filled axis-aligned rectangle (two triangles) as a solid-color quad.
 fn push_rect(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
     push_tri(verts, [x, y], [x + w, y], [x + w, y + h], color);
@@ -570,5 +558,17 @@ fn build_sky_clock(verts: &mut Vec<HudVertex>, hour: f32, screen_w: f32) {
             push_tri(verts, r0, r2, r3, ray_color);
             push_tri(verts, r0, r3, r1, ray_color);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_compact_count;
+
+    #[test]
+    fn compact_count_keeps_hud_plant_totals_readable() {
+        assert_eq!(format_compact_count(3_129), "3129");
+        assert_eq!(format_compact_count(14_165_889), "14.2m");
+        assert_eq!(format_compact_count(29_532), "29532");
     }
 }
