@@ -472,7 +472,10 @@ impl AppState {
             .as_ref()
             .map(|world| world.sample_height(x, z))
             .unwrap_or(self.camera.position.y - MIN_HEIGHT_ABOVE_GROUND);
-        self.camera.position = Vec3::new(x, ground_y + MIN_HEIGHT_ABOVE_GROUND, z);
+        // Where the terrain dips below the water line, land on the water surface
+        // instead of the seabed so the teleport never drops the camera underwater.
+        let surface_y = ground_y.max(self.config.sea_level);
+        self.camera.position = Vec3::new(x, surface_y + MIN_HEIGHT_ABOVE_GROUND, z);
         self.camera_controller.reset_inputs();
     }
 
