@@ -758,11 +758,11 @@ impl AppState {
                     self.capture_cursor();
                 }
                 self.loading_state = None;
-                // Adopt the finished biome map for the in-game map overlay (M key)
-                // before releasing loading state. The refresh guarantees the texture
-                // reflects the final (fully-generated) cells even on a fast build.
-                self.update_loading_map_texture();
-                self.world_map_tex = self.loading_map_tex.take();
+                // Build the in-game map overlay (M key). Rather than reuse the
+                // blocky one-cell-per-chunk loading map, resample the world's
+                // continuous heightmap into a smooth, relief-shaded map. It's
+                // static, so this one-time build is all the overlay needs.
+                self.build_world_map_texture();
                 // Release the generation-visualization resources now that we're
                 // in-game; they're rebuilt fresh on the next load.
                 self.world_gen_progress = None;
@@ -954,6 +954,27 @@ impl AppState {
                 self.loading_map_tex = Some(tex);
             }
         }
+    }
+
+    /// Build the static, relief-shaded world map shown by the `M`-key overlay.
+    /// Resamples the world's continuous heightmap at high resolution (smooth
+    /// coastlines, hillshade relief, depth-graded water) instead of reusing the
+    /// blocky per-chunk loading map. Falls back to the loading map if the world
+    /// somehow isn't ready yet.
+    fn build_world_map_texture(&mut self) {
+        let res = crate::world_runtime::WORLD_MAP_RES;
+        let Some(world) = &self.world else {
+            self.update_loading_map_texture();
+            self.world_map_tex = self.loading_map_tex.take();
+            return;
+        };
+        let buf = world.render_world_map(res);
+        let image = egui::ColorImage::from_rgba_unmultiplied([res, res], &buf);
+        self.world_map_tex = Some(self.egui_bridge.ctx().load_texture(
+            "world-map",
+            image,
+            egui::TextureOptions::LINEAR,
+        ));
     }
 
     /// Bail out of loading back to the start menu, releasing generation state.

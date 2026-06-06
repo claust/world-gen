@@ -324,6 +324,14 @@ impl PlantWorld {
         }
     }
 
+    /// Render a high-resolution, relief-shaded world-map image (RGBA8,
+    /// `res`×`res`) by resampling the retained continuous heightmap. Used for the
+    /// static in-game map overlay (`M`), which would otherwise reuse the blocky
+    /// one-cell-per-chunk loading map.
+    pub fn render_world_map(&self, res: usize) -> Vec<u8> {
+        crate::world_runtime::world_map::render_world_map(&self.heightmap, self.sea_level, res)
+    }
+
     /// Total plants across the whole world (loaded or not). O(1).
     pub fn population(&self) -> usize {
         self.population
