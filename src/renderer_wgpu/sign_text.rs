@@ -306,10 +306,20 @@ fn build_label_vertices(coord: IVec2, ground_y: f32) -> Vec<SignVertex> {
 
     let mut out = Vec::with_capacity(text.len() * 12);
 
+    // Half-texel inset so the linearly-filtered glyph samples stay within the
+    // cell's outer texel centers. The atlas packs 8px glyphs with no gutter, so
+    // without this a fragment at the u0/u1 seam would blend in the neighboring
+    // glyph's edge column and leave a faint halo.
+    let inset_u = 0.5 / ATLAS_W as f32;
+    let inset_v = 0.5 / ATLAS_H as f32;
     for (i, c) in text.chars().enumerate() {
-        let Some((u0, v0, u1, v1)) = hud_font::glyph_uv(c) else {
+        let Some((mut u0, mut v0, mut u1, mut v1)) = hud_font::glyph_uv(c) else {
             continue;
         };
+        u0 += inset_u;
+        u1 -= inset_u;
+        v0 += inset_v;
+        v1 -= inset_v;
         let lx0 = start_x + i as f32 * advance;
         let lx1 = lx0 + gw;
 
