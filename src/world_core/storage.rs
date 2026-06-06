@@ -249,6 +249,75 @@ pub fn fetch_base_world() -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Try to download the prebuilt `world_base.bin` snapshot in the browser. Unlike
+/// the native [`fetch_base_world`], the URL is a fixed same-origin relative path:
+/// the release workflow deploys the snapshot next to the wasm/JS bundle, so it
+/// resolves on any host the app is served from. A same-origin fetch also avoids
+/// CORS entirely — GitHub's release-asset hosts don't send
+/// `Access-Control-Allow-Origin`, so the cross-origin release URL the native
+/// build uses is unreadable from a page — and lets the browser HTTP cache serve
+/// repeat New Games from disk (web `localStorage` can't hold a ~31 MiB blob).
+///
+/// Returns the raw bytes on a `200`, or `None` on any failure (missing file,
+/// network error, non-ok status) so the caller falls back to local generation.
+/// Validation of the bytes is left to `PlantWorld::from_base_snapshot`.
+///
+/// Async: must be awaited on the browser event loop (there is no worker thread).
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch_base_world_async() -> Option<Vec<u8>> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let window = web_sys::window()?;
+    let request = match web_sys::Request::new_with_str("world_base.bin") {
+        Ok(req) => req,
+        Err(err) => {
+            log::warn!("base world: building fetch request failed: {err:?}");
+            return None;
+        }
+    };
+
+    let resp_value = match JsFuture::from(window.fetch_with_request(&request)).await {
+        Ok(value) => value,
+        Err(err) => {
+            log::warn!("base world: fetch failed: {err:?}");
+            return None;
+        }
+    };
+    let resp: web_sys::Response = match resp_value.dyn_into() {
+        Ok(resp) => resp,
+        Err(_) => return None,
+    };
+    // Require exactly 200 (not just any 2xx) so a 204/206/etc. with a body that
+    // isn't the snapshot falls back to local generation instead of being fed to
+    // `from_base_snapshot` — matching the native downloader.
+    if resp.status() != 200 {
+        log::warn!(
+            "base world: fetch returned status {}; ignoring",
+            resp.status()
+        );
+        return None;
+    }
+
+    let buffer = match resp.array_buffer() {
+        Ok(promise) => match JsFuture::from(promise).await {
+            Ok(buffer) => buffer,
+            Err(err) => {
+                log::warn!("base world: reading response body failed: {err:?}");
+                return None;
+            }
+        },
+        Err(err) => {
+            log::warn!("base world: array_buffer() failed: {err:?}");
+            return None;
+        }
+    };
+
+    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+    log::info!("base world: downloaded {} bytes", bytes.len());
+    Some(bytes)
+}
+
 #[cfg(target_arch = "wasm32")]
 pub struct WebStorage;
 

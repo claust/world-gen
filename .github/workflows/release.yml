@@ -52,7 +52,7 @@ jobs:
           key: generate-base
 
       - name: Build generator
-        run: cargo build --release --bin world-gen
+        run: cargo build --release --bin FloraForge
 
       - name: Generate world_base.bin
         run: |
@@ -63,7 +63,7 @@ jobs:
           # artifacts (not in the checkout); this rm is a guard against a stray copy
           # producing a generation key no shipped client would match.
           rm -f herbarium.json config.json
-          ./target/release/world-gen --generate-base world_base.bin
+          ./target/release/FloraForge --generate-base world_base.bin
 
       - name: Upload world-base artifact
         uses: actions/upload-artifact@v5
@@ -74,6 +74,10 @@ jobs:
   build-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
+    # The prebuilt base world is bundled into the web deploy so the wasm client
+    # can fetch it same-origin (a browser can't read the cross-origin release
+    # asset — GitHub's asset hosts send no CORS headers).
+    needs: generate-base
 
     steps:
       - name: Checkout
@@ -110,6 +114,14 @@ jobs:
             --out-dir web/pkg \
             --out-name world_gen \
             target/wasm32-unknown-unknown/release/world_gen.wasm
+
+      # Place the prebuilt snapshot next to the bundle so the wasm client fetches
+      # it at the same-origin path `world_base.bin` instead of generating locally.
+      - name: Bundle prebuilt base world
+        uses: actions/download-artifact@v5
+        with:
+          name: floraforge-world-base
+          path: web/
 
       - name: Create release zip
         run: cd web && zip -r ../floraforge-web.zip .

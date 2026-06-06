@@ -6,6 +6,13 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# The binary is named `FloraForge` (not the package name `world-gen`) so that an
+# un-bundled `cargo run` presents as "FloraForge" in the macOS dock/menu bar — the
+# OS derives an un-bundled app's display name from the executable's file name.
+[[bin]]
+name = "FloraForge"
+path = "src/main.rs"
+
 # Fast debug builds (e.g. VS Code F5 → target/debug). World generation is
 # dominated by 4D OpenSimplex sampling in the `noise` crate; at the default
 # dev opt-level (0) that runs unoptimized and full-world gen takes ~24 min
@@ -61,11 +68,14 @@ console_error_panic_hook = "0.1"
 console_log = "1"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Document",
     "Window",
     "Element",
     "HtmlCanvasElement",
     "Storage",
+    "Request",
+    "Response",
 ] }
 web-time = "1"

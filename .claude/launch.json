@@ -6,6 +6,12 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8123", "--directory", "web"],
       "port": 8123
+    },
+    {
+      "name": "web-verify",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["tools/serve-web.ts"],
+      "port": 8787
     }
   ]
 }

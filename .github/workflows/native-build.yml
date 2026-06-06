@@ -67,13 +67,13 @@ jobs:
           # Baked into the binary at compile time (option_env! in storage.rs).
           # Empty for PR CI → those builds generate the world locally.
           WORLD_BASE_URL: ${{ inputs.world_base_url }}
-        run: cargo build ${{ inputs.release && '--release' || '' }} --target ${{ matrix.target }} --bin world-gen
+        run: cargo build ${{ inputs.release && '--release' || '' }} --target ${{ matrix.target }} --bin FloraForge
 
       - name: Package (macOS)
         if: ${{ inputs.release && runner.os == 'macOS' }}
         run: |
           mkdir staging
-          cp target/${{ matrix.target }}/release/world-gen staging/floraforge
+          cp target/${{ matrix.target }}/release/FloraForge staging/FloraForge
           cd staging && zip -r ../${{ matrix.artifact }}.zip .
 
       # Windows ships as a bare .exe (no zip): it's a single self-contained
@@ -81,7 +81,7 @@ jobs:
       - name: Package (Windows)
         if: ${{ inputs.release && runner.os == 'Windows' }}
         shell: pwsh
-        run: Copy-Item "target/${{ matrix.target }}/release/world-gen.exe" "${{ matrix.artifact }}.exe"
+        run: Copy-Item "target/${{ matrix.target }}/release/FloraForge.exe" "${{ matrix.artifact }}.exe"
 
       - name: Upload artifact (zip)
         if: ${{ inputs.release && runner.os != 'Windows' }}

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use glam::IVec2;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
@@ -6,16 +8,24 @@ use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_M
 use crate::world_core::config::HeightmapConfig;
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::layer::Layer;
+use crate::world_core::rivers::RiverField;
 
 pub struct TerrainLayer {
     heightmap: Heightmap,
+    rivers: Arc<RiverField>,
     sea_level: f32,
 }
 
 impl TerrainLayer {
-    pub fn new(seed: u32, heightmap_config: HeightmapConfig, sea_level: f32) -> Self {
+    pub fn new(
+        seed: u32,
+        heightmap_config: HeightmapConfig,
+        sea_level: f32,
+        rivers: Arc<RiverField>,
+    ) -> Self {
         Self {
             heightmap: Heightmap::new(seed, heightmap_config),
+            rivers,
             sea_level,
         }
     }
@@ -29,15 +39,19 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         let origin_x = coord.x as f32 * CHUNK_SIZE_METERS;
         let origin_z = coord.y as f32 * CHUNK_SIZE_METERS;
 
-        let heights: Vec<f32> = maybe_par_iter!(0..total)
+        // Sample raw height and the global river field together, carving the
+        // channel into the height and keeping the wetness for the riverbed tint.
+        let (heights, river): (Vec<f32>, Vec<f32>) = maybe_par_iter!(0..total)
             .map(|idx| {
                 let x = idx % side;
                 let z = idx / side;
                 let world_x = origin_x + x as f32 * cell_size;
                 let world_z = origin_z + z as f32 * cell_size;
-                self.heightmap.sample_height(world_x, world_z)
+                let raw = self.heightmap.sample_height(world_x, world_z);
+                let (carve, wet) = self.rivers.sample(world_x, world_z);
+                (raw - carve, wet)
             })
-            .collect();
+            .unzip();
 
         let moisture: Vec<f32> = maybe_par_iter!(0..total)
             .map(|idx| {
@@ -58,6 +72,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         ChunkTerrain {
             heights,
             moisture,
+            river,
             has_water: min_height < self.sea_level,
             min_height,
             max_height,

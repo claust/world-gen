@@ -25,6 +25,7 @@ use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::GrowthStage;
+use crate::world_core::rivers::RiverField;
 
 /// Packed per-plant record — **16 bytes** (`repr(C)`), validated against the
 /// real plant count in the M0 feasibility spike.
@@ -189,6 +190,7 @@ impl PlantWorld {
         seed: u32,
         config: &GameConfig,
         registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
         threads: usize,
         progress: Option<&crate::world_runtime::gen_progress::GenerationProgress>,
     ) -> Self {
@@ -213,7 +215,7 @@ impl PlantWorld {
 
         let n = WORLD_SIZE_CHUNKS;
         let total = (n as usize) * (n as usize);
-        let generator = ChunkGenerator::new(seed, config, Arc::clone(&registry));
+        let generator = ChunkGenerator::new(seed, config, Arc::clone(&registry), rivers);
 
         // Pack one canonical chunk's base flora (and classify its centre biome);
         // terrain/biome maps are transient.
@@ -322,6 +324,14 @@ impl PlantWorld {
         for (idx, &byte) in self.cell_bytes.iter().enumerate() {
             progress.record(idx, byte);
         }
+    }
+
+    /// Render a high-resolution, relief-shaded world-map image (RGBA8,
+    /// `res`×`res`) by resampling the retained continuous heightmap. Used for the
+    /// static in-game map overlay (`M`), which would otherwise reuse the blocky
+    /// one-cell-per-chunk loading map.
+    pub fn render_world_map(&self, res: usize) -> Vec<u8> {
+        crate::world_runtime::world_map::render_world_map(&self.heightmap, self.sea_level, res)
     }
 
     /// Total plants across the whole world (loaded or not). O(1).
@@ -1709,6 +1719,7 @@ mod tests {
         let terrain = ChunkTerrain {
             heights: vec![88.0; total],
             moisture: vec![0.5; total],
+            river: vec![0.0; total],
             min_height: 88.0,
             max_height: 88.0,
             has_water: false,
@@ -1735,6 +1746,7 @@ mod tests {
         let terrain = ChunkTerrain {
             heights: vec![50.0; total],
             moisture: vec![0.5; total],
+            river: vec![0.0; total],
             min_height: 50.0,
             max_height: 50.0,
             has_water: false,
