@@ -115,6 +115,7 @@ fn main() {
     experiment_optimized_noise(seed, &config.heightmap, &coords);
     experiment_coarse_lowfreq(seed, &config.heightmap, &coords);
     experiment_coarse_rawnoise(seed, &config.heightmap, &coords);
+    experiment_global_rawnoise(seed, &config, &coords);
 }
 
 // ---------------------------------------------------------------------------
@@ -743,5 +744,150 @@ fn experiment_coarse_rawnoise(seed: u32, cfg: &HeightmapConfig, coords: &[IVec2]
     );
     println!(
         "  (vs E5 baseline height ~2.7 ms/chunk; detail octave is the only full-res noise here)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// E8. E7 taken GLOBAL: instead of resampling the coarse continental/ridge grid
+// per chunk, precompute the RAW continental and ridge noise ONCE on a coarse
+// grid spanning the whole wrapping world (exactly like RiverField), then per
+// vertex do two bilinear lookups + crease + the one full-res detail eval.
+//
+// This is the production shape from CHUNK_GEN_PROFILING.md's "recommended
+// direction": the global tile wraps seamlessly by construction (rem_euclid
+// indexing, same as RiverField::sample), removes the per-chunk coarse resample,
+// and drops height from 3 noise evals/vertex to 1. The grid is built at the
+// RiverField resolution so its memory/quality match an already-shipped field.
+// We report ms/chunk (excluding the one-time global build) and max/mean error
+// vs the baseline Heightmap, so it can be compared directly to E7.
+// ---------------------------------------------------------------------------
+fn experiment_global_rawnoise(seed: u32, config: &GameConfig, coords: &[IVec2]) {
+    println!("\n--- E8: GLOBAL coarse raw-noise field + crease/detail at full res (LOSSY) ---");
+    let cfg = &config.heightmap;
+    let hm = Heightmap::new(seed, cfg.clone());
+
+    // Match RiverField's grid resolution by default; override with PROFILE_GLOBAL_RES.
+    let res = env_usize("PROFILE_GLOBAL_RES", config.rivers.grid_resolution as usize).max(16);
+    let gcell = WORLD_SIZE_METERS as f32 / res as f32;
+
+    let cont = Octave::new(OpenSimplex::new(seed), cfg.continental.frequency);
+    let ridge = Octave::new(
+        OpenSimplex::new(seed.wrapping_add(101)),
+        cfg.ridge.frequency,
+    );
+    let detail = Octave::new(
+        OpenSimplex::new(seed.wrapping_add(907)),
+        cfg.detail.frequency,
+    );
+    let (a_c, a_r, a_d) = (
+        cfg.continental.amplitude,
+        cfg.ridge.amplitude,
+        cfg.detail.amplitude,
+    );
+    let cell = CHUNK_SIZE_METERS / (SIDE - 1) as f32;
+
+    // Build the two global coarse grids once (parallel). Node i sits at world
+    // `i * gcell`, matching the bilinear sampler below.
+    let raw_at = |oct: &Octave, i: usize| -> f32 {
+        let wx = (i % res) as f64 * gcell as f64;
+        let wz = (i / res) as f64 * gcell as f64;
+        let (xx, xs) = oct.trig(wx);
+        let (zx, zs) = oct.trig(wz);
+        oct.noise.get([xx, xs, zx, zs]) as f32
+    };
+    let t_build = Instant::now();
+    let cont_g: Vec<f32> = (0..res * res)
+        .into_par_iter()
+        .map(|i| raw_at(&cont, i))
+        .collect();
+    let ridge_g: Vec<f32> = (0..res * res)
+        .into_par_iter()
+        .map(|i| raw_at(&ridge, i))
+        .collect();
+    let build_ms = ms(t_build.elapsed());
+
+    // Bilinear sample with toroidal wrap — identical math to RiverField::sample.
+    let sample = |grid: &[f32], x: f32, z: f32| -> f32 {
+        let gx = x / gcell;
+        let gz = z / gcell;
+        let x0 = gx.floor();
+        let z0 = gz.floor();
+        let tx = gx - x0;
+        let tz = gz - z0;
+        let ix0 = (x0 as i64).rem_euclid(res as i64) as usize;
+        let iz0 = (z0 as i64).rem_euclid(res as i64) as usize;
+        let ix1 = (ix0 + 1) % res;
+        let iz1 = (iz0 + 1) % res;
+        let a = grid[iz0 * res + ix0];
+        let b = grid[iz0 * res + ix1];
+        let c = grid[iz1 * res + ix0];
+        let d = grid[iz1 * res + ix1];
+        let top = a * (1.0 - tx) + b * tx;
+        let bot = c * (1.0 - tx) + d * tx;
+        top * (1.0 - tz) + bot * tz
+    };
+
+    let gen = |c: IVec2| -> Vec<f32> {
+        let ox = c.x as f32 * CHUNK_SIZE_METERS;
+        let oz = c.y as f32 * CHUNK_SIZE_METERS;
+        let mut out = Vec::with_capacity(TOTAL);
+        for zi in 0..SIDE {
+            let wz = oz + zi as f32 * cell;
+            let (dz0, dz1) = detail.trig(wz as f64);
+            for xi in 0..SIDE {
+                let wx = ox + xi as f32 * cell;
+                let broad = sample(&cont_g, wx, wz);
+                let ridge_raw = sample(&ridge_g, wx, wz);
+                let ridges = 1.0 - ridge_raw.abs(); // crease reconstructed at full res
+                let (dx0, dx1) = detail.trig(wx as f64);
+                let rough = detail.noise.get([dx0, dx1, dz0, dz1]) as f32;
+                out.push(broad * a_c + ridges * a_r + rough * a_d);
+            }
+        }
+        out
+    };
+
+    let mut max_err = 0.0f32;
+    let mut sum_err = 0.0f64;
+    let mut count = 0u64;
+    for c in coords.iter().take(16) {
+        let g = gen(*c);
+        let ox = c.x as f32 * CHUNK_SIZE_METERS;
+        let oz = c.y as f32 * CHUNK_SIZE_METERS;
+        for idx in 0..TOTAL {
+            let x = ox + (idx % SIDE) as f32 * cell;
+            let z = oz + (idx / SIDE) as f32 * cell;
+            let e = (g[idx] - hm.sample_height(x, z)).abs();
+            max_err = max_err.max(e);
+            sum_err += e as f64;
+            count += 1;
+        }
+    }
+
+    let n = coords.len();
+    let t = Instant::now();
+    let mut acc = 0.0f64;
+    for c in coords {
+        acc += gen(*c).iter().map(|v| *v as f64).sum::<f64>();
+    }
+    let el = t.elapsed();
+    std::hint::black_box(acc);
+
+    let bytes_per_field = res * res * std::mem::size_of::<f32>();
+    println!(
+        "  global grid: {res}×{res}  ({:.0} m/node, {:.1} MB/field × 2 fields, built once in {:.0} ms)",
+        gcell,
+        bytes_per_field as f64 / (1024.0 * 1024.0),
+        build_ms
+    );
+    println!(
+        "  height: {:>7.3} ms/chunk   max err = {:.3} m   mean err = {:.4} m",
+        ms(el) / n as f64,
+        max_err,
+        sum_err / count as f64
+    );
+    println!(
+        "  → no per-chunk resample (lookups only); detail is the sole full-res eval. \
+         Compare to E7's per-chunk numbers above."
     );
 }
