@@ -30,3 +30,8 @@ herbarium.json
 
 # Per-instance state from the multi-instance launcher (tools/launch.ts)
 /instances/
+
+# Jekyll build output for the web/ GitHub Pages site
+/web/_site/
+/web/.jekyll-cache/
+/web/.jekyll-metadata
