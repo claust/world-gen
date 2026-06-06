@@ -2195,6 +2195,8 @@ fn map_uv_to_world_position(u: f32, v: f32) -> (f32, f32) {
     use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
 
     let world_size_m = WORLD_SIZE_CHUNKS as f32 * CHUNK_SIZE_METERS;
+    let u = u.clamp(0.0, 1.0 - f32::EPSILON);
+    let v = v.clamp(0.0, 1.0 - f32::EPSILON);
     ((1.0 - v) * world_size_m, u * world_size_m)
 }
 
