@@ -77,9 +77,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // Mirror of `RIVER_SURFACE_THRESHOLD` (world_core::chunk): below this the CPU
+    // leaves the vertex on the bed (depth 0) and clears `has_river`. Discarding
+    // at the same value keeps the rendered fringe in step with the lifted mesh,
+    // so no un-lifted, bed-coplanar band survives to z-fight the terrain.
+    const RIVER_WET_CUTOFF: f32 = 0.04;
+
     // Drop the dry fringe of the chunk grid so the surface ends in the channel
     // rather than spilling across the banks.
-    if (input.wetness < 0.03) {
+    if (input.wetness < RIVER_WET_CUTOFF) {
         discard;
     }
 
@@ -139,7 +145,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Opacity grows from the bank toward the channel centre and at glancing
     // angles, so shallow edges stay sheer and the deep middle reads as water.
-    let edge = clamp((input.wetness - 0.03) / 0.25, 0.0, 1.0);
+    let edge = clamp((input.wetness - RIVER_WET_CUTOFF) / 0.25, 0.0, 1.0);
     let alpha = edge * mix(0.45, 0.92, fresnel * fresnel);
 
     let final_color = scene_fog(lit, input.world_position);

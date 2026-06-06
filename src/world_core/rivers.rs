@@ -389,4 +389,39 @@ mod tests {
         let wet_cells = field.wet.iter().filter(|&&w| w > 0.0).count();
         assert!(wet_cells > 0, "expected the default world to grow rivers");
     }
+
+    #[test]
+    fn flow_is_unit_or_zero_and_wraps() {
+        let mut config = GameConfig::default();
+        config.rivers.grid_resolution = 256;
+        let field = RiverField::generate(42, &config);
+        let l = WORLD_SIZE_METERS as f32;
+
+        // Sweep a grid of world points and assert the two invariants of
+        // `sample_flow`: every sample is either the zero vector (away from
+        // rivers) or unit length (renormalized direction), and it is periodic
+        // across the world wrap just like `sample`.
+        let mut saw_flow = false;
+        for gz in 0..48 {
+            for gx in 0..48 {
+                let x = gx as f32 / 48.0 * l;
+                let z = gz as f32 / 48.0 * l;
+                let (fx, fz) = field.sample_flow(x, z);
+                let len = (fx * fx + fz * fz).sqrt();
+                assert!(
+                    len < 1e-3 || (len - 1.0).abs() < 1e-3,
+                    "flow at ({x},{z}) is neither zero nor unit: len {len}"
+                );
+                if len > 0.5 {
+                    saw_flow = true;
+                }
+                let (px, pz) = field.sample_flow(x + l, z - l);
+                assert!(
+                    (fx - px).abs() < 1e-3 && (fz - pz).abs() < 1e-3,
+                    "flow not periodic at ({x},{z})"
+                );
+            }
+        }
+        assert!(saw_flow, "expected some river flow on the default world");
+    }
 }
