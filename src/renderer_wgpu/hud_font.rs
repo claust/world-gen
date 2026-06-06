@@ -21,7 +21,15 @@ pub struct HudVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    /// SDF shape descriptor `[shape_id, param]`. `shape_id == 0` ([`SDF_PLAIN`]) marks
+    /// an ordinary vertex (solid quad or MSDF text, distinguished by `uv` as before);
+    /// non-zero ids drive the anti-aliased SDF primitives in `hud.wgsl`, where `uv`
+    /// then carries the shape's normalized local coordinate. Unused by the minimap.
+    pub sdf: [f32; 2],
 }
+
+/// `HudVertex::sdf` value for a plain (non-SDF) vertex.
+pub const SDF_PLAIN: [f32; 2] = [0.0, 0.0];
 
 impl HudVertex {
     pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
@@ -42,6 +50,11 @@ impl HudVertex {
                 offset: 16,
                 shader_location: 2,
                 format: wgpu::VertexFormat::Float32x4,
+            },
+            wgpu::VertexAttribute {
+                offset: 32,
+                shader_location: 3,
+                format: wgpu::VertexFormat::Float32x2,
             },
         ],
     };
@@ -207,31 +220,37 @@ pub fn build_text_quads(
                 position: [x0, y_top],
                 uv: [u0, v0],
                 color,
+                sdf: SDF_PLAIN,
             },
             HudVertex {
                 position: [x1, y_top],
                 uv: [u1, v0],
                 color,
+                sdf: SDF_PLAIN,
             },
             HudVertex {
                 position: [x0, y_bot],
                 uv: [u0, v1],
                 color,
+                sdf: SDF_PLAIN,
             },
             HudVertex {
                 position: [x0, y_bot],
                 uv: [u0, v1],
                 color,
+                sdf: SDF_PLAIN,
             },
             HudVertex {
                 position: [x1, y_top],
                 uv: [u1, v0],
                 color,
+                sdf: SDF_PLAIN,
             },
             HudVertex {
                 position: [x1, y_bot],
                 uv: [u1, v1],
                 color,
+                sdf: SDF_PLAIN,
             },
         ]);
 
