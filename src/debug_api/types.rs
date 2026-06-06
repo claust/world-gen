@@ -358,6 +358,20 @@ mod tests {
     }
 
     #[test]
+    fn deserializes_map_right_click() {
+        let raw = r#"{"id":"map-1","type":"map_right_click","u":0.25,"v":0.75}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid map_right_click payload");
+        assert_eq!(command.id, "map-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::MapRightClick { u, v }
+            if (u - 0.25).abs() < f32::EPSILON
+                && (v - 0.75).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
     fn deserializes_press_key_f1() {
         let raw = r#"{"id":"pk-1","type":"press_key","key":"f1"}"#;
         let command: CommandRequest =
