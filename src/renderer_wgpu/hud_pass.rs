@@ -243,7 +243,7 @@ impl HudPass {
             format!("Y: {:.1}m", camera_pos.y),
             format!("Z: {:.1}m", camera_pos.z),
             format!("FPS: {:.0}", fps),
-            format!("PLANTS: {}", plant_count),
+            format!("PLANTS: {}", format_compact_count(plant_count)),
         ];
 
         let gw = hud_font::GLYPH_W as f32 * scale;
@@ -326,6 +326,26 @@ fn push_tri(verts: &mut Vec<HudVertex>, a: [f32; 2], b: [f32; 2], c: [f32; 2], c
         uv: NO_UV,
         color,
     });
+}
+
+fn format_compact_count(count: usize) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}m", count as f32 / 1_000_000.0)
+    } else {
+        count.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_compact_count;
+
+    #[test]
+    fn compact_count_keeps_hud_plant_totals_readable() {
+        assert_eq!(format_compact_count(3_129), "3129");
+        assert_eq!(format_compact_count(14_165_889), "14.2m");
+        assert_eq!(format_compact_count(29_532), "29532");
+    }
 }
 
 /// Pushes a filled axis-aligned rectangle (two triangles) as a solid-color quad.
