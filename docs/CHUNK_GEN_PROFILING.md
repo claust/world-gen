@@ -249,3 +249,37 @@ resampling).
 
 `simdnoise` in CI is a separate, optional lever to make the *shipped* snapshot
 bake cheap, independent of the algorithm above.
+
+## Implemented: Phase 1 — global height field (continental + ridge)
+
+Landed in `world_core::terrain_fields` (`TerrainFields`): the **raw** continental
+and ridge noise are baked once onto a coarse global grid at the river-field
+resolution (`HeightmapConfig::low_freq_field_resolution`, native 2048 ≈ 32 m/node
+/ web 1024), then bilinearly sampled with `rem_euclid` wrap — exactly the
+`RiverField` pattern, so the tile wraps seamlessly and these two octaves no longer
+use the 4D torus trick. The ridge crease (`1 − |n|`), amplitudes, and the detail
+octave are still reconstructed per vertex (detail is now the **only** full-res 4D
+eval). `Heightmap` holds an `Arc<TerrainFields>` fetched through a memoized
+`shared()` cache keyed on `(seed, continental/ridge freq, resolution)`, so the
+~tens-of-MB grid is built once per world and shared by every `Heightmap`
+(terrain, rivers, plant placement, spawn scans) without threading it through
+their constructors.
+
+Per the project's no-byte-identity decision this is **lossy** (mean ≈ 0.024 m,
+rare ridge-crest max ≈ 4 m vs the exact field), so `BaseGenerationInputs.version`
+was bumped **1 → 2**; the old local `world_base.bin` auto-rejects and regenerates.
+The grid-vs-point bit-identity test still holds — both samplers now share the
+field path plus an identical detail-trig hoist, so they stay in lockstep (the
+real invariant: streamed terrain must match baked plant `y`).
+
+Measured (10-core Apple silicon, `--release`, harness E1/E3):
+
+| Metric | Before (post-#100) | After (Phase 1) | Gain |
+|---|---|---|---|
+| Height field (point sample, E3) | 2.7 ms/chunk | **1.0 ms/chunk** | 3 evals → 1 |
+| Full 65,536-chunk build (parallel-outer) | ~32 s | **~22 s** | ~1.5× |
+
+Moisture is untouched (still 2 evals/vertex, ~1.8 ms/chunk) — moving it global
+(**Phase 2**, → 0 evals) is what reaches the doc's ~10–13 s projection; the fast
+2D detail octave (**Phase 3**) is independent. The E8 experiment in
+`examples/profile_chunks.rs` is the global-field prototype this shipped from.

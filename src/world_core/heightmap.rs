@@ -1,13 +1,17 @@
 use std::f64::consts::TAU;
+use std::sync::Arc;
 
 use noise::{NoiseFn, OpenSimplex};
 
 use crate::world_core::chunk::WORLD_SIZE_METERS;
 use crate::world_core::config::HeightmapConfig;
+use crate::world_core::terrain_fields::{FieldKind, TerrainFields};
 
 pub struct Heightmap {
-    continental: OpenSimplex,
-    ridge: OpenSimplex,
+    /// Raw continental + ridge noise, precomputed once on a coarse global grid
+    /// and bilinearly sampled (the low-frequency octaves barely change within a
+    /// chunk). The ridge crease and amplitudes are still applied per vertex.
+    fields: Arc<TerrainFields>,
     detail: OpenSimplex,
     moisture: OpenSimplex,
     config: HeightmapConfig,
@@ -30,8 +34,7 @@ pub struct CoastalSpawn {
 impl Heightmap {
     pub fn new(seed: u32, config: HeightmapConfig) -> Self {
         Self {
-            continental: OpenSimplex::new(seed),
-            ridge: OpenSimplex::new(seed.wrapping_add(101)),
+            fields: TerrainFields::shared(seed, &config),
             detail: OpenSimplex::new(seed.wrapping_add(907)),
             moisture: OpenSimplex::new(seed.wrapping_add(1701)),
             config,
@@ -78,15 +81,20 @@ impl Heightmap {
     }
 
     pub fn sample_height(&self, x: f32, z: f32) -> f32 {
-        let x = x as f64;
-        let z = z as f64;
         let c = &self.config;
 
-        let broad =
-            Self::torus_sample(&self.continental, x, z, c.continental.frequency, 0.0, 0.0) as f32;
-        let ridges =
-            1.0 - (Self::torus_sample(&self.ridge, x, z, c.ridge.frequency, 0.0, 0.0).abs() as f32);
-        let rough = Self::torus_sample(&self.detail, x, z, c.detail.frequency, 0.0, 0.0) as f32;
+        // Continental + ridge are bilinear lookups into the precomputed coarse
+        // field; only the high-frequency detail octave is still a 4D noise eval.
+        let (broad, ridge_raw) = self.fields.sample(x, z);
+        let ridges = 1.0 - ridge_raw.abs(); // crease reconstructed at full res
+        let rough = Self::torus_sample(
+            &self.detail,
+            x as f64,
+            z as f64,
+            c.detail.frequency,
+            0.0,
+            0.0,
+        ) as f32;
 
         broad * c.continental.amplitude + ridges * c.ridge.amplitude + rough * c.detail.amplitude
     }
@@ -172,23 +180,16 @@ impl Heightmap {
         cell_size: f32,
     ) -> Vec<f32> {
         let c = &self.config;
-        // One allocation holds all six per-axis trig tables (3 octaves × {x, z}),
-        // each a `side`-long slice — far cheaper under heavy parallelism than six
-        // separate small allocations per chunk.
-        let mut trig = vec![(0.0f64, 0.0f64); 6 * side];
-        let (cont_x, rest) = trig.split_at_mut(side);
-        let (cont_z, rest) = rest.split_at_mut(side);
-        let (ridge_x, rest) = rest.split_at_mut(side);
-        let (ridge_z, rest) = rest.split_at_mut(side);
-        let (detail_x, detail_z) = rest.split_at_mut(side);
-        Self::fill_axis_trig(cont_x, c.continental.frequency, 0.0, origin_x, cell_size);
-        Self::fill_axis_trig(cont_z, c.continental.frequency, 0.0, origin_z, cell_size);
-        Self::fill_axis_trig(ridge_x, c.ridge.frequency, 0.0, origin_x, cell_size);
-        Self::fill_axis_trig(ridge_z, c.ridge.frequency, 0.0, origin_z, cell_size);
+        // Continental + ridge share one coarse field, so a single pair of per-axis
+        // bilinear factors (wrapped node indices + blend fraction) serves both —
+        // hoisted out of the inner loop the same way the detail trig is.
+        let lf_x = self.fields.axis_factors(origin_x, cell_size, side);
+        let lf_z = self.fields.axis_factors(origin_z, cell_size, side);
+        // The detail octave is still 4D noise; hoist its per-axis torus trig.
+        let mut trig = vec![(0.0f64, 0.0f64); 2 * side];
+        let (detail_x, detail_z) = trig.split_at_mut(side);
         Self::fill_axis_trig(detail_x, c.detail.frequency, 0.0, origin_x, cell_size);
         Self::fill_axis_trig(detail_z, c.detail.frequency, 0.0, origin_z, cell_size);
-        let (cont_x, cont_z) = (&*cont_x, &*cont_z);
-        let (ridge_x, ridge_z) = (&*ridge_x, &*ridge_z);
         let (detail_x, detail_z) = (&*detail_x, &*detail_z);
         let (amp_c, amp_r, amp_d) = (
             c.continental.amplitude,
@@ -197,14 +198,13 @@ impl Heightmap {
         );
 
         Self::fill_grid(side, |zi, row| {
-            let (cz0, cz1) = cont_z[zi];
-            let (rz0, rz1) = ridge_z[zi];
+            let fz = lf_z[zi];
             let (dz0, dz1) = detail_z[zi];
             for (xi, cell) in row.iter_mut().enumerate() {
-                let (cx0, cx1) = cont_x[xi];
-                let broad = self.continental.get([cx0, cx1, cz0, cz1]) as f32;
-                let (rx0, rx1) = ridge_x[xi];
-                let ridges = 1.0 - (self.ridge.get([rx0, rx1, rz0, rz1]).abs() as f32);
+                let fx = lf_x[xi];
+                let broad = self.fields.blend(FieldKind::Continental, fx, fz);
+                let ridge_raw = self.fields.blend(FieldKind::Ridge, fx, fz);
+                let ridges = 1.0 - ridge_raw.abs();
                 let (dx0, dx1) = detail_x[xi];
                 let rough = self.detail.get([dx0, dx1, dz0, dz1]) as f32;
                 *cell = broad * amp_c + ridges * amp_r + rough * amp_d;
@@ -461,11 +461,13 @@ mod tests {
         );
     }
 
-    /// The trig-hoisting grid samplers must reproduce the per-vertex point
-    /// samplers *bit for bit* — otherwise an optimized client would generate a
-    /// world that disagrees with the shipped `world_base.bin` snapshot (same
-    /// `gen_key`, different terrain). Compare exact `f32` bits over a few chunks,
-    /// including a negative/off-origin one to exercise the world-wrap arithmetic.
+    /// The grid samplers must reproduce the per-vertex point samplers *bit for
+    /// bit*: terrain regenerates while streaming via the point samplers but is
+    /// baked via the grid samplers, so any divergence would float or sink plants.
+    /// Both now share the precomputed low-frequency field (bilinear) plus an
+    /// identical detail-octave trig hoist, so they must still agree exactly.
+    /// Compare `f32` bits over a few chunks, including a negative/off-origin one
+    /// to exercise the world-wrap arithmetic.
     #[test]
     fn grid_samplers_are_bit_identical_to_point_samplers() {
         use crate::world_core::chunk::{CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
