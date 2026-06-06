@@ -929,7 +929,7 @@ impl AppState {
                     // Only a New Game downloads the base; a resume rebuilds from
                     // its own seed without it (matching the native path).
                     let base_bytes = if save.is_none() {
-                        crate::world_core::storage::fetch_base_world_async().await
+                        crate::world_core::storage::fetch_base_world_async(gen_key).await
                     } else {
                         None
                     };

@@ -29,11 +29,10 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
 
-  # Generate the prebuilt base world on a cheap Linux runner and upload it as an
-  # artifact. The release attaches it so first-time players download it instead of
-  # spending ~minutes generating it locally. Platform doesn't matter: the client
-  # accepts any snapshot whose embedded seed + generation key match, regardless of
-  # which OS produced it (and a mismatch just falls back to local generation).
+  # Generate the prebuilt base worlds on a cheap Linux runner and upload them as
+  # artifacts. Native and web need separate snapshots because the web build uses
+  # a coarser default river grid; `GameConfig` feeds the generation key, so a
+  # native snapshot is correctly rejected by wasm.
   generate-base:
     name: Generate base world
     runs-on: ubuntu-latest
@@ -64,25 +63,35 @@ jobs:
         run: |
           # Match a fresh end-user install: with no herbarium.json / config.json in
           # the working directory the generator uses the default (default_seeded)
-          # herbarium and default config — the same ones a first-time client loads
-          # and validates the download against. Both are gitignored runtime
-          # artifacts (not in the checkout); this rm is a guard against a stray copy
-          # producing a generation key no shipped client would match.
+          # herbarium and default config for each target profile — the same ones a
+          # first-time client loads and validates the download against. Both are
+          # gitignored runtime artifacts (not in the checkout); this rm is a guard
+          # against a stray copy producing a generation key no shipped client would
+          # match.
           rm -f herbarium.json config.json
-          ./target/release/FloraForge --generate-base world_base.bin
+          mkdir -p native web
+          ./target/release/FloraForge --generate-base native/world_base.bin
+          ./target/release/FloraForge --generate-base-web web/world_base.bin
 
       - name: Upload world-base artifact
         uses: actions/upload-artifact@v5
         with:
           name: floraforge-world-base
-          path: world_base.bin
+          path: native/world_base.bin
+
+      - name: Upload web world-base artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: floraforge-web-world-base
+          path: web/world_base.bin
 
   build-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
     # The prebuilt base world is bundled into the web deploy so the wasm client
     # can fetch it same-origin (a browser can't read the cross-origin release
-    # asset — GitHub's asset hosts send no CORS headers).
+    # asset — GitHub's asset hosts send no CORS headers). This artifact is the
+    # web-profile snapshot, not the native release asset.
     needs: generate-base
 
     steps:
@@ -126,7 +135,7 @@ jobs:
       - name: Bundle prebuilt base world
         uses: actions/download-artifact@v5
         with:
-          name: floraforge-world-base
+          name: floraforge-web-world-base
           path: web/
 
       - name: Create release zip
