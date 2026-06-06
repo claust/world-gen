@@ -918,7 +918,11 @@ impl AppState {
                 let gen_key = self.herbarium.generation_key(&self.config);
                 let slot: std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<WorldRuntime>>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
-                self.wasm_world_job = Some(std::rc::Rc::clone(&slot));
+                // The task holds only a Weak ref so leaving the loading screen
+                // (`abort_loading` drops `wasm_world_job`) lets us cancel before
+                // the expensive build.
+                let weak = std::rc::Rc::downgrade(&slot);
+                self.wasm_world_job = Some(slot);
                 self.loading_started = Some(Instant::now());
 
                 wasm_bindgen_futures::spawn_local(async move {
@@ -928,6 +932,12 @@ impl AppState {
                         crate::world_core::storage::fetch_base_world_async().await
                     } else {
                         None
+                    };
+                    // If the user left the loading screen during the download the
+                    // slot is gone — bail before the blocking build/generation so
+                    // we don't freeze the UI for a result nobody will read.
+                    let Some(slot) = weak.upgrade() else {
+                        return;
                     };
                     let result = WorldRuntime::new_web(
                         &config,

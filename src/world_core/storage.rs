@@ -288,7 +288,10 @@ pub async fn fetch_base_world_async() -> Option<Vec<u8>> {
         Ok(resp) => resp,
         Err(_) => return None,
     };
-    if !resp.ok() {
+    // Require exactly 200 (not just any 2xx) so a 204/206/etc. with a body that
+    // isn't the snapshot falls back to local generation instead of being fed to
+    // `from_base_snapshot` — matching the native downloader.
+    if resp.status() != 200 {
         log::warn!(
             "base world: fetch returned status {}; ignoring",
             resp.status()
