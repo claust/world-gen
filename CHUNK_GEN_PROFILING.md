@@ -15,14 +15,14 @@ generation cost so we can break it down and prototype changes.
 ```bash
 cargo run --release --example profile_chunks
 PROFILE_CHUNKS=8192 PROFILE_RIVER_RES=512 cargo run --release --example profile_chunks
-PROFILE_COARSE=16 cargo run --release --example profile_chunks   # tune experiment E6
+PROFILE_COARSE=16 cargo run --release --example profile_chunks   # tune experiments E6/E7
 ```
 
 `PROFILE_RIVER_RES` only changes the one-time river-field solve so the harness
 starts fast; per-chunk river sampling is a bilinear lookup independent of that
 grid, so it does not affect the chunk-gen numbers.
 
-The harness runs six experiments:
+The harness runs seven experiments:
 
 - **E1** — full `generate_chunk` throughput and thread scaling.
 - **E2** — per-layer breakdown (terrain / biome / content).
@@ -30,7 +30,8 @@ The harness runs six experiments:
 - **E4** — nested-parallelism cost (inner per-vertex `par_iter` under an outer
   per-chunk `par_iter`).
 - **E5** — bit-identical noise optimization: precomputed per-axis torus trig.
-- **E6** — lossy optimization: coarse low-frequency octaves + full-res detail.
+- **E6** — lossy: coarse low-frequency octaves, interpolated *after* the crease.
+- **E7** — lossy done right: coarse **raw** noise, crease + detail at full res.
 
 Numbers below were measured on a 10-core Apple-silicon machine, `--release`.
 They are directionally stable, not exact; re-run the harness to reproduce.
@@ -79,22 +80,20 @@ where the time is. Note the inner `par_iter` **does** help live single-chunk
 streaming (one chunk → ~4.6 ms serial vs ~0.6 ms parallel), so it shouldn't be
 removed outright, only made conditional.
 
-## Options
+## Options (first round)
 
-| # | Option | Speedup | Bit-identical? | Notes |
+| # | Option | Speedup | Bit-identical? | Status |
 |---|---|---|---|---|
-| **A** | **Precompute per-axis torus trig** (E5) | **~1.8× overall** | **Yes** (err 0.000000 m) | Hoist the cos/sin out of the per-vertex loop; 129+129 trig pairs per octave instead of 4/vertex. Biggest safe win. ~47 s → ~27 s. No `gen_key` / download change. |
-| **B** | Single-pass terrain loop + drop bulk `base_plants.clone()` | ~5–10% | Yes | `terrain.rs` walks the grid twice recomputing world coords; merge into one pass. Low effort. |
-| **C** | Make inner per-vertex `par_iter` conditional | neutral throughput | Yes | Serial inner for bulk gen, parallel inner for live streaming. Removes the nesting footgun, keeps streaming snappy. |
-| **D** | Coarsen smooth fields (E6) | up to ~3× on a field | **No** — needs new snapshot | Low-freq octaves barely change over 256 m. **Height can't** be coarsened safely (ridge `1−\|n\|` crease caps error at ~3.7 m even at 8 m spacing). **Moisture can** (smooth, only feeds 5 biome thresholds) → removes ~40% of noise work, visually invisible. Requires regenerating `world_base.bin` + `gen_key` bump. |
-| **E** | SIMD noise backend (e.g. fastnoise2) | potentially several× | **No** — different terrain | Changes the world and adds a dependency. Only worth it alongside a terrain redesign. |
+| **A** | **Precompute per-axis torus trig** (E5) | ~1.8× on noise | **Yes** (err 0.000000 m) | **Shipped (PR #100)** |
+| **B** | Single-pass terrain loop + drop bulk `base_plants.clone()` | ~5–10% | Yes | **Shipped (loop merge); clone left as-is** |
+| **C** | Make inner per-vertex `par_iter` conditional | neutral throughput | Yes | **Shipped (PR #100)** |
+| **D** | Coarsen smooth fields (E6/E7) | up to ~3× on a field | No — needs reship | See "byte-identity dropped" below |
+| **E** | Faster / SIMD noise backend | potentially several× | No — different terrain | See "byte-identity dropped" below |
 
-### Recommendation
-Do **A + B + C** together — all bit-identical / behavior-preserving, taking the
-local build from **~47 s to roughly ~25 s** with **no change to the downloaded
-snapshot or `gen_key`**, so downloads and existing saves stay compatible. Keep
-**D (moisture only)** as a follow-up if the base world is ever reshipped for
-other reasons. Skip **E** unless a terrain overhaul is already planned.
+The first round (**A + B + C**) was chosen specifically because it is
+bit-identical and needs no reship. It shipped in PR #100; see "Implemented"
+below. **D and E are now back on the table** — the project has since decided a
+`world_base.bin` reship is acceptable, which changes everything (next section).
 
 ## Implemented: A + B + C
 
@@ -123,3 +122,130 @@ is partly memory-bound at 10 threads; the trig hoist helps compute more than
 bandwidth. Skipped from the bundle: the bulk `base_plants.clone()` (only ~1% of
 a chunk, and `generate_chunk` is shared with streaming which needs the mutable
 copy — not worth plumbing a flag through the shared API).
+
+---
+
+# Byte-identity dropped — pursuing raw speed (2026-06-06)
+
+The project has decided that **regenerating and reshipping `world_base.bin` is
+acceptable**, so generation output no longer has to be bit-identical to the
+shipped snapshot. That removes the constraint behind the first round and opens
+up the much larger lossy / different-noise wins.
+
+## What byte-identity was actually protecting
+
+- `world_base.bin` stores **baked plants** (each with `y` = terrain height at its
+  position), **not** the heightmap. Terrain is **regenerated at runtime** every
+  time a chunk streams in (`chunk_loader → generate_chunk → TerrainLayer`).
+- So the real invariant is: *the terrain algorithm running at render time must
+  match the one that baked the snapshot's plant `y` values* — otherwise plants
+  float or sink.
+- `gen_key` (`Herbarium::generation_key` → `BaseGenerationInputs`,
+  `src/world_core/herbarium.rs`) hashes the generation **inputs** (seed,
+  heightmap/biome/river config, plant placement) — it has **no algorithm
+  version**.
+
+**Consequence for any lossy change:** add a `const TERRAIN_ALGO_VERSION` to
+`BaseGenerationInputs` and bump it whenever the terrain math changes, then
+reship `world_base.bin`. The download URL is keyed on `gen_key`
+(`…/world_base.bin?gen={gen_key:016x}`), so old snapshots auto-reject and a
+new-code client never mixes an old snapshot with new terrain code. One-line
+change; it is the *only* safety mechanism needed.
+
+## The crux: the cost is **4D** OpenSimplex, and it is 4D because of the wrap
+
+The world is toroidal — it tiles seamlessly with period `L = 65,536 m` on both
+axes. To get that, `Heightmap::torus_sample` maps **each world axis onto a
+circle** (`cos`, `sin`) and feeds the four circle coordinates to **4D**
+OpenSimplex. That 4D-per-sample evaluation, ×5 octaves ×16,641 verts, is the
+entire base-build cost.
+
+This matters for backend choice: most fast noise crates are **2D/3D only**. You
+cannot drop in a faster crate without either keeping 4D (few crates, smaller
+win) **or** changing how the wrap is achieved. There are two independent levers:
+
+- **Lever 1 — fewer evals per vertex** (algorithmic).
+- **Lever 2 — cheaper evals** (faster crate / SIMD / fewer dimensions).
+
+The best plan combines both, and conveniently the same idea relaxes the 4D
+constraint.
+
+## Lever 1: precompute global low-frequency fields  ← biggest single win
+
+Of the 5 octaves, only the height **detail** octave (~55 m wavelength) is
+high-frequency relative to the 2 m vertex spacing. The other four (continental
+~10 km, ridge ~1.1 km, moisture base ~530 m / variation ~105 m) barely change
+within a 256 m chunk and are wildly oversampled.
+
+Precompute those low-frequency octaves **once** on a coarse **global** grid —
+exactly the pattern `RiverField` already uses — then per vertex do cheap bilinear
+lookups plus **only the one detail octave**. Per-vertex noise drops **5 evals →
+1**.
+
+Two measured prototypes of the per-chunk version of this idea (global is the
+same math, precomputed once instead of per chunk):
+
+| Experiment | approach | height ms/chunk | mean err | max err |
+|---|---|---|---|---|
+| E6 | interpolate low-freq **after** the `1−\|n\|` crease | ~0.9 | — | ~4.4 m (floor; doesn't improve with spacing) |
+| **E7** | interpolate **raw** noise, crease + detail at full res | ~0.9 | **0.024 m** @32 m, **0.009 m** @16 m | ~4 m (rare ridge crests between nodes) |
+
+E7 is the right way: raw noise is smooth and interpolates cleanly; the ridge
+crease is reconstructed per-vertex. Mean error is centimetre-scale; the rare
+metre-scale max is a ridge crest landing between coarse nodes (tighten node
+spacing, or store the ridge field a little finer, to shrink it).
+
+Going **global** instead of per-chunk additionally:
+- removes the per-chunk coarse resampling (lookups only),
+- **wraps seamlessly by construction** — a global tile indexed with `rem_euclid`
+  tiles for free, so the low-freq octaves no longer need the 4D trick at all,
+- **also speeds up live streaming**, since terrain regenerates while flying.
+
+Estimated result: terrain noise ~2.5 ms/chunk (post-#100) → ~0.6–1.0 ms/chunk;
+**full build ~32 s → ~10–13 s (~3–4× beyond #100, ~5× vs the original ~47 s)**.
+Cost: a few MB of precomputed fields, built once in well under a second.
+
+## Lever 2: faster noise backend
+
+Independently, each remaining eval can be made cheaper. Candidates (Rust):
+
+| Crate | Speed | Dims | f32/f64 | wasm? | ARM (Apple) SIMD? | Notes |
+|---|---|---|---|---|---|---|
+| `noise` 0.9 (current) | baseline | 1–4D | f64 | yes | n/a (scalar) | What we use; scalar, f64. |
+| `fastnoise-lite` | fast scalar | **2D/3D only** | f32 | **yes** (pure Rust) | n/a (scalar) | OpenSimplex2 ≈ same look. No 4D → can't wrap in 4D; pairs perfectly with global fields (fill the tile + 2D detail). |
+| `simdnoise` | **very fast, batched** | 1–4D | f32 | x86 SIMD only | **no** (x86 only) | Generates whole grids at once. Would massively speed the **CI** x86 base-build, but on the dev Mac (arm64) and wasm it falls back to scalar / won't build. |
+| `fastnoise2` (FFI) | **fastest** (C++ SIMD) | up to 4D | f32 | **no** (C++ FFI) | yes (NEON) | Disqualified for the shared crate by wasm; possible CI-only path, but messy. |
+| `libnoise` | modest | up to 4D | f64 | yes | n/a | Cleaner API, marginal speed gain over `noise`. |
+| portable SIMD (`wide` / `std::simd`) | fast, cross-platform | DIY | f32 | yes (SIMD128) | yes (NEON) | Hand-write value/gradient noise; OpenSimplex's gather-heavy permutation lookups SIMD-ize poorly, so this favours a different basis. |
+
+Key constraints that fall out of the table:
+- The crate must build on **native arm64 (local), x86 (CI), and wasm32**. That
+  rules `simdnoise` (x86-only SIMD) and `fastnoise2` (C++/wasm) out of the
+  *shared* path, though `simdnoise` could accelerate the CI snapshot bake.
+- The current 4D wrap rules out the 2D/3D-only fast crates **unless** the wrap
+  strategy changes — which Lever 1 does anyway.
+
+## Recommended direction
+
+**Global low-frequency fields + a fast 2D detail octave.** Concretely:
+
+1. Add `const TERRAIN_ALGO_VERSION` to `BaseGenerationInputs`; bump on each
+   terrain-math change.
+2. Precompute global coarse fields (continental, ridge-raw, moisture base &
+   variation) like `RiverField`; sample them with bilinear + `rem_euclid` wrap.
+   This alone gives the 5→1 eval drop and removes the 4D requirement for those
+   octaves.
+3. For the per-vertex detail octave, either keep `noise` (now 1/5 of the work)
+   or switch it to `fastnoise-lite` OpenSimplex2 **2D** — the global tile already
+   provides the seamless wrap, so the detail octave can use a non-wrapping fast
+   2D crate (a cosmetically invisible seam in the finest detail at the 65 km
+   boundary is the only trade).
+
+Expected: **~47 s → ~10–13 s** for the local build, plus faster live streaming.
+Reship `world_base.bin` once (CI already regenerates it). Validate by
+prototyping the global-field version in the harness first (the E7 numbers are
+the per-chunk lower bound; global should match or beat them with no per-chunk
+resampling).
+
+`simdnoise` in CI is a separate, optional lever to make the *shipped* snapshot
+bake cheap, independent of the algorithm above.

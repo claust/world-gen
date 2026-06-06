@@ -114,6 +114,7 @@ fn main() {
     experiment_nested_parallelism(seed, &config.heightmap, &rivers, &coords);
     experiment_optimized_noise(seed, &config.heightmap, &coords);
     experiment_coarse_lowfreq(seed, &config.heightmap, &coords);
+    experiment_coarse_rawnoise(seed, &config.heightmap, &coords);
 }
 
 // ---------------------------------------------------------------------------
@@ -613,5 +614,134 @@ fn experiment_coarse_lowfreq(seed: u32, cfg: &HeightmapConfig, coords: &[IVec2])
         "  height: {:>7.3} ms/chunk   max error vs baseline = {:.3} m  (terrain spans ~0..230 m)",
         ms(el) / n as f64,
         max_err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// E7. Lossy, done right: interpolate the RAW continental and ridge noise on a
+// coarse grid, then apply amplitude + the ridge crease (1−|n|) at full res.
+// E6's error floor came from interpolating *after* the crease — the V-shaped
+// `1−|n|` valley can't be linearly interpolated. The raw noise is smooth, so
+// interpolating it and reconstructing the crease per-vertex keeps the mean
+// error at the centimetre scale (the rare metre-scale max is a ridge crest
+// that falls between coarse nodes).
+// ---------------------------------------------------------------------------
+fn experiment_coarse_rawnoise(seed: u32, cfg: &HeightmapConfig, coords: &[IVec2]) {
+    println!("\n--- E7: coarse RAW-noise interp + crease/detail at full res (LOSSY) ---");
+    let coarse = env_usize("PROFILE_COARSE", 8);
+    let hm = Heightmap::new(seed, cfg.clone());
+
+    let cont = Octave::new(OpenSimplex::new(seed), cfg.continental.frequency);
+    let ridge = Octave::new(
+        OpenSimplex::new(seed.wrapping_add(101)),
+        cfg.ridge.frequency,
+    );
+    let detail = Octave::new(
+        OpenSimplex::new(seed.wrapping_add(907)),
+        cfg.detail.frequency,
+    );
+    let (a_c, a_r, a_d) = (
+        cfg.continental.amplitude,
+        cfg.ridge.amplitude,
+        cfg.detail.amplitude,
+    );
+    let cell = CHUNK_SIZE_METERS / (SIDE - 1) as f32;
+    let nodes = coarse + 1;
+
+    // Raw (pre-crease) continental and ridge noise at a coarse grid node.
+    let raw_node = |wx: f64, wz: f64| -> (f32, f32) {
+        let (cxx, cxs) = cont.trig(wx);
+        let (czx, czs) = cont.trig(wz);
+        let c = cont.noise.get([cxx, cxs, czx, czs]) as f32;
+        let (rxx, rxs) = ridge.trig(wx);
+        let (rzx, rzs) = ridge.trig(wz);
+        let r = ridge.noise.get([rxx, rxs, rzx, rzs]) as f32;
+        (c, r)
+    };
+
+    let gen = |c: IVec2| -> Vec<f32> {
+        let ox = c.x as f32 * CHUNK_SIZE_METERS;
+        let oz = c.y as f32 * CHUNK_SIZE_METERS;
+        let cstep = CHUNK_SIZE_METERS / coarse as f32;
+        let mut cont_n = vec![0.0f32; nodes * nodes];
+        let mut ridge_n = vec![0.0f32; nodes * nodes];
+        for gz in 0..nodes {
+            for gx in 0..nodes {
+                let (cc, rr) = raw_node(
+                    (ox + gx as f32 * cstep) as f64,
+                    (oz + gz as f32 * cstep) as f64,
+                );
+                cont_n[gz * nodes + gx] = cc;
+                ridge_n[gz * nodes + gx] = rr;
+            }
+        }
+        let lerp = |grid: &[f32], x0: usize, z0: usize, tx: f32, tz: f32| {
+            let a = grid[z0 * nodes + x0];
+            let b = grid[z0 * nodes + x0 + 1];
+            let cc = grid[(z0 + 1) * nodes + x0];
+            let d = grid[(z0 + 1) * nodes + x0 + 1];
+            a * (1.0 - tx) * (1.0 - tz) + b * tx * (1.0 - tz) + cc * (1.0 - tx) * tz + d * tx * tz
+        };
+        let mut out = Vec::with_capacity(TOTAL);
+        for zi in 0..SIDE {
+            let fz = zi as f32 * cell / cstep;
+            let z0 = (fz.floor() as usize).min(nodes - 2);
+            let tz = fz - z0 as f32;
+            for xi in 0..SIDE {
+                let fx = xi as f32 * cell / cstep;
+                let x0 = (fx.floor() as usize).min(nodes - 2);
+                let tx = fx - x0 as f32;
+                let broad = lerp(&cont_n, x0, z0, tx, tz);
+                let ridge_raw = lerp(&ridge_n, x0, z0, tx, tz);
+                let ridges = 1.0 - ridge_raw.abs(); // crease reconstructed at full res
+                                                    // detail octave still full-res
+                let wx = (ox + xi as f32 * cell) as f64;
+                let wz = (oz + zi as f32 * cell) as f64;
+                let (dxx, dxs) = detail.trig(wx);
+                let (dzx, dzs) = detail.trig(wz);
+                let rough = detail.noise.get([dxx, dxs, dzx, dzs]) as f32;
+                out.push(broad * a_c + ridges * a_r + rough * a_d);
+            }
+        }
+        out
+    };
+
+    let mut max_err = 0.0f32;
+    let mut sum_err = 0.0f64;
+    let mut count = 0u64;
+    for c in coords.iter().take(16) {
+        let g = gen(*c);
+        let ox = c.x as f32 * CHUNK_SIZE_METERS;
+        let oz = c.y as f32 * CHUNK_SIZE_METERS;
+        for idx in 0..TOTAL {
+            let x = ox + (idx % SIDE) as f32 * cell;
+            let z = oz + (idx / SIDE) as f32 * cell;
+            let e = (g[idx] - hm.sample_height(x, z)).abs();
+            max_err = max_err.max(e);
+            sum_err += e as f64;
+            count += 1;
+        }
+    }
+
+    let n = coords.len();
+    let t = Instant::now();
+    let mut acc = 0.0f64;
+    for c in coords {
+        acc += gen(*c).iter().map(|v| *v as f64).sum::<f64>();
+    }
+    let el = t.elapsed();
+    std::hint::black_box(acc);
+    println!(
+        "  coarse nodes/side: {nodes}  (low-freq grid spacing {:.0} m)",
+        CHUNK_SIZE_METERS / coarse as f32
+    );
+    println!(
+        "  height: {:>7.3} ms/chunk   max err = {:.3} m   mean err = {:.4} m",
+        ms(el) / n as f64,
+        max_err,
+        sum_err / count as f64
+    );
+    println!(
+        "  (vs E5 baseline height ~2.7 ms/chunk; detail octave is the only full-res noise here)"
     );
 }
