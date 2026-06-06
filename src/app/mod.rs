@@ -162,6 +162,12 @@ pub struct AppState {
     /// frame; dropped (detaching the thread) if the user leaves the loading screen.
     #[cfg(not(target_arch = "wasm32"))]
     world_gen_job: Option<WorldGenJob>,
+    /// Result slot for the async world build (wasm only). The spawned future
+    /// fetches the prebuilt base snapshot, builds the world, and parks the result
+    /// here; `tick_create_world` polls it each frame so the loading screen keeps
+    /// animating during the download.
+    #[cfg(target_arch = "wasm32")]
+    wasm_world_job: Option<std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<WorldRuntime>>>>>,
     thumbnail_renderer: Option<ThumbnailRenderer>,
     blur_pass: BlurPass,
     blur_capture_pending: bool,
@@ -377,6 +383,7 @@ impl AppState {
             loading_map_done: 0,
             world_map_tex: None,
             map_open: false,
+            wasm_world_job: None,
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
@@ -590,6 +597,10 @@ impl AppState {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.world_gen_job = None;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.wasm_world_job = None;
         }
     }
 
@@ -889,27 +900,76 @@ impl AppState {
 
         #[cfg(target_arch = "wasm32")]
         {
-            // No threads on wasm: generate synchronously (blocks, as before).
-            let save_ref = if resume { self.save.as_ref() } else { None };
-            let registry = self.loading_registry.take().unwrap_or_else(|| {
-                std::sync::Arc::new(crate::world_core::herbarium::PlantRegistry::from_herbarium(
-                    &self.herbarium,
-                ))
-            });
-            let gen_key = self.herbarium.generation_key(&self.config);
-            match WorldRuntime::new(&self.config, save_ref, 1, registry, &*self.storage, gen_key) {
-                Ok(world) => {
+            // No threads on wasm. First entry: spawn an async task that downloads
+            // the prebuilt base snapshot (yielding to the browser so the loading
+            // screen keeps animating) and then builds the world. A validated
+            // download skips the multi-minute single-threaded generation; a miss
+            // still falls back to it (blocking, as before).
+            if self.wasm_world_job.is_none() {
+                let registry = self.loading_registry.take().unwrap_or_else(|| {
+                    std::sync::Arc::new(
+                        crate::world_core::herbarium::PlantRegistry::from_herbarium(
+                            &self.herbarium,
+                        ),
+                    )
+                });
+                let config = self.config.clone();
+                let save = if resume { self.save.clone() } else { None };
+                let gen_key = self.herbarium.generation_key(&self.config);
+                let slot: std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<WorldRuntime>>>> =
+                    std::rc::Rc::new(std::cell::RefCell::new(None));
+                // The task holds only a Weak ref so leaving the loading screen
+                // (`abort_loading` drops `wasm_world_job`) lets us cancel before
+                // the expensive build.
+                let weak = std::rc::Rc::downgrade(&slot);
+                self.wasm_world_job = Some(slot);
+                self.loading_started = Some(Instant::now());
+
+                wasm_bindgen_futures::spawn_local(async move {
+                    // Only a New Game downloads the base; a resume rebuilds from
+                    // its own seed without it (matching the native path).
+                    let base_bytes = if save.is_none() {
+                        crate::world_core::storage::fetch_base_world_async().await
+                    } else {
+                        None
+                    };
+                    // If the user left the loading screen during the download the
+                    // slot is gone — bail before the blocking build/generation so
+                    // we don't freeze the UI for a result nobody will read.
+                    let Some(slot) = weak.upgrade() else {
+                        return;
+                    };
+                    let result = WorldRuntime::new_web(
+                        &config,
+                        save.as_ref(),
+                        registry,
+                        base_bytes,
+                        gen_key,
+                    );
+                    *slot.borrow_mut() = Some(result);
+                });
+                return;
+            }
+
+            // Subsequent frames: poll the slot without blocking.
+            let done = self
+                .wasm_world_job
+                .as_ref()
+                .and_then(|slot| slot.borrow_mut().take());
+            match done {
+                Some(Ok(world)) => {
                     self.world = Some(world);
+                    self.wasm_world_job = None;
+                    if let Some(s) = &mut self.loading_state {
+                        s.phase = LoadingPhase::DispatchChunks;
+                        s.progress = 0.30;
+                    }
                 }
-                Err(err) => {
+                Some(Err(err)) => {
                     log::error!("failed to create world runtime: {err}");
                     self.abort_loading();
-                    return;
                 }
-            }
-            if let Some(s) = &mut self.loading_state {
-                s.phase = LoadingPhase::DispatchChunks;
-                s.progress = 0.30;
+                None => {}
             }
         }
     }
@@ -987,6 +1047,10 @@ impl AppState {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.world_gen_job = None;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.wasm_world_job = None;
         }
     }
 

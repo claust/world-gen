@@ -79,7 +79,7 @@ impl AudioSystem {
         };
 
         let sea = make_loop(&handle, synth::sea_bed(12.0))?;
-        let birds = make_loop(&handle, synth::bird_bed(18.0))?;
+        let birds = make_loop(&handle, synth::bird_bed(40.0))?;
         let underwater = make_loop(&handle, synth::underwater_bed(30.0))?;
 
         log::info!("audio ready: procedural surf + birdsong + underwater beds");
