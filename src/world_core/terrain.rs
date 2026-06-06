@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use glam::IVec2;
-#[cfg(not(target_arch = "wasm32"))]
-use rayon::prelude::*;
 
 use crate::world_core::chunk::{ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
 use crate::world_core::config::HeightmapConfig;
@@ -39,35 +37,36 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         let origin_x = coord.x as f32 * CHUNK_SIZE_METERS;
         let origin_z = coord.y as f32 * CHUNK_SIZE_METERS;
 
-        // Sample raw height and the global river field together, carving the
-        // channel into the height and keeping the wetness for the riverbed tint.
-        let (heights, river): (Vec<f32>, Vec<f32>) = maybe_par_iter!(0..total)
-            .map(|idx| {
-                let x = idx % side;
-                let z = idx / side;
-                let world_x = origin_x + x as f32 * cell_size;
-                let world_z = origin_z + z as f32 * cell_size;
-                let raw = self.heightmap.sample_height(world_x, world_z);
-                let (carve, wet) = self.rivers.sample(world_x, world_z);
-                (raw - carve, wet)
-            })
-            .unzip();
+        // The terrain field is dominated by 4D OpenSimplex sampling. Generate
+        // the whole grid through the trig-hoisting grid samplers (bit-identical
+        // to per-vertex `sample_height`/`sample_moisture`, but the per-axis torus
+        // trig is computed once per row/column instead of once per vertex).
+        let raw_heights = self
+            .heightmap
+            .height_grid(origin_x, origin_z, side, cell_size);
+        let moisture = self
+            .heightmap
+            .moisture_grid(origin_x, origin_z, side, cell_size);
 
-        let moisture: Vec<f32> = maybe_par_iter!(0..total)
-            .map(|idx| {
-                let x = idx % side;
-                let z = idx / side;
-                let world_x = origin_x + x as f32 * cell_size;
-                let world_z = origin_z + z as f32 * cell_size;
-                self.heightmap.sample_moisture(world_x, world_z)
-            })
-            .collect();
-
-        let (min_height, max_height) = heights
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(min_h, max_h), h| {
-                (min_h.min(*h), max_h.max(*h))
-            });
+        // Carve the global river channel into the height and keep the wetness for
+        // the riverbed tint, folding the min/max scan into the same pass. River
+        // sampling is a cheap bilinear lookup, so a serial walk here is fine.
+        let mut heights = Vec::with_capacity(total);
+        let mut river = Vec::with_capacity(total);
+        let mut min_height = f32::MAX;
+        let mut max_height = f32::MIN;
+        for (idx, &raw) in raw_heights.iter().enumerate() {
+            let x = idx % side;
+            let z = idx / side;
+            let world_x = origin_x + x as f32 * cell_size;
+            let world_z = origin_z + z as f32 * cell_size;
+            let (carve, wet) = self.rivers.sample(world_x, world_z);
+            let h = raw - carve;
+            heights.push(h);
+            river.push(wet);
+            min_height = min_height.min(h);
+            max_height = max_height.max(h);
+        }
 
         ChunkTerrain {
             heights,

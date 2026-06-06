@@ -109,6 +109,156 @@ impl Heightmap {
             .clamp(0.0, 1.0)
     }
 
+    /// Fill `out` with the per-axis torus trig for `out.len()` evenly spaced
+    /// samples starting at world coordinate `origin` with `cell_size` spacing.
+    ///
+    /// `torus_sample` maps a world axis onto a circle and feeds the two circle
+    /// coordinates (`radius·cosθ`, `radius·sinθ`) to 4D OpenSimplex. Those two
+    /// numbers depend only on that one axis, so for a regular grid the cost can
+    /// be hoisted: the X pair is shared by every row, the Z pair by every column.
+    /// This computes one axis's pairs once. The arithmetic is byte-for-byte the
+    /// same as `torus_sample` (same `k`, `radius`, and `θ = TAU·w/L + offset·TAU/k`),
+    /// so the grid samplers below reproduce the point samplers bit-exactly.
+    fn fill_axis_trig(
+        out: &mut [(f64, f64)],
+        frequency: f64,
+        offset: f64,
+        origin: f32,
+        cell_size: f32,
+    ) {
+        let l = WORLD_SIZE_METERS;
+        let k = (frequency * l).round().max(1.0);
+        let radius = k / TAU;
+        for (i, slot) in out.iter_mut().enumerate() {
+            let w = (origin + i as f32 * cell_size) as f64;
+            let theta = TAU * w / l + offset * TAU / k;
+            *slot = (radius * theta.cos(), radius * theta.sin());
+        }
+    }
+
+    /// Fill a `side × side` field row by row, parallelising over rows — but only
+    /// when not already running inside a rayon worker. The bulk base build and
+    /// the streaming loader both parallelise at the chunk level, so a nested
+    /// per-row `par_iter` there would just add fork/join overhead; a top-level
+    /// caller (e.g. a single synchronous chunk) still gets the inner parallelism.
+    fn fill_grid(side: usize, fill_row: impl Fn(usize, &mut [f32]) + Sync) -> Vec<f32> {
+        let mut out = vec![0.0f32; side * side];
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rayon::prelude::*;
+            if rayon::current_thread_index().is_none() {
+                out.par_chunks_mut(side)
+                    .enumerate()
+                    .for_each(|(zi, row)| fill_row(zi, row));
+                return out;
+            }
+        }
+        out.chunks_mut(side)
+            .enumerate()
+            .for_each(|(zi, row)| fill_row(zi, row));
+        out
+    }
+
+    /// Height field for a `side × side` grid whose `(0,0)` vertex is at world
+    /// `(origin_x, origin_z)` with `cell_size` spacing. Bit-identical to calling
+    /// [`sample_height`](Self::sample_height) at each vertex, but hoists the
+    /// per-axis torus trig out of the inner loop — the dominant cost of base-world
+    /// generation.
+    pub fn height_grid(
+        &self,
+        origin_x: f32,
+        origin_z: f32,
+        side: usize,
+        cell_size: f32,
+    ) -> Vec<f32> {
+        let c = &self.config;
+        // One allocation holds all six per-axis trig tables (3 octaves × {x, z}),
+        // each a `side`-long slice — far cheaper under heavy parallelism than six
+        // separate small allocations per chunk.
+        let mut trig = vec![(0.0f64, 0.0f64); 6 * side];
+        let (cont_x, rest) = trig.split_at_mut(side);
+        let (cont_z, rest) = rest.split_at_mut(side);
+        let (ridge_x, rest) = rest.split_at_mut(side);
+        let (ridge_z, rest) = rest.split_at_mut(side);
+        let (detail_x, detail_z) = rest.split_at_mut(side);
+        Self::fill_axis_trig(cont_x, c.continental.frequency, 0.0, origin_x, cell_size);
+        Self::fill_axis_trig(cont_z, c.continental.frequency, 0.0, origin_z, cell_size);
+        Self::fill_axis_trig(ridge_x, c.ridge.frequency, 0.0, origin_x, cell_size);
+        Self::fill_axis_trig(ridge_z, c.ridge.frequency, 0.0, origin_z, cell_size);
+        Self::fill_axis_trig(detail_x, c.detail.frequency, 0.0, origin_x, cell_size);
+        Self::fill_axis_trig(detail_z, c.detail.frequency, 0.0, origin_z, cell_size);
+        let (cont_x, cont_z) = (&*cont_x, &*cont_z);
+        let (ridge_x, ridge_z) = (&*ridge_x, &*ridge_z);
+        let (detail_x, detail_z) = (&*detail_x, &*detail_z);
+        let (amp_c, amp_r, amp_d) = (
+            c.continental.amplitude,
+            c.ridge.amplitude,
+            c.detail.amplitude,
+        );
+
+        Self::fill_grid(side, |zi, row| {
+            let (cz0, cz1) = cont_z[zi];
+            let (rz0, rz1) = ridge_z[zi];
+            let (dz0, dz1) = detail_z[zi];
+            for (xi, cell) in row.iter_mut().enumerate() {
+                let (cx0, cx1) = cont_x[xi];
+                let broad = self.continental.get([cx0, cx1, cz0, cz1]) as f32;
+                let (rx0, rx1) = ridge_x[xi];
+                let ridges = 1.0 - (self.ridge.get([rx0, rx1, rz0, rz1]).abs() as f32);
+                let (dx0, dx1) = detail_x[xi];
+                let rough = self.detail.get([dx0, dx1, dz0, dz1]) as f32;
+                *cell = broad * amp_c + ridges * amp_r + rough * amp_d;
+            }
+        })
+    }
+
+    /// Moisture field for a `side × side` grid, laid out like [`height_grid`](Self::height_grid).
+    /// Bit-identical to [`sample_moisture`](Self::sample_moisture) per vertex.
+    pub fn moisture_grid(
+        &self,
+        origin_x: f32,
+        origin_z: f32,
+        side: usize,
+        cell_size: f32,
+    ) -> Vec<f32> {
+        let c = &self.config;
+        // One allocation for all four per-axis trig tables (base/variation × {x, z}).
+        let mut trig = vec![(0.0f64, 0.0f64); 4 * side];
+        let (base_x, rest) = trig.split_at_mut(side);
+        let (base_z, rest) = rest.split_at_mut(side);
+        let (var_x, var_z) = rest.split_at_mut(side);
+        Self::fill_axis_trig(base_x, c.moisture_base_frequency, 0.0, origin_x, cell_size);
+        Self::fill_axis_trig(base_z, c.moisture_base_frequency, 0.0, origin_z, cell_size);
+        Self::fill_axis_trig(
+            var_x,
+            c.moisture_variation_frequency,
+            c.moisture_variation_offset_x,
+            origin_x,
+            cell_size,
+        );
+        Self::fill_axis_trig(
+            var_z,
+            c.moisture_variation_frequency,
+            c.moisture_variation_offset_z,
+            origin_z,
+            cell_size,
+        );
+        let (base_x, base_z, var_x, var_z) = (&*base_x, &*base_z, &*var_x, &*var_z);
+        let (base_w, var_w) = (c.moisture_base_weight, c.moisture_variation_weight);
+
+        Self::fill_grid(side, |zi, row| {
+            let (bz0, bz1) = base_z[zi];
+            let (vz0, vz1) = var_z[zi];
+            for (xi, cell) in row.iter_mut().enumerate() {
+                let (bx0, bx1) = base_x[xi];
+                let base = self.moisture.get([bx0, bx1, bz0, bz1]) as f32;
+                let (vx0, vx1) = var_x[xi];
+                let variation = self.moisture.get([vx0, vx1, vz0, vz1]) as f32;
+                *cell = ((base * base_w + variation * var_w) * 0.5 + 0.5).clamp(0.0, 1.0);
+            }
+        })
+    }
+
     /// Scan the world for a coastline and return a pleasant spawn on land beside
     /// it, so a fresh world drops the player at the shore rather than in a
     /// corner.
@@ -309,5 +459,40 @@ mod tests {
             crosses_into_water,
             "the coast should be within ~{reach:.0} m in the water direction"
         );
+    }
+
+    /// The trig-hoisting grid samplers must reproduce the per-vertex point
+    /// samplers *bit for bit* — otherwise an optimized client would generate a
+    /// world that disagrees with the shipped `world_base.bin` snapshot (same
+    /// `gen_key`, different terrain). Compare exact `f32` bits over a few chunks,
+    /// including a negative/off-origin one to exercise the world-wrap arithmetic.
+    #[test]
+    fn grid_samplers_are_bit_identical_to_point_samplers() {
+        use crate::world_core::chunk::{CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
+
+        let hm = Heightmap::new(1337, HeightmapConfig::default());
+        let side = CHUNK_GRID_RESOLUTION;
+        let cell = CHUNK_SIZE_METERS / (side - 1) as f32;
+
+        for &(cx, cz) in &[(0, 0), (5, -3), (200, 17), (-12, 9)] {
+            let ox = cx as f32 * CHUNK_SIZE_METERS;
+            let oz = cz as f32 * CHUNK_SIZE_METERS;
+            let h_grid = hm.height_grid(ox, oz, side, cell);
+            let m_grid = hm.moisture_grid(ox, oz, side, cell);
+            for idx in 0..side * side {
+                let wx = ox + (idx % side) as f32 * cell;
+                let wz = oz + (idx / side) as f32 * cell;
+                assert_eq!(
+                    h_grid[idx].to_bits(),
+                    hm.sample_height(wx, wz).to_bits(),
+                    "height mismatch at chunk ({cx},{cz}) idx {idx}"
+                );
+                assert_eq!(
+                    m_grid[idx].to_bits(),
+                    hm.sample_moisture(wx, wz).to_bits(),
+                    "moisture mismatch at chunk ({cx},{cz}) idx {idx}"
+                );
+            }
+        }
     }
 }
