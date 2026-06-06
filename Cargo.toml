@@ -51,8 +51,9 @@ objc = "0.2"
 # Audio output. We synthesize ambient beds in-memory and feed them as raw f32
 # sample buffers, so none of rodio's file-decoding features are needed.
 rodio = { version = "0.20", default-features = false }
-# System clipboard access for copying screenshots (F2). We only push raw RGBA
-# image data, so we drop the default text/Wayland features and keep image-data.
+# System clipboard access for copying screenshots (the `P` shortcut). We only
+# push raw RGBA image data, so we drop the default text/Wayland features and
+# keep image-data.
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 axum = { version = "0.7", features = ["ws"] }
 notify = "7"

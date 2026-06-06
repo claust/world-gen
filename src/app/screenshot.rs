@@ -162,18 +162,40 @@ fn extract_rgba(
 }
 
 /// Downscale a full-resolution RGBA8 frame into a small egui image for the
-/// on-screen "screenshot taken" confirmation toast.
+/// on-screen "screenshot taken" confirmation toast. Box-averages each
+/// destination cell straight from the source slice, so it allocates only the
+/// small thumbnail rather than duplicating the full-resolution frame.
 fn thumbnail_image(pixels: &[u8], width: u32, height: u32) -> egui::ColorImage {
-    const MAX_W: u32 = 320;
-    let tw = MAX_W.min(width).max(1);
-    let th = (((tw as f32) * (height as f32) / (width as f32)).round() as u32).max(1);
-    let src = image::RgbaImage::from_raw(width, height, pixels.to_vec())
-        .expect("rgba buffer length matches dimensions");
-    let resized = image::imageops::resize(&src, tw, th, image::imageops::FilterType::Triangle);
-    egui::ColorImage::from_rgba_unmultiplied(
-        [resized.width() as usize, resized.height() as usize],
-        resized.as_raw(),
-    )
+    const MAX_W: u64 = 320;
+    let w = width.max(1) as u64;
+    let h = height.max(1) as u64;
+    let tw = MAX_W.min(w).max(1);
+    let th = (tw * h / w).max(1);
+
+    let mut out = Vec::with_capacity((tw * th * 4) as usize);
+    for ty in 0..th {
+        let y0 = ty * h / th;
+        let y1 = ((ty + 1) * h / th).max(y0 + 1).min(h);
+        for tx in 0..tw {
+            let x0 = tx * w / tw;
+            let x1 = ((tx + 1) * w / tw).max(x0 + 1).min(w);
+            let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+            for sy in y0..y1 {
+                let row = (sy * w * 4) as usize;
+                for sx in x0..x1 {
+                    let i = row + (sx * 4) as usize;
+                    r += pixels[i] as u64;
+                    g += pixels[i + 1] as u64;
+                    b += pixels[i + 2] as u64;
+                    a += pixels[i + 3] as u64;
+                    n += 1;
+                }
+            }
+            let n = n.max(1);
+            out.extend_from_slice(&[(r / n) as u8, (g / n) as u8, (b / n) as u8, (a / n) as u8]);
+        }
+    }
+    egui::ColorImage::from_rgba_unmultiplied([tw as usize, th as usize], &out)
 }
 
 /// Copy a tightly-packed RGBA8 image to the system clipboard so it can be
