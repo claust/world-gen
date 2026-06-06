@@ -352,6 +352,13 @@ impl WorldRuntime {
         self.streaming.chunks()
     }
 
+    /// Render a high-resolution, relief-shaded world-map image (RGBA8,
+    /// `res`×`res`) from the world's continuous heightmap, for the `M`-key map
+    /// overlay.
+    pub fn render_world_map(&self, res: usize) -> Vec<u8> {
+        self.plant_world.render_world_map(res)
+    }
+
     pub fn lighting(&self) -> LightingState {
         LightingState {
             sun_direction: self.clock.sun_direction(),
