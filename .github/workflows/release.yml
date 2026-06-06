@@ -31,8 +31,8 @@ jobs:
 
   # Generate the prebuilt base worlds on a cheap Linux runner and upload them as
   # artifacts. Native and web need separate snapshots because the web build uses
-  # a coarser default river grid; `GameConfig` feeds the generation key, so a
-  # native snapshot is correctly rejected by wasm.
+  # a coarser default river grid; river settings feed the base-generation key, so
+  # a native snapshot is correctly rejected by wasm.
   generate-base:
     name: Generate base world
     runs-on: ubuntu-latest
