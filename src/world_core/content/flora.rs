@@ -229,12 +229,11 @@ impl FloraLayer {
         }
     }
 
-    /// Place aquatic species (cattails) in the wet bank band that the land pass
-    /// avoids. The mirror image of [`Self::place_grid`]'s guards: cells must be
-    /// *wet* (`MAX_PLANTABLE_WETNESS..=AQUATIC_MAX_WETNESS`) rather than dry, and
-    /// the below-sea-level skip is lifted so reeds can stand in shallow water.
-    /// The wet band is a contiguous strip along each bank, so scattering on a
-    /// fine grid inside it naturally produces reed beds.
+    /// Place aquatic species (cattails) in the wet bank band the land pass avoids.
+    /// The mirror image of [`Self::place_grid`]: it keeps the wet cells the land
+    /// pass rejects and drops the below-sea-level skip, so reeds stand in shallow
+    /// water. The band is a contiguous strip along each bank, so a fine scatter
+    /// grid naturally produces reed beds.
     fn place_aquatic_grid(
         &self,
         coord: IVec2,
@@ -243,10 +242,10 @@ impl FloraLayer {
         spacing: f32,
         plants: &mut Vec<PlantInstance>,
     ) {
-        // Per-cell spawn probability inside the wet band. Tuned for natural
-        // scatter (not a perfect lattice) while keeping the clump count modest.
+        // Per-cell spawn chance — a scatter, not a filled lattice.
         const AQUATIC_DENSITY: f32 = 0.45;
-        // Distinct seed offset so the aquatic grid never aliases tree(0)/shrub(2000).
+        // Distinct from the land passes' offsets (tree=0, shrub=2000) so the grids
+        // don't alias.
         let seed_offset: u32 = 5000;
 
         let canon = canonical_chunk(coord);
@@ -278,11 +277,10 @@ impl FloraLayer {
                 let local_x = (gx as f32 + jitter_x) * spacing;
                 let local_z = (gz as f32 + jitter_z) * spacing;
 
-                // The wet band, mirrored from the land guard: skip dry cells and
-                // the deep channel centre. No sea-level skip — reeds stand in
-                // shallow water.
+                // Exactly mirrors the land guard's `wetness > MAX_PLANTABLE_WETNESS`
+                // so the two species sets tile against that line with no overlap.
                 let wetness = sample_field_bilinear(&terrain.river, local_x, local_z);
-                if !(MAX_PLANTABLE_WETNESS..=AQUATIC_MAX_WETNESS).contains(&wetness) {
+                if wetness <= MAX_PLANTABLE_WETNESS || wetness > AQUATIC_MAX_WETNESS {
                     continue;
                 }
 

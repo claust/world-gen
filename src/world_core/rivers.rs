@@ -29,11 +29,9 @@ use std::collections::BinaryHeap;
 /// landing pass so both agree on where "in the river" is.
 pub const MAX_PLANTABLE_WETNESS: f32 = 0.15;
 
-/// Upper wetness bound for aquatic plants (cattails). They spawn in the band
-/// `MAX_PLANTABLE_WETNESS..=AQUATIC_MAX_WETNESS` — the shallow margin where land
-/// plants stop — and are kept out of the deep channel centre (wetness trending
-/// toward `1.0`) so banks read as a reed fringe rather than a carpet over open
-/// water. Shared by base-flora placement so the boundary lives in one place.
+/// Upper wetness bound for aquatic plants (cattails). Keeps them out of the deep
+/// channel centre so banks read as a reed fringe rather than a carpet over open
+/// water. Their lower bound is [`MAX_PLANTABLE_WETNESS`], where land plants stop.
 pub const AQUATIC_MAX_WETNESS: f32 = 0.55;
 
 /// A baked global river field, sampled during terrain generation.
