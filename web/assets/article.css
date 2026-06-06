@@ -1,6 +1,6 @@
-/* FloraForge article styles. Biology and engine pages intentionally share this stylesheet so new long-form pages inherit the same theme, navigation, cards, and CTA treatment. */
+/* FloraForge article styles. Biology and engine pages share one base theme, with page-specific component sections layered below. */
 
-/* Article base and biology-specific sections. */
+/* Shared article base. */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
@@ -485,6 +485,8 @@ footer { padding: 2rem 0 3rem; }
 @media (max-width: 860px) {
     .gallery { grid-template-columns: 1fr 1fr; grid-template-rows: none; }
     .shot.feature { grid-column: span 2; grid-row: auto; }
+    .phases { grid-template-columns: 1fr; }
+    .layer { grid-template-columns: 1fr; gap: 0.6rem; }
     .wrap { padding: 0 1.2rem; }
 }
 
@@ -494,192 +496,7 @@ footer { padding: 2rem 0 3rem; }
     .button-secondary { margin-left: 0; margin-top: 0.6rem; }
 }
 
-/* Engine-specific sections. Duplicated base selectors below preserve the original engine page cascade while keeping both article pages on one stylesheet. */
-* { box-sizing: border-box; margin: 0; padding: 0; }
-
-:root {
-    --green-deep: #081a0c;
-    --green-dark: #132913;
-    --green-mid: #1e4d2b;
-    --green-bright: #3ecf6e;
-    --green-glow: #7cff9f;
-    --cream: #f0ede4;
-    --sand: #c7b99d;
-    --mist: rgba(240, 237, 228, 0.72);
-    --panel: rgba(18, 35, 20, 0.72);
-    --panel-strong: rgba(11, 24, 13, 0.92);
-    --line: rgba(62, 207, 110, 0.14);
-    --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
-    --code: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-html {
-    background: var(--green-deep);
-    color: var(--cream);
-    scroll-behavior: smooth;
-}
-
-body {
-    min-height: 100vh;
-    font-family: "DM Sans", sans-serif;
-    background:
-        radial-gradient(circle at top center, rgba(124, 255, 159, 0.16), transparent 38%),
-        linear-gradient(180deg, #09190b 0%, #0d1f0f 40%, #08150a 100%);
-    color: var(--cream);
-    overflow-x: hidden;
-    line-height: 1.6;
-}
-
-body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
-    pointer-events: none;
-    z-index: 1;
-}
-
-a { color: inherit; text-decoration: none; }
-
-.content { position: relative; z-index: 2; }
-
-.wrap { width: min(1120px, 100%); margin: 0 auto; padding: 0 2rem; }
-
-code {
-    font-family: var(--code);
-    font-size: 0.86em;
-    color: var(--green-glow);
-    background: rgba(62, 207, 110, 0.08);
-    border: 1px solid rgba(62, 207, 110, 0.14);
-    border-radius: 6px;
-    padding: 0.08em 0.4em;
-}
-
-h1, h2, h3 {
-    font-family: "Space Grotesk", sans-serif;
-    letter-spacing: -0.03em;
-}
-
-.accent { color: var(--green-bright); }
-
-/* ---- top bar ---- */
-.topbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
-    padding: 1.8rem 0;
-}
-
-.brand {
-    display: flex;
-    align-items: center;
-    gap: 0.9rem;
-    font-family: "Space Grotesk", sans-serif;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-}
-
-.brand-mark {
-    width: 2.4rem;
-    height: 2.4rem;
-    border-radius: 999px;
-    background:
-        radial-gradient(circle at 35% 35%, rgba(124, 255, 159, 0.95), transparent 32%),
-        linear-gradient(180deg, #1f5f30, #0c2611);
-    box-shadow: inset 0 0 0 1px rgba(124, 255, 159, 0.22), 0 0 22px rgba(62, 207, 110, 0.18);
-    position: relative;
-}
-
-.brand-mark::before,
-.brand-mark::after {
-    content: "";
-    position: absolute;
-    background: rgba(240, 237, 228, 0.9);
-    border-radius: 999px;
-}
-
-.brand-mark::before { width: 0.2rem; height: 1.05rem; left: 1.1rem; top: 0.85rem; }
-.brand-mark::after { width: 0.85rem; height: 0.36rem; left: 0.78rem; top: 1.22rem; transform: rotate(-24deg); }
-
-.top-links {
-    display: flex;
-    gap: 1.4rem;
-    flex-wrap: wrap;
-    font-size: 0.95rem;
-    color: var(--mist);
-}
-
-.top-links a {
-    border-bottom: 1px solid transparent;
-    transition: color 180ms ease, border-color 180ms ease;
-}
-
-.top-links a:hover { color: var(--green-glow); border-color: rgba(124, 255, 159, 0.4); }
-
-/* ---- hero ---- */
-.hero { padding: 3rem 0 1rem; }
-
-.eyebrow {
-    font-family: "Space Grotesk", sans-serif;
-    font-size: 0.8rem;
-    font-weight: 500;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--green-bright);
-    opacity: 0.84;
-}
-
-.hero h1 {
-    font-size: clamp(2.6rem, 6vw, 4.4rem);
-    line-height: 0.98;
-    margin: 1.2rem 0 1.4rem;
-}
-
-.hero p {
-    max-width: 680px;
-    color: var(--sand);
-    font-size: clamp(1.04rem, 2.2vw, 1.24rem);
-}
-
-.hero-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    margin-top: 1.8rem;
-    font-family: "Space Grotesk", sans-serif;
-    font-size: 0.82rem;
-    color: var(--mist);
-}
-
-.hero-meta span {
-    padding: 0.55rem 0.8rem;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(62, 207, 110, 0.12);
-}
-
-/* ---- sections ---- */
-section.block { padding: 4rem 0; }
-
-.section-label {
-    font-family: "Space Grotesk", sans-serif;
-    font-size: 0.8rem;
-    font-weight: 500;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--green-bright);
-    opacity: 0.84;
-}
-
-h2 {
-    font-size: clamp(1.8rem, 3.6vw, 2.8rem);
-    line-height: 1.1;
-    margin: 0.9rem 0 1.2rem;
-}
-
-.lead { color: var(--sand); max-width: 760px; font-size: 1.05rem; }
-
+/* Engine-specific sections. */
 /* ---- loop diagram ---- */
 .diagram-card {
     margin-top: 2.5rem;
@@ -893,58 +710,3 @@ ol.steps .note { display: block; color: var(--sand); font-size: 0.9rem; margin-t
 }
 
 .callout strong { color: var(--cream); }
-
-.divider {
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--green-mid), transparent);
-}
-
-/* ---- cta + footer ---- */
-.cta { padding: 5rem 0; text-align: center; }
-.cta h2 { margin-bottom: 1rem; }
-.cta p { max-width: 560px; margin: 0 auto 2rem; color: var(--sand); }
-
-.button {
-    display: inline-block;
-    border: 0;
-    cursor: pointer;
-    border-radius: 999px;
-    padding: 0.95rem 1.5rem;
-    font: inherit;
-    font-weight: 500;
-    transition: transform 180ms ease, box-shadow 180ms ease;
-}
-
-.button:hover { transform: translateY(-1px); }
-
-.button-primary {
-    background: linear-gradient(135deg, var(--green-bright), var(--green-glow));
-    color: #06210e;
-    box-shadow: 0 18px 50px rgba(62, 207, 110, 0.25);
-}
-
-.button-secondary {
-    background: rgba(255, 255, 255, 0.02);
-    color: var(--cream);
-    border: 1px solid rgba(240, 237, 228, 0.12);
-    margin-left: 0.6rem;
-}
-
-footer { padding: 2rem 0 3rem; }
-
-.footer-inner {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    flex-wrap: wrap;
-    border-top: 1px solid rgba(62, 207, 110, 0.08);
-    padding-top: 1.4rem;
-    color: rgba(240, 237, 228, 0.56);
-    font-size: 0.92rem;
-}
-
-@media (max-width: 860px) {
-    .phases { grid-template-columns: 1fr; }
-    .layer { grid-template-columns: 1fr; gap: 0.6rem; }
-    .wrap { padding: 0 1.2rem; }
-}
