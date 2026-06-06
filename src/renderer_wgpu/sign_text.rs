@@ -1,6 +1,6 @@
 //! World-space text for the debug tile-marker road-post signs.
 //!
-//! Reuses the bitmap glyph atlas from [`super::hud_font`], but instead of
+//! Reuses the MSDF glyph atlas from [`super::hud_font`], but instead of
 //! drawing in screen space it bakes each chunk's coordinate label ("X3 Z-2")
 //! into a small static vertex buffer positioned on the sign board in world
 //! space. The board is a fixed flat panel (no billboarding); text is painted on
@@ -14,7 +14,7 @@ use glam::{IVec2, Vec3};
 use wgpu::util::DeviceExt;
 
 use super::frustum::Frustum;
-use super::hud_font::{self, ATLAS_H, ATLAS_W, GLYPH_H, GLYPH_W};
+use super::hud_font::MsdfFont;
 use super::instancing::{SIGN_BOARD_CENTER_Y, SIGN_BOARD_HALF_T, SIGN_BOARD_HALF_W};
 use super::pipeline::DEPTH_FORMAT;
 use crate::world_core::chunk::{ChunkData, CHUNK_SIZE_METERS};
@@ -67,6 +67,7 @@ struct ChunkSign {
 pub struct SignTextPass {
     pipeline: wgpu::RenderPipeline,
     font_bind_group: wgpu::BindGroup,
+    font: MsdfFont,
     signs: HashMap<IVec2, ChunkSign>,
 }
 
@@ -100,10 +101,10 @@ impl SignTextPass {
             ],
         });
 
-        let atlas_pixels = hud_font::generate_atlas_pixels();
+        let (font, atlas_rgba) = MsdfFont::load();
         let atlas_size = wgpu::Extent3d {
-            width: ATLAS_W,
-            height: ATLAS_H,
+            width: font.atlas_w,
+            height: font.atlas_h,
             depth_or_array_layers: 1,
         };
         let font_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -112,7 +113,7 @@ impl SignTextPass {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -123,20 +124,21 @@ impl SignTextPass {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &atlas_pixels,
+            &atlas_rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(ATLAS_W),
-                rows_per_image: Some(ATLAS_H),
+                bytes_per_row: Some(font.atlas_w * 4),
+                rows_per_image: Some(font.atlas_h),
             },
             atlas_size,
         );
+        // The CPU texels live only on the GPU now; metrics are kept in `font`.
+        drop(atlas_rgba);
 
         let font_view = font_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // Linear filtering gives the glyph mask a smooth coverage gradient at its
-        // edges; the shader turns that gradient into an anti-aliased alpha. With
-        // nearest filtering the edges are a hard 1-bit mask that shimmers (whole
-        // texels flicker on/off) as the camera pans across the sign.
+        // Linear filtering: the MSDF shader reconstructs each glyph's edge from a
+        // smoothly interpolated distance, so the sampler must interpolate. This also
+        // keeps small/grazing-angle text stable instead of shimmering.
         let font_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("sign-font-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -212,6 +214,7 @@ impl SignTextPass {
         Self {
             pipeline,
             font_bind_group,
+            font,
             signs: HashMap::new(),
         }
     }
@@ -227,7 +230,7 @@ impl SignTextPass {
             }
             let half = CHUNK_SIZE_METERS * 0.5;
             let ground = chunk.terrain.height_at_world(half, half);
-            let verts = build_label_vertices(*coord, ground);
+            let verts = build_label_vertices(&self.font, *coord, ground);
             if verts.is_empty() {
                 continue;
             }
@@ -278,59 +281,57 @@ impl SignTextPass {
 /// Build the world-space text geometry for one chunk's sign. Two faces are
 /// emitted: a front face readable from +Z and a mirrored back face readable
 /// from -Z.
-fn build_label_vertices(coord: IVec2, ground_y: f32) -> Vec<SignVertex> {
+fn build_label_vertices(font: &MsdfFont, coord: IVec2, ground_y: f32) -> Vec<SignVertex> {
     let text = format!("X{} Z{}", coord.x, coord.y);
 
-    // Shrink the glyphs so the whole label fits within the usable board width,
-    // leaving a small margin on each side. Long labels (e.g. "X-10 Z-10")
-    // would otherwise overflow the board face.
-    let count = text.chars().count() as f32;
+    // Approximate uppercase cap height, in em. The label is sized so this band is
+    // `TEXT_HEIGHT_M` tall, then shrunk to fit the board if the proportional layout
+    // would overflow (e.g. "X-10 Z-10").
+    const CAP_EM: f32 = 0.72;
+    let mut em_m = TEXT_HEIGHT_M / CAP_EM; // meters per em
     let usable_w = 2.0 * SIGN_BOARD_HALF_W * 0.92;
-    let mut gh = TEXT_HEIGHT_M;
-    let aspect = GLYPH_W as f32 / GLYPH_H as f32;
-    let natural_w = count * gh * aspect;
+    let text_w_em = font.measure(&text, 1.0); // width in em (px = 1 → em units)
+    let natural_w = text_w_em * em_m;
     if natural_w > usable_w {
-        gh *= usable_w / natural_w;
+        em_m *= usable_w / natural_w;
     }
-    let gw = gh * aspect;
-    let advance = gw;
-    let start_x = -count * advance * 0.5;
+    let start_x = -text_w_em * em_m * 0.5;
 
     let cx = (coord.x as f32 + 0.5) * CHUNK_SIZE_METERS;
     let cz = (coord.y as f32 + 0.5) * CHUNK_SIZE_METERS;
     let cy = ground_y + SIGN_BOARD_CENTER_Y;
     let z_off = SIGN_BOARD_HALF_T + 0.012;
-
-    let top = gh * 0.5;
-    let bottom = -gh * 0.5;
+    // Baseline so the cap band centers vertically on the board center. Glyphs are
+    // placed y-up (`yt = baseline + plane.top * em_m`), so the cap band spans
+    // `[baseline, baseline + CAP_EM*em_m]` and its midpoint sits half a cap above
+    // the baseline — subtract that to land the midpoint on `cy`.
+    let baseline = cy - CAP_EM * 0.5 * em_m;
 
     let mut out = Vec::with_capacity(text.len() * 12);
-
-    // Half-texel inset so the linearly-filtered glyph samples stay within the
-    // cell's outer texel centers. The atlas packs 8px glyphs with no gutter, so
-    // without this a fragment at the u0/u1 seam would blend in the neighboring
-    // glyph's edge column and leave a faint halo.
-    let inset_u = 0.5 / ATLAS_W as f32;
-    let inset_v = 0.5 / ATLAS_H as f32;
-    for (i, c) in text.chars().enumerate() {
-        let Some((mut u0, mut v0, mut u1, mut v1)) = hud_font::glyph_uv(c) else {
+    let mut pen = start_x;
+    for c in text.chars() {
+        let Some(g) = font.glyph(c) else {
             continue;
         };
-        u0 += inset_u;
-        u1 -= inset_u;
-        v0 += inset_v;
-        v1 -= inset_v;
-        let lx0 = start_x + i as f32 * advance;
-        let lx1 = lx0 + gw;
+        if g.is_blank() {
+            pen += g.advance * em_m;
+            continue;
+        }
+        // Plane is y-up relative to the baseline (matches world +Y).
+        let lx0 = pen + g.plane[0] * em_m;
+        let lx1 = pen + g.plane[2] * em_m;
+        let yb = baseline + g.plane[1] * em_m;
+        let yt = baseline + g.plane[3] * em_m;
+        let [u0, v0, u1, v1] = g.uv;
 
         // Front face (+Z): world +X is the reader's left-to-right.
         push_quad(
             &mut out,
             [
-                [cx + lx0, cy + top, cz + z_off],
-                [cx + lx1, cy + top, cz + z_off],
-                [cx + lx0, cy + bottom, cz + z_off],
-                [cx + lx1, cy + bottom, cz + z_off],
+                [cx + lx0, yt, cz + z_off],
+                [cx + lx1, yt, cz + z_off],
+                [cx + lx0, yb, cz + z_off],
+                [cx + lx1, yb, cz + z_off],
             ],
             [[u0, v0], [u1, v0], [u0, v1], [u1, v1]],
         );
@@ -339,13 +340,15 @@ fn build_label_vertices(coord: IVec2, ground_y: f32) -> Vec<SignVertex> {
         push_quad(
             &mut out,
             [
-                [cx - lx0, cy + top, cz - z_off],
-                [cx - lx1, cy + top, cz - z_off],
-                [cx - lx0, cy + bottom, cz - z_off],
-                [cx - lx1, cy + bottom, cz - z_off],
+                [cx - lx0, yt, cz - z_off],
+                [cx - lx1, yt, cz - z_off],
+                [cx - lx0, yb, cz - z_off],
+                [cx - lx1, yb, cz - z_off],
             ],
             [[u0, v0], [u1, v0], [u0, v1], [u1, v1]],
         );
+
+        pen += g.advance * em_m;
     }
 
     out

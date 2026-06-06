@@ -40,19 +40,25 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+// MSDF distance-field spread, in atlas texels. Must match the `RANGE` the atlas was
+// baked with (see `examples/bake_hud_font.rs` / `hud_atlas.json`'s `px_range`).
+const PX_RANGE: f32 = 4.0;
+
+fn median(a: f32, b: f32, c: f32) -> f32 {
+    return max(min(a, b), min(max(a, b), c));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // The sign labels are drawn from a 1-bit bitmap font that ends up only a
-    // handful of pixels tall on screen, and there is no MSAA on this pass. With a
-    // hard alpha-test the glyph edges are a 1-bit mask that shimmers (whole texels
-    // flicker on/off) as the camera pans. Instead we linearly filter the mask and
-    // convert its smooth coverage gradient into an anti-aliased alpha using the
-    // screen-space rate of change: `fwidth` accounts for both screen axes, so the
-    // edge stays ~1px wide and stable up close and softens gracefully (rather than
-    // breaking up) as the text is minified or seen at a grazing angle.
-    let coverage = textureSample(font_texture, font_sampler, in.uv).r;
-    let aa = max(fwidth(coverage), 1e-5);
-    let alpha = clamp((coverage - 0.5) / aa + 0.5, 0.0, 1.0);
+    // Reconstruct the glyph edge from the multi-channel signed distance field. The
+    // per-channel median is the signed distance; its 0.5 crossing is the outline.
+    // Scaling by the field's spread in *screen* pixels (via `fwidth`) keeps the edge
+    // ~1px wide and stable both up close and when the sign is minified or grazing.
+    let msd = textureSample(font_texture, font_sampler, in.uv).rgb;
+    let sd = median(msd.r, msd.g, msd.b);
+    let unit_range = vec2<f32>(PX_RANGE) / vec2<f32>(textureDimensions(font_texture));
+    let screen_px_range = max(0.5 * dot(unit_range, vec2(1.0) / fwidth(in.uv)), 1.0);
+    let alpha = clamp((sd - 0.5) * screen_px_range + 0.5, 0.0, 1.0);
     if (alpha <= 0.0) {
         discard;
     }
