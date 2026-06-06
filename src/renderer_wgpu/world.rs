@@ -8,6 +8,7 @@ use super::instanced_pass::{InstancedPass, InstancedStats};
 use super::instancing::{GpuInstanceChunk, PrototypeMesh};
 use super::material::{FrameBindGroup, FrameUniform, MaterialBindGroup};
 use super::minimap_pass::MinimapPass;
+use super::river_pass::RiverPass;
 use super::sign_text::SignTextPass;
 use super::sky::SkyPalette;
 use super::sky_pass::SkyPass;
@@ -27,6 +28,7 @@ pub struct WorldRenderer {
     sky: SkyPass,
     terrain: TerrainPass,
     water: WaterPass,
+    river: RiverPass,
     instanced: InstancedPass,
     sign_text: SignTextPass,
     hud: HudPass,
@@ -93,6 +95,13 @@ impl WorldRenderer {
             &shadow_map.layout,
             sea_level,
         );
+        let river = RiverPass::new(
+            device,
+            render_format,
+            &frame_bg.layout,
+            &terrain_material.layout,
+            &shadow_map.layout,
+        );
         let instanced = InstancedPass::new(
             device,
             render_format,
@@ -119,6 +128,7 @@ impl WorldRenderer {
             sky,
             terrain,
             water,
+            river,
             instanced,
             sign_text,
             hud,
@@ -329,6 +339,7 @@ impl WorldRenderer {
     ) {
         self.sync_terrain(device, queue, chunks);
         self.sync_water(device, chunks);
+        self.sync_river(device, chunks);
         self.sync_instances(device, chunks);
         self.sync_minimap(queue, chunks);
     }
@@ -350,6 +361,10 @@ impl WorldRenderer {
 
     pub fn sync_water(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
         self.water.sync_chunks(device, chunks);
+    }
+
+    pub fn sync_river(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
+        self.river.sync_chunks(device, chunks);
     }
 
     pub fn sync_instances(&mut self, device: &wgpu::Device, chunks: &HashMap<IVec2, ChunkData>) {
@@ -411,6 +426,10 @@ impl WorldRenderer {
             self.camera_position,
             &self.shadow_map.bind_group,
         );
+        // River surfaces sit in the carved channels; draw them before the sea
+        // plane. Both are translucent and share group 0/1 bound above.
+        self.river
+            .render(pass, &frustum, &self.shadow_map.bind_group);
         self.water
             .render(pass, &frustum, &self.shadow_map.bind_group);
         // Sign labels render last: this pass rebinds group 1 to the font atlas,

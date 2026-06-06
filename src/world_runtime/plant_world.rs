@@ -1724,9 +1724,11 @@ mod tests {
             heights: vec![88.0; total],
             moisture: vec![0.5; total],
             river: vec![0.0; total],
+            river_flow: vec![[0.0, 0.0]; total],
             min_height: 88.0,
             max_height: 88.0,
             has_water: false,
+            has_river: false,
         };
         let back = packed.to_instance(IVec2::new(5, 7), &terrain);
 
@@ -1751,9 +1753,11 @@ mod tests {
             heights: vec![50.0; total],
             moisture: vec![0.5; total],
             river: vec![0.0; total],
+            river_flow: vec![[0.0, 0.0]; total],
             min_height: 50.0,
             max_height: 50.0,
             has_water: false,
+            has_river: false,
         };
         let plant = Plant {
             local_x: quantize_span(40.0),
