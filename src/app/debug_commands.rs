@@ -352,6 +352,19 @@ impl AppState {
                                 "map overlay closed".to_string()
                             }
                         }
+                        // Mirrors the in-app `P` shortcut: capture a screenshot
+                        // and copy it to the clipboard. The applied event is
+                        // deferred (via `continue`) until the render loop
+                        // completes the capture, like `TakeScreenshot`.
+                        PressableKey::P => {
+                            if self.screenshot_pending.is_some() {
+                                "screenshot already pending".to_string()
+                            } else {
+                                self.screenshot_pending = Some(command.id);
+                                self.screenshot_to_clipboard = true;
+                                continue;
+                            }
+                        }
                     };
                     CommandAppliedEvent {
                         id: command.id,

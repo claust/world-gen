@@ -268,7 +268,7 @@ async function cmdUiSetValue(apiBase: string, flags: Record<string, string>) {
 
 async function cmdPressKey(apiBase: string, flags: Record<string, string>) {
   const key = requireFlag(flags, "key");
-  const valid = ["f1", "escape", "m"];
+  const valid = ["f1", "escape", "m", "p"];
   if (!valid.includes(key)) die(`--key must be one of: ${valid.join(", ")}`);
   const result = await sendAndWait(apiBase, { type: "press_key", key });
   console.log(JSON.stringify(result, null, 2));
@@ -305,7 +305,7 @@ Commands:
   find_nearest    --kind <house|tree|fern>   Find nearest object
   look_at         --id <object_id> [--distance <n>]  Look at object
   move            --key <w|a|s|d|up|down> [--duration <ms>]  Move camera
-  press_key       --key <f1|escape|m>    Press a key (toggle config panel, map, etc.)
+  press_key       --key <f1|escape|m|p>  Press a key (toggle config panel, map, screenshot→clipboard, etc.)
   ui_snapshot                              Get all interactive UI elements
   ui_click        --element <id>           Click a button or toggle checkbox
   ui_set_value    --element <id> --value <v>  Set slider/combo/checkbox value

@@ -171,6 +171,7 @@ pub enum PressableKey {
     F1,
     Escape,
     M,
+    P,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
