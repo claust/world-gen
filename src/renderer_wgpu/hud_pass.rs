@@ -329,8 +329,12 @@ fn push_tri(verts: &mut Vec<HudVertex>, a: [f32; 2], b: [f32; 2], c: [f32; 2], c
 }
 
 fn format_compact_count(count: usize) -> String {
+    // f64 is exact for integers up to 2^53, well beyond any realistic plant total,
+    // so the division below never loses precision the way f32 would past ~16.7M.
     if count >= 1_000_000 {
-        format!("{:.1}m", count as f32 / 1_000_000.0)
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 10_000 {
+        format!("{:.1}k", count as f64 / 1_000.0)
     } else {
         count.to_string()
     }
@@ -568,7 +572,16 @@ mod tests {
     #[test]
     fn compact_count_keeps_hud_plant_totals_readable() {
         assert_eq!(format_compact_count(3_129), "3129");
-        assert_eq!(format_compact_count(14_165_889), "14.2m");
-        assert_eq!(format_compact_count(29_532), "29532");
+        assert_eq!(format_compact_count(29_532), "29.5k");
+        assert_eq!(format_compact_count(999_999), "1000.0k");
+        assert_eq!(format_compact_count(14_165_889), "14.2M");
+    }
+
+    #[test]
+    fn compact_count_stays_exact_past_f32_precision() {
+        // Above ~16.7M an f32 mantissa can't represent every integer, which would
+        // skew the division; f64 keeps the rounded result correct.
+        assert_eq!(format_compact_count(16_777_217), "16.8M");
+        assert_eq!(format_compact_count(123_456_789), "123.5M");
     }
 }
