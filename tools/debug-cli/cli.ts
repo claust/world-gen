@@ -150,6 +150,14 @@ async function cmdSetCameraLook(apiBase: string, flags: Record<string, string>) 
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdMapRightClick(apiBase: string, flags: Record<string, string>) {
+  const u = requireFloat(flags, "u");
+  const v = requireFloat(flags, "v");
+  if (u < 0 || u > 1 || v < 0 || v > 1) die(`--u and --v must be in range 0..1`);
+  const result = await sendAndWait(apiBase, { type: "map_right_click", u, v });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdFindNearest(apiBase: string, flags: Record<string, string>) {
   const kind = requireFlag(flags, "kind");
   if (kind !== "house" && kind !== "tree" && kind !== "fern") die(`--kind must be "house", "tree", or "fern"`);
@@ -293,6 +301,7 @@ Commands:
   set_day_speed   --value <n>              Set day/night cycle speed
   set_camera_position --x <n> --y <n> --z <n>  Teleport camera
   set_camera_look --yaw <n> --pitch <n>    Set camera orientation
+  map_right_click --u <0..1> --v <0..1>    Right-click the open world map
   find_nearest    --kind <house|tree|fern>   Find nearest object
   look_at         --id <object_id> [--distance <n>]  Look at object
   move            --key <w|a|s|d|up|down> [--duration <ms>]  Move camera
@@ -379,6 +388,9 @@ async function main() {
         break;
       case "set_camera_look":
         await cmdSetCameraLook(apiBase, flags);
+        break;
+      case "map_right_click":
+        await cmdMapRightClick(apiBase, flags);
         break;
       case "find_nearest":
         await cmdFindNearest(apiBase, flags);
