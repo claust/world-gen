@@ -4045,6 +4045,7 @@ dependencies = [
  "glam",
  "gltf",
  "image",
+ "js-sys",
  "log",
  "noise",
  "notify",
