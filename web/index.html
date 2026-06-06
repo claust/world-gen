@@ -1,3 +1,7 @@
+---
+# Front matter is intentionally empty — Jekyll only processes files that have
+# it, so this triggers Liquid rendering for the {% include nav.html %} below.
+---
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -32,18 +36,7 @@
     <div class="content page-shell" id="landing-page">
         <section class="hero">
             <div class="hero-inner">
-                <div class="topbar">
-                    <div class="brand">
-                        <span class="brand-mark" aria-hidden="true"></span>
-                        <span>FloraForge</span>
-                    </div>
-                    <nav class="top-links" aria-label="Site links">
-                        <a href="biology.html">The Living World</a>
-                        <a href="engine.html">Inside the Engine</a>
-                        <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a>
-                        <a href="https://github.com/claust/world-gen/releases" target="_blank" rel="noreferrer">Releases</a>
-                    </nav>
-                </div>
+                {% include nav.html current="home" %}
 
                 <div class="hero-grid">
                     <div>

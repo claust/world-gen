@@ -138,8 +138,17 @@ jobs:
           name: floraforge-web-world-base
           path: web/
 
+      # Render the site with Jekyll so the shared {% include nav.html %} on
+      # each page is expanded. The release workflow is the only place this
+      # ever builds — we don't run Jekyll locally.
+      - name: Build site with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./web
+          destination: ./web/_site
+
       - name: Create release zip
-        run: cd web && zip -r ../floraforge-web.zip .
+        run: cd web/_site && zip -r ../../floraforge-web.zip .
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v6
@@ -150,7 +159,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: web/
+          path: web/_site
 
   # Same matrix the PR CI validates (native-build.yml), here with release=true to
   # produce optimized, packaged binaries. Single source of truth → no drift.

@@ -1,3 +1,6 @@
+---
+# Empty front matter triggers Jekyll processing for the {% include nav.html %} call.
+---
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -31,19 +34,7 @@
 <body>
     <div class="content">
         <header class="wrap">
-            <div class="topbar">
-                <a class="brand" href="./index.html">
-                    <span class="brand-mark" aria-hidden="true"></span>
-                    <span>FloraForge</span>
-                </a>
-                <nav class="top-links" aria-label="Site links">
-                    <a href="./index.html">Home</a>
-                    <a href="./biology.html">The Living World</a>
-                    <a href="#loop">The Loop</a>
-                    <a href="#architecture">Architecture</a>
-                    <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a>
-                </nav>
-            </div>
+            {% include nav.html current="engine" %}
         </header>
 
         <section class="hero wrap">
