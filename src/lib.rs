@@ -1,3 +1,7 @@
+// objc's msg_send! (used for the macOS dock icon in app::event_loop) checks
+// cfg(feature = "cargo-clippy"); this lint only honors a crate-root allow.
+#![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod audio;
 #[cfg(not(target_arch = "wasm32"))]
