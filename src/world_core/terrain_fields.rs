@@ -113,41 +113,45 @@ impl TerrainFields {
         let m_var_off_x = cfg.moisture_variation_offset_x;
         let m_var_off_z = cfg.moisture_variation_offset_z;
 
-        let node = |i: usize| -> (f32, f32, f32, f32) {
+        // Write each octave straight into its own buffer so the bake never
+        // materializes an intermediate `Vec` of quads — that would double peak
+        // memory (~67 MB temp + ~67 MB final at native 2048²) and add a transpose
+        // pass. `node` fills one grid cell across all four buffers.
+        let node = |i: usize, c: &mut f32, r: &mut f32, mb: &mut f32, mv: &mut f32| {
             let x = ((i % res) as f32 * cell) as f64;
             let z = ((i / res) as f32 * cell) as f64;
-            (
-                Self::torus_raw(&cont_noise, x, z, cont_freq, 0.0, 0.0),
-                Self::torus_raw(&ridge_noise, x, z, ridge_freq, 0.0, 0.0),
-                Self::torus_raw(&moisture_noise, x, z, m_base_freq, 0.0, 0.0),
-                Self::torus_raw(&moisture_noise, x, z, m_var_freq, m_var_off_x, m_var_off_z),
-            )
+            *c = Self::torus_raw(&cont_noise, x, z, cont_freq, 0.0, 0.0);
+            *r = Self::torus_raw(&ridge_noise, x, z, ridge_freq, 0.0, 0.0);
+            *mb = Self::torus_raw(&moisture_noise, x, z, m_base_freq, 0.0, 0.0);
+            *mv = Self::torus_raw(&moisture_noise, x, z, m_var_freq, m_var_off_x, m_var_off_z);
         };
 
-        // `unzip` only splits pairs, so collect quads and transpose.
-        let collect_nodes = |nodes: Vec<(f32, f32, f32, f32)>| {
-            let mut continental = Vec::with_capacity(nodes.len());
-            let mut ridge = Vec::with_capacity(nodes.len());
-            let mut moisture_base = Vec::with_capacity(nodes.len());
-            let mut moisture_variation = Vec::with_capacity(nodes.len());
-            for (c, r, mb, mv) in nodes {
-                continental.push(c);
-                ridge.push(r);
-                moisture_base.push(mb);
-                moisture_variation.push(mv);
-            }
-            (continental, ridge, moisture_base, moisture_variation)
-        };
+        let mut continental = vec![0.0f32; n2];
+        let mut ridge = vec![0.0f32; n2];
+        let mut moisture_base = vec![0.0f32; n2];
+        let mut moisture_variation = vec![0.0f32; n2];
 
         #[cfg(not(target_arch = "wasm32"))]
-        let nodes: Vec<(f32, f32, f32, f32)> = {
+        {
             use rayon::prelude::*;
-            (0..n2).into_par_iter().map(node).collect()
-        };
+            continental
+                .par_iter_mut()
+                .zip(ridge.par_iter_mut())
+                .zip(moisture_base.par_iter_mut())
+                .zip(moisture_variation.par_iter_mut())
+                .enumerate()
+                .for_each(|(i, (((c, r), mb), mv))| node(i, c, r, mb, mv));
+        }
         #[cfg(target_arch = "wasm32")]
-        let nodes: Vec<(f32, f32, f32, f32)> = (0..n2).map(node).collect();
-
-        let (continental, ridge, moisture_base, moisture_variation) = collect_nodes(nodes);
+        for i in 0..n2 {
+            node(
+                i,
+                &mut continental[i],
+                &mut ridge[i],
+                &mut moisture_base[i],
+                &mut moisture_variation[i],
+            );
+        }
 
         Self {
             res,
