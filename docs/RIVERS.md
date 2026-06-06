@@ -84,10 +84,13 @@ cue was the **sun glint** — which by construction fires only when the mirror
 reflection points at the eye. Real water reads as water from *any* angle because
 it reflects the **sky**, bright and pale toward grazing angles. So `river.wgsl`
 now picks a sky color along the reflected view ray (`material.sky_zenith` toward
-`sky_horizon`) and blends the water body toward it by a Schlick-style fresnel
-(floored so even top-down views pick up some sky). Goes dark for free at night as
-the sky uniforms dim. This is what makes the channel pop off the land off-axis;
-foam (E1) then adds the moving cue on top. gen_key-neutral (runtime shading only).
+`sky_horizon`) and blends the water body toward it by a fresnel term raised to
+the 3rd power — a faster ramp than Schlick's physical 5th power, tuned so the
+surface picks up sky earlier (floored so even top-down views pick up some sky).
+Goes dark for free at night as the sky uniforms dim. This is what makes the
+channel pop off the land off-axis, on top of the existing flow-aligned current
+streaks (Option C) that carry the motion cue; together they were enough that the
+foam attempt below was dropped. gen_key-neutral (runtime shading only).
 
 ### Option E — Foam / whitewater ⏳ deferred (E1 tried, reverted)
 Additive white foam, the single strongest readability cue — the eye locks onto

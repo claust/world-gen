@@ -187,8 +187,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // from *any* angle because it reflects the sky — bright and pale toward
     // grazing angles. Pick the sky color along the reflected view ray (zenith
     // when looking down onto the surface, horizon when grazing) and blend the
-    // body toward it by a Schlick-style fresnel, floored so even top-down views
-    // pick up some sky. Goes dark for free at night as the sky uniforms dim.
+    // body toward it by a fresnel term raised to the 3rd power — a faster ramp
+    // than Schlick's physical 5th power, chosen so the surface picks up sky
+    // earlier and reads as water at more moderate angles; floored so even
+    // top-down views pick up some sky. Goes dark for free at night as the sky
+    // uniforms dim.
     let refl = reflect(-view_dir, n);
     let sky_col = mix(material.sky_horizon.rgb, material.sky_zenith.rgb, clamp(refl.y, 0.0, 1.0));
     let refl_amount = mix(0.08, 0.85, pow(fresnel, 3.0));
