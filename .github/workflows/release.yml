@@ -80,7 +80,7 @@ jobs:
           path: native/world_base.bin
 
       - name: Upload web world-base artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: floraforge-web-world-base
           path: web/world_base.bin
