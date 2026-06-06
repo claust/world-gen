@@ -29,8 +29,8 @@ fn main() -> anyhow::Result<()> {
     // creating a window or GPU context. The release workflow runs this on a CI
     // runner to build the snapshot it uploads as a release asset (the same bytes
     // a first-time New Game would otherwise compute locally).
-    if let Some(out_path) = parse_generate_base_arg() {
-        return generate_base_world(&out_path);
+    if let Some(request) = parse_generate_base_arg() {
+        return generate_base_world(&request.out_path, request.profile);
     }
 
     let debug_api = DebugApiConfig::from_env_args()?;
@@ -113,18 +113,37 @@ fn parse_benchmark_arg() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Parses `--generate-base [path]`. The path is optional and defaults to
-/// `world_base.bin`. Returns `None` when the flag is absent.
+struct GenerateBaseRequest {
+    out_path: String,
+    profile: BaseWorldProfile,
+}
+
+#[derive(Clone, Copy)]
+enum BaseWorldProfile {
+    Native,
+    Web,
+}
+
+/// Parses `--generate-base [path]` / `--generate-base-web [path]`. The path is
+/// optional and defaults to `world_base.bin`. Returns `None` when absent.
 #[cfg(not(target_arch = "wasm32"))]
-fn parse_generate_base_arg() -> Option<String> {
+fn parse_generate_base_arg() -> Option<GenerateBaseRequest> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--generate-base" {
+        let profile = match arg.as_str() {
+            "--generate-base" => BaseWorldProfile::Native,
+            "--generate-base-web" => BaseWorldProfile::Web,
+            _ => continue,
+        };
+        {
             let path = args
                 .next()
                 .filter(|s| !s.starts_with("--"))
                 .unwrap_or_else(|| "world_base.bin".to_string());
-            return Some(path);
+            return Some(GenerateBaseRequest {
+                out_path: path,
+                profile,
+            });
         }
     }
     None
@@ -137,9 +156,9 @@ fn parse_generate_base_arg() -> Option<String> {
 /// `PlantWorld::from_base_snapshot` validation on any client built from the same
 /// inputs.
 #[cfg(not(target_arch = "wasm32"))]
-fn generate_base_world(out_path: &str) -> anyhow::Result<()> {
+fn generate_base_world(out_path: &str, profile: BaseWorldProfile) -> anyhow::Result<()> {
     use std::sync::Arc;
-    use world_gen::world_core::config::GameConfig;
+    use world_gen::world_core::config::{GameConfig, WEB_DEFAULT_RIVER_GRID_RESOLUTION};
     use world_gen::world_core::herbarium::{Herbarium, PlantRegistry};
     use world_gen::world_core::storage::create_storage;
     use world_gen::world_runtime::PlantWorld;
@@ -148,7 +167,14 @@ fn generate_base_world(out_path: &str) -> anyhow::Result<()> {
     // fresh first-time New Game — so the generated snapshot's seed and generation
     // key line up with what a shipped client validates the download against.
     let storage = create_storage(None);
-    let config = GameConfig::load(&*storage);
+    let mut config = GameConfig::load(&*storage);
+    if let BaseWorldProfile::Web = profile {
+        // Browser builds intentionally use a coarser single-threaded river solve
+        // by default. The web deployment therefore needs its own base snapshot:
+        // river settings feed the generation key, so bundling the native
+        // 2048-river snapshot makes wasm reject the download on first launch.
+        config.rivers.grid_resolution = WEB_DEFAULT_RIVER_GRID_RESOLUTION;
+    }
     let herbarium = Herbarium::load(&*storage);
     let registry = Arc::new(PlantRegistry::from_herbarium(&herbarium));
     let gen_key = herbarium.generation_key(&config);
@@ -157,7 +183,14 @@ fn generate_base_world(out_path: &str) -> anyhow::Result<()> {
         .map(|n| n.get())
         .unwrap_or(4);
 
-    log::info!("generating base world (seed {seed}, gen_key {gen_key:#018x}, {threads} threads)…");
+    let profile_name = match profile {
+        BaseWorldProfile::Native => "native",
+        BaseWorldProfile::Web => "web",
+    };
+    log::info!(
+        "generating {profile_name} base world (seed {seed}, gen_key {gen_key:#018x}, river_grid {}, {threads} threads)…",
+        config.rivers.grid_resolution
+    );
     let rivers = Arc::new(world_gen::world_core::rivers::RiverField::generate(
         seed, &config,
     ));
