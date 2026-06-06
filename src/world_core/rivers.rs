@@ -22,6 +22,13 @@ use rayon::prelude::*;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
+/// Plant placement is rejected wherever river wetness exceeds this. Wetness is
+/// `0..1` (see [`RiverField`]); the channel itself trends toward `1.0` while
+/// merely-damp banks stay low, so this keeps vegetation out of the water without
+/// stripping the riparian fringe. Shared by base-flora placement and the spread
+/// landing pass so both agree on where "in the river" is.
+pub const MAX_PLANTABLE_WETNESS: f32 = 0.15;
+
 /// A baked global river field, sampled during terrain generation.
 pub struct RiverField {
     res: usize,

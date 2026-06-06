@@ -11,6 +11,7 @@ use crate::world_core::chunk::{
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::layer::Layer;
 use crate::world_core::lifecycle::GrowthStage;
+use crate::world_core::rivers::MAX_PLANTABLE_WETNESS;
 
 use std::sync::Arc;
 
@@ -45,6 +46,7 @@ impl<'a> Layer<FloraInput<'a>, Vec<PlantInstance>> for FloraLayer {
         let total = CHUNK_GRID_RESOLUTION * CHUNK_GRID_RESOLUTION;
         if terrain.heights.len() != total
             || terrain.moisture.len() != total
+            || terrain.river.len() != total
             || biome_map.values.len() != total
         {
             return Vec::new();
@@ -113,6 +115,15 @@ impl FloraLayer {
                 let slope = estimate_slope(&terrain.heights, local_x, local_z);
 
                 if height < self.sea_level {
+                    continue;
+                }
+
+                // Keep plants out of river channels. The sea-level test above
+                // misses them: rivers carve below the surrounding terrain but
+                // usually stay above sea level, and their raised moisture would
+                // otherwise *boost* density right where the water flows.
+                let wetness = sample_field_bilinear(&terrain.river, local_x, local_z);
+                if wetness > MAX_PLANTABLE_WETNESS {
                     continue;
                 }
 
