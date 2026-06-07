@@ -293,6 +293,17 @@ mod tests {
     }
 
     #[test]
+    fn deserializes_set_time() {
+        let raw = r#"{"id":"t-1","type":"set_time","hour":12.0}"#;
+        let command: CommandRequest = serde_json::from_str(raw).expect("valid set_time payload");
+        assert_eq!(command.id, "t-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::SetTime { hour } if (hour - 12.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
     fn deserializes_set_camera_position() {
         let raw = r#"{"id":"tp-1","type":"set_camera_position","x":100.0,"y":200.0,"z":50.0}"#;
         let command: CommandRequest =

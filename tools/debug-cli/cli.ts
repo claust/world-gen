@@ -305,7 +305,7 @@ Commands:
   screenshot                               Capture a screenshot
   save                                     Save the world (camera + plant state)
   set_day_speed   --value <n>              Set day/night cycle speed
-  set_time        --hour <0..24>           Set time of day directly (e.g. 12=midday, 0=midnight)
+  set_time        --hour <0..24)           Set time of day directly, 24 exclusive (e.g. 12=midday, 0=midnight)
   set_camera_position --x <n> --y <n> --z <n>  Teleport camera
   set_camera_look --yaw <n> --pitch <n>    Set camera orientation
   map_right_click --u <0..1> --v <0..1>    Right-click the open world map
