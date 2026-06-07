@@ -13,12 +13,14 @@ struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) sdf: vec2<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) sdf: vec2<f32>,
 };
 
 @vertex
@@ -29,6 +31,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.clip_position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
     out.uv = in.uv;
     out.color = in.color;
+    out.sdf = in.sdf;
     return out;
 }
 
@@ -36,11 +39,66 @@ fn median(a: f32, b: f32, c: f32) -> f32 {
     return max(min(a, b), min(max(a, b), c));
 }
 
+// SDF shape ids carried in `sdf.x`; must match the constants in hud_pass.rs.
+const SDF_DIAMOND: f32 = 1.0;      // |x| + |y| <= 1
+const SDF_DIAMOND_SEAM: f32 = 2.0; // diamond that also fades across the y = 0 seam
+const SDF_DISC: f32 = 3.0;         // length(p) <= 1
+const SDF_RING: f32 = 4.0;         // sdf.y <= length(p) <= 1
+const SDF_BOX: f32 = 5.0;          // max(|x|, |y|) <= 1
+
+// Coverage of an SDF inside-negative field, anti-aliased over ~1 screen pixel using the
+// field's own screen-space gradient.
+fn sdf_coverage(dist: f32) -> f32 {
+    let aa = max(fwidth(dist), 1e-5);
+    return clamp(0.5 - dist / aa, 0.0, 1.0);
+}
+
+// Whether `id` (an `sdf.x` value) names shape `want`. The ids are integers, so a 0.5
+// window matches exactly one and lets unknown ids fall through to a transparent default.
+fn is_shape(id: f32, want: f32) -> bool {
+    return abs(id - want) < 0.5;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Sample unconditionally (uniform control flow required by WebGPU). Solid-color
-    // quads (panel, compass, clock) carry a sentinel uv.x < 0; everything else is text.
+    // Sample unconditionally (uniform control flow required by WebGPU). Vertex kinds:
+    // sdf.x > 0 is an anti-aliased SDF primitive (uv holds its normalized local coord);
+    // otherwise solid quads (panel, clock ticks/horizon) carry the sentinel uv == (-1,
+    // -1) and everything else is MSDF text (uv >= 0).
     let msd = textureSample(font_texture, font_sampler, max(in.uv, vec2(0.0))).rgb;
+
+    if (in.sdf.x > 0.5) {
+        let p = in.uv;
+        let shape = in.sdf.x;
+        // Unknown ids stay fully transparent, so adding/reordering shape constants can
+        // never silently fall through to the wrong primitive.
+        var alpha = 0.0;
+
+        if (is_shape(shape, SDF_DIAMOND) || is_shape(shape, SDF_DIAMOND_SEAM)) {
+            // Rhombus: boundary |x| + |y| = 1.
+            alpha = sdf_coverage(abs(p.x) + abs(p.y) - 1.0);
+            // The seam-fading half additionally fades in across the E–W seam (local
+            // y = 0), anti-aliasing the divider where it overlays the layer below.
+            if (is_shape(shape, SDF_DIAMOND_SEAM)) {
+                let seam_aa = max(fwidth(p.y), 1e-5);
+                alpha *= clamp(0.5 + p.y / seam_aa, 0.0, 1.0);
+            }
+        } else if (is_shape(shape, SDF_DISC)) {
+            // Disc: boundary length(p) = 1.
+            alpha = sdf_coverage(length(p) - 1.0);
+        } else if (is_shape(shape, SDF_RING)) {
+            // Ring: intersection of the unit disc and the outside of the inner disc,
+            // whose normalized radius is sdf.y.
+            let r = length(p);
+            alpha = sdf_coverage(max(r - 1.0, in.sdf.y - r));
+        } else if (is_shape(shape, SDF_BOX)) {
+            // Box: boundary max(|x|, |y|) = 1.
+            alpha = sdf_coverage(max(abs(p.x), abs(p.y)) - 1.0);
+        }
+
+        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    }
+
     if (in.uv.x < 0.0) {
         return in.color;
     }
