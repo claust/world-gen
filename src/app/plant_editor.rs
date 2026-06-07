@@ -10,6 +10,10 @@ use crate::world_core::plant_gen::{generate_plant_mesh, PlantMesh};
 const ORBIT_TARGET_Y: f32 = 7.0;
 const ORBIT_DISTANCE: f32 = 28.0;
 const ORBIT_HEIGHT: f32 = 10.0;
+/// Mouse-wheel zoom range and sensitivity (per scroll line).
+const MIN_ORBIT_DISTANCE: f32 = 5.0;
+const MAX_ORBIT_DISTANCE: f32 = 90.0;
+const ZOOM_SENSITIVITY: f32 = 0.1;
 /// Default panel width in logical pixels (must match PlantEditorPanel::default_width).
 const PANEL_WIDTH_PX: f32 = 400.0;
 const ORBIT_SPEED: f32 = 1.5;
@@ -42,6 +46,8 @@ pub struct PlantEditorState {
     pub last_cursor_pos: Option<(f64, f64)>,
     /// Current camera height (adjustable via vertical mouse drag).
     pub orbit_height: f32,
+    /// Current orbit radius (adjustable via mouse-wheel zoom).
+    pub orbit_distance: f32,
 }
 
 impl PlantEditorState {
@@ -65,6 +71,7 @@ impl PlantEditorState {
             mouse_dragging: false,
             last_cursor_pos: None,
             orbit_height: ORBIT_HEIGHT,
+            orbit_distance: ORBIT_DISTANCE,
         }
     }
 
@@ -125,6 +132,14 @@ impl PlantEditorState {
         self.mouse_dragging = false;
     }
 
+    /// Zoom the orbit camera via mouse wheel. `delta` is in scroll lines:
+    /// positive (scroll up / away) zooms in, negative zooms out. Zoom is
+    /// multiplicative so each notch feels like a constant step across the range.
+    pub fn on_scroll(&mut self, delta: f32) {
+        self.auto_orbit = false;
+        self.orbit_distance = zoom_distance(self.orbit_distance, delta);
+    }
+
     /// Track cursor position and apply drag-orbit when dragging.
     pub fn on_cursor_move(&mut self, x: f64, y: f64) {
         if let Some((last_x, last_y)) = self.last_cursor_pos {
@@ -156,12 +171,12 @@ impl PlantEditorState {
         // in NDC (since NDC width is 2). Convert to world-space offset at the
         // orbit distance.
         let panel_frac = (PANEL_WIDTH_PX / screen_width).min(0.5);
-        let offset = panel_frac * ORBIT_DISTANCE * (fov_y / 2.0).tan() * aspect;
+        let offset = panel_frac * self.orbit_distance * (fov_y / 2.0).tan() * aspect;
 
         // Shift camera to the left (perpendicular to orbit direction) so the
         // plant projects to the right of screen center, into the visible area.
-        let cam_x = sin_a * ORBIT_DISTANCE - cos_a * offset;
-        let cam_z = cos_a * ORBIT_DISTANCE + sin_a * offset;
+        let cam_x = sin_a * self.orbit_distance - cos_a * offset;
+        let cam_z = cos_a * self.orbit_distance + sin_a * offset;
         let cam_pos = glam::Vec3::new(cam_x, self.orbit_height, cam_z);
 
         let target = glam::Vec3::new(0.0, ORBIT_TARGET_Y, 0.0);
@@ -282,6 +297,14 @@ fn merge_params(base: &SpeciesConfig, params: &PlantParams) -> SpeciesConfig {
     spec
 }
 
+/// Apply a multiplicative mouse-wheel zoom step to an orbit radius. Positive
+/// `delta` (scroll lines, up/away) zooms in; the result is clamped to the
+/// editor's inspection range. Pure so it can be unit-tested without a GPU.
+fn zoom_distance(distance: f32, delta: f32) -> f32 {
+    let factor = (1.0 - delta * ZOOM_SENSITIVITY).clamp(0.5, 2.0);
+    (distance * factor).clamp(MIN_ORBIT_DISTANCE, MAX_ORBIT_DISTANCE)
+}
+
 fn min_max_f32(a: f32, b: f32) -> (f32, f32) {
     if a <= b {
         (a, b)
@@ -325,7 +348,10 @@ fn create_ground_plane(device: &wgpu::Device) -> (PrototypeMesh, GpuInstanceChun
             color,
         },
     ];
-    let indices = vec![0, 1, 2, 0, 2, 3];
+    // Wind the quad so its top face is front-facing (CCW from above). The
+    // instanced pipeline culls back faces, and the orbit camera always looks
+    // down at the ground, so the naive [0,1,2,0,2,3] order would be culled away.
+    let indices = vec![0, 2, 1, 0, 3, 2];
 
     let mesh = upload_prototype(device, &vertices, &indices, "plant-editor-ground");
 
@@ -340,4 +366,38 @@ fn create_ground_plane(device: &wgpu::Device) -> (PrototypeMesh, GpuInstanceChun
         upload_instances(device, &instance_data, "plant-editor-ground").expect("non-empty");
 
     (mesh, instance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_in_decreases_distance_out_increases() {
+        let start = ORBIT_DISTANCE;
+        assert!(
+            zoom_distance(start, 1.0) < start,
+            "scroll up should zoom in"
+        );
+        assert!(
+            zoom_distance(start, -1.0) > start,
+            "scroll down should zoom out"
+        );
+    }
+
+    #[test]
+    fn zoom_is_clamped_to_range() {
+        // Many zoom-in steps bottom out at the min, many zoom-out steps cap at the max.
+        let mut d = ORBIT_DISTANCE;
+        for _ in 0..100 {
+            d = zoom_distance(d, 5.0);
+        }
+        assert_eq!(d, MIN_ORBIT_DISTANCE);
+
+        let mut d = ORBIT_DISTANCE;
+        for _ in 0..100 {
+            d = zoom_distance(d, -5.0);
+        }
+        assert_eq!(d, MAX_ORBIT_DISTANCE);
+    }
 }

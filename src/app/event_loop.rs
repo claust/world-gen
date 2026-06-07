@@ -1,10 +1,20 @@
 use anyhow::Result;
 use wgpu::SurfaceError;
-use winit::event::{ElementState, Event, MouseButton, WindowEvent};
+use winit::event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use super::AppState;
+
+/// Normalize a mouse-wheel delta to "scroll lines" (one notch ≈ 1.0). Line and
+/// pixel deltas (trackpads report the latter) are mapped onto the same scale so
+/// editor zoom feels consistent across input devices.
+fn scroll_lines(delta: MouseScrollDelta) -> f32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => y,
+        MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
+    }
+}
 
 // Set the macOS dock icon to the app icon. Must run *after* the app has
 // finished launching — winit only promotes an un-bundled binary to a regular
@@ -179,6 +189,13 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             editor.on_cursor_move(position.x, position.y);
                         }
                     }
+                    WindowEvent::MouseWheel { delta, .. }
+                        if app.is_on_editor() && !egui_wants_event =>
+                    {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_scroll(scroll_lines(delta));
+                        }
+                    }
                     WindowEvent::MouseInput {
                         state: ElementState::Pressed,
                         button: MouseButton::Left,
@@ -293,6 +310,31 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::dpi::PhysicalPosition;
+
+    #[test]
+    fn scroll_lines_maps_both_delta_kinds() {
+        // Line deltas pass through; positive y (scroll up) stays positive.
+        assert_eq!(scroll_lines(MouseScrollDelta::LineDelta(0.0, 1.0)), 1.0);
+        assert_eq!(scroll_lines(MouseScrollDelta::LineDelta(0.0, -3.0)), -3.0);
+        // Pixel deltas (trackpads) are scaled down and keep their sign.
+        assert_eq!(
+            scroll_lines(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+                0.0, 100.0
+            ))),
+            2.0
+        );
+        assert!(
+            scroll_lines(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+                0.0, -50.0
+            ))) < 0.0
+        );
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -429,6 +471,13 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                     WindowEvent::CursorMoved { position, .. } if app.is_on_editor() => {
                         if let Some(editor) = &mut app.plant_editor {
                             editor.on_cursor_move(position.x, position.y);
+                        }
+                    }
+                    WindowEvent::MouseWheel { delta, .. }
+                        if app.is_on_editor() && !egui_wants_event =>
+                    {
+                        if let Some(editor) = &mut app.plant_editor {
+                            editor.on_scroll(scroll_lines(delta));
                         }
                     }
                     WindowEvent::MouseInput {
