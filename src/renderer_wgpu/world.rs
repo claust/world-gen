@@ -192,9 +192,11 @@ impl WorldRenderer {
         // orbit camera sits below the world sea level and would otherwise be tinted
         // by the underwater murk.
         const SUBMERGE_RAMP: f32 = 1.5;
-        let submerge = submerge_override.unwrap_or_else(|| {
-            ((self.sea_level - camera_position.y) / SUBMERGE_RAMP).clamp(0.0, 1.0)
-        });
+        // Clamp after resolving the override too, so FrameUniform.time.z keeps its
+        // documented 0..1 invariant regardless of what a caller passes in.
+        let submerge = submerge_override
+            .unwrap_or_else(|| (self.sea_level - camera_position.y) / SUBMERGE_RAMP)
+            .clamp(0.0, 1.0);
 
         self.frame_bg.update(
             queue,
