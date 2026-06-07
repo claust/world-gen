@@ -111,22 +111,10 @@ impl WorldRuntime {
         Ok(world)
     }
 
-    /// Build a world in the browser from an already-downloaded base snapshot.
-    /// Unlike [`new`], which reads `world_base` from storage (web `localStorage`
-    /// can't hold it), the snapshot is fetched asynchronously by the caller and
-    /// handed in as `base_bytes`; a `None` (or a snapshot that fails validation)
-    /// falls back to single-threaded local generation. No base cache is written
-    /// back — the browser HTTP cache covers repeat downloads.
-    #[cfg(target_arch = "wasm32")]
-    pub fn new_web(
-        config: &GameConfig,
-        save: Option<&SaveData>,
-        registry: Arc<PlantRegistry>,
-        base_bytes: Option<Vec<u8>>,
-        gen_key: u64,
-    ) -> anyhow::Result<Self> {
-        Self::build(config, save, 1, registry, None, base_bytes, gen_key, None)
-    }
+    // The browser has no worker thread, so it can't run the blocking `build`
+    // off the event loop the way `generate` does on native. Instead it drives
+    // [`WebWorldBuilder`] (below) a step at a time, yielding to the browser
+    // between steps, so the decode + rebuild never freezes the loading screen.
 
     /// Build a world from fully-owned, `Send` inputs so the whole generation can
     /// run on a worker thread off the event loop. `spread_bytes` is the persisted
@@ -477,5 +465,181 @@ impl WorldRuntime {
 
     pub fn save_plants(&self, storage: &dyn Storage) -> anyhow::Result<()> {
         self.plant_world.save_spread(storage)
+    }
+}
+
+/// One unit of progress from [`WebWorldBuilder::step`]. The finished runtime is
+/// boxed so the common `Working` value stays small (one is returned per step).
+#[cfg(target_arch = "wasm32")]
+pub enum BuildStep {
+    /// Still working; `0.0..=1.0` is the fraction of the build completed.
+    Working(f32),
+    /// The runtime is ready.
+    Done(Box<WorldRuntime>),
+}
+
+/// Resumable, off-the-event-loop world build for the browser. Native runs the
+/// equivalent `build` on a worker thread; the web build has no threads, so this
+/// splits the work into bounded steps the async loader drives, yielding to the
+/// browser between each so the loading screen never freezes.
+///
+/// Construction is cheap. The first [`step`](Self::step) solves the river field
+/// and chooses the base-load path; subsequent steps either decode the downloaded
+/// snapshot incrementally (the common New Game path, via [`BaseLoader`]) or — on
+/// a missing/foreign/corrupt download — generate the base locally in one blocking
+/// step (rare). The final step assembles the streaming world and runtime.
+///
+/// [`BaseLoader`]: super::plant_world::BaseLoader
+#[cfg(target_arch = "wasm32")]
+pub struct WebWorldBuilder {
+    config: GameConfig,
+    registry: Arc<PlantRegistry>,
+    gen_key: u64,
+    base_bytes: Option<Vec<u8>>,
+    seed: u32,
+    start_hour: f32,
+    day_speed: f32,
+    total_hours: f64,
+    load_radius: i32,
+    rivers: Option<Arc<crate::world_core::rivers::RiverField>>,
+    state: BuildState,
+}
+
+#[cfg(target_arch = "wasm32")]
+enum BuildState {
+    /// Solve rivers, then choose the base-load path.
+    Rivers,
+    /// Decode + rebuild the downloaded snapshot incrementally. Boxed: the loader
+    /// is large and most of the build sits in this state.
+    LoadBase(Box<super::plant_world::BaseLoader>),
+    /// Generate the base locally (download missing or rejected) — one blocking step.
+    Generate,
+    /// Plants reconstructed; assemble streaming + runtime.
+    Finish(Box<PlantWorld>),
+    /// Stepped to completion.
+    Done,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WebWorldBuilder {
+    pub fn new(
+        config: &GameConfig,
+        save: Option<&SaveData>,
+        registry: Arc<PlantRegistry>,
+        base_bytes: Option<Vec<u8>>,
+        gen_key: u64,
+    ) -> Self {
+        let seed = save.map(|s| s.world.seed).unwrap_or(config.world.seed);
+        let start_hour = save
+            .map(|s| s.world.hour)
+            .unwrap_or(config.world.start_hour);
+        let day_speed = save
+            .map(|s| s.world.day_speed)
+            .unwrap_or(config.world.day_speed);
+        let total_hours = save
+            .map(|s| s.world.total_hours)
+            .unwrap_or(start_hour as f64);
+        Self {
+            config: config.clone(),
+            registry,
+            gen_key,
+            // A resume rebuilds from its own seed (matching the native path); only
+            // a New Game consumes a downloaded base.
+            base_bytes: if save.is_none() { base_bytes } else { None },
+            seed,
+            start_hour,
+            day_speed,
+            total_hours,
+            load_radius: config.world.load_radius,
+            rivers: None,
+            state: BuildState::Rivers,
+        }
+    }
+
+    /// Advance the build by one bounded step, reporting progress in `0.0..=1.0`.
+    pub fn step(&mut self) -> anyhow::Result<BuildStep> {
+        match std::mem::replace(&mut self.state, BuildState::Done) {
+            BuildState::Rivers => {
+                let rivers = Arc::new(crate::world_core::rivers::RiverField::generate(
+                    self.seed,
+                    &self.config,
+                ));
+                self.rivers = Some(Arc::clone(&rivers));
+                // Use the download if present and valid; otherwise fall back to
+                // local generation, matching the native reject-and-regenerate path.
+                self.state = match self.base_bytes.take() {
+                    Some(bytes) => match super::plant_world::BaseLoader::new(
+                        &bytes,
+                        self.gen_key,
+                        self.seed,
+                        &self.config,
+                        Arc::clone(&self.registry),
+                        rivers,
+                    ) {
+                        Ok(loader) => BuildState::LoadBase(Box::new(loader)),
+                        Err(err) => {
+                            log::warn!("ignoring downloaded base world: {err}");
+                            BuildState::Generate
+                        }
+                    },
+                    None => BuildState::Generate,
+                };
+                // Rivers solved near-instantly relative to the decode/rebuild; the
+                // load owns the rest of the bar.
+                Ok(BuildStep::Working(0.02))
+            }
+            BuildState::LoadBase(mut loader) => match loader.step()? {
+                super::plant_world::LoadStep::Working(frac) => {
+                    self.state = BuildState::LoadBase(loader);
+                    Ok(BuildStep::Working(0.05 + 0.93 * frac))
+                }
+                super::plant_world::LoadStep::Done(world) => {
+                    self.state = BuildState::Finish(world);
+                    Ok(BuildStep::Working(0.98))
+                }
+            },
+            BuildState::Generate => {
+                let rivers = self
+                    .rivers
+                    .clone()
+                    .expect("rivers solved before local generation");
+                let world = PlantWorld::generate_base(
+                    self.seed,
+                    &self.config,
+                    Arc::clone(&self.registry),
+                    rivers,
+                    1,
+                    None,
+                );
+                self.state = BuildState::Finish(Box::new(world));
+                Ok(BuildStep::Working(0.98))
+            }
+            BuildState::Finish(plant_world) => {
+                Ok(BuildStep::Done(Box::new(self.finish(*plant_world)?)))
+            }
+            BuildState::Done => anyhow::bail!("WebWorldBuilder stepped after completion"),
+        }
+    }
+
+    fn finish(&mut self, plant_world: PlantWorld) -> anyhow::Result<WorldRuntime> {
+        let rivers = self.rivers.take().expect("rivers solved before finish");
+        Ok(WorldRuntime {
+            streaming: StreamingWorld::new(
+                self.seed,
+                self.load_radius,
+                1,
+                Arc::new(self.config.clone()),
+                Arc::clone(&self.registry),
+                rivers,
+            )?,
+            clock: WorldClock::new(self.start_hour, self.total_hours, self.day_speed),
+            plant_world,
+            last_growth_hour: self.total_hours,
+            last_spread_hour: self.total_hours,
+            last_tick_ms: 0.0,
+            // The browser never persists the base (localStorage can't hold it); the
+            // HTTP cache covers repeat downloads, so nothing is staged here.
+            pending_base_snapshot: None,
+        })
     }
 }

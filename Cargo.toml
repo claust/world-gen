@@ -32,6 +32,10 @@ anyhow = "1.0"
 brotli = "8"
 bytemuck = { version = "1.16", features = ["derive"] }
 egui = "0.33"
+# PNG decoding (start-menu logo on every target; thumbnails/screenshots on
+# native). Pure-Rust `png` backend builds on wasm, so keep it in the shared
+# table rather than the non-wasm block.
+image = { version = "0.25", default-features = false, features = ["png"] }
 gltf = "1"
 glam = "0.29"
 fast-surface-nets = "0.2"
@@ -68,7 +72,6 @@ axum = { version = "0.7", features = ["ws"] }
 notify = "7"
 env_logger = "0.11"
 futures-util = "0.3"
-image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.3"
 rayon = "1.10"
 tokio = { version = "1.38", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
