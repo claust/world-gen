@@ -135,6 +135,12 @@ async function cmdSetDaySpeed(apiBase: string, flags: Record<string, string>) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdSetTime(apiBase: string, flags: Record<string, string>) {
+  const hour = requireFloat(flags, "hour");
+  const result = await sendAndWait(apiBase, { type: "set_time", hour });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdSetCameraPosition(apiBase: string, flags: Record<string, string>) {
   const x = requireFloat(flags, "x");
   const y = requireFloat(flags, "y");
@@ -299,6 +305,7 @@ Commands:
   screenshot                               Capture a screenshot
   save                                     Save the world (camera + plant state)
   set_day_speed   --value <n>              Set day/night cycle speed
+  set_time        --hour <0..24>           Set time of day directly (e.g. 12=midday, 0=midnight)
   set_camera_position --x <n> --y <n> --z <n>  Teleport camera
   set_camera_look --yaw <n> --pitch <n>    Set camera orientation
   map_right_click --u <0..1> --v <0..1>    Right-click the open world map
@@ -382,6 +389,9 @@ async function main() {
         break;
       case "set_day_speed":
         await cmdSetDaySpeed(apiBase, flags);
+        break;
+      case "set_time":
+        await cmdSetTime(apiBase, flags);
         break;
       case "set_camera_position":
         await cmdSetCameraPosition(apiBase, flags);

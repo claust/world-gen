@@ -126,6 +126,9 @@ pub enum CommandKind {
     SetDaySpeed {
         value: f32,
     },
+    SetTime {
+        hour: f32,
+    },
     SetMoveKey {
         key: MoveKey,
         pressed: bool,

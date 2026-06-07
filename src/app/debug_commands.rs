@@ -40,6 +40,26 @@ impl AppState {
                         }
                     }
                 }
+                CommandKind::SetTime { hour } => {
+                    let world = self.world.as_mut().unwrap();
+                    match world.set_hour(hour) {
+                        Ok(current_hour) => {
+                            let mut evt = CommandAppliedEvent::ok(
+                                command.id,
+                                self.frame_index,
+                                format!("time of day set to {:.2}h", current_hour),
+                            );
+                            evt.data = Some(serde_json::json!({ "hour": current_hour }));
+                            evt
+                        }
+                        Err(message) => {
+                            let mut evt =
+                                CommandAppliedEvent::err(command.id, self.frame_index, message);
+                            evt.data = Some(serde_json::json!({ "hour": world.hour() }));
+                            evt
+                        }
+                    }
+                }
                 CommandKind::SetMoveKey { key, pressed } => {
                     let direction = match key {
                         MoveKey::W => MoveDirection::Forward,

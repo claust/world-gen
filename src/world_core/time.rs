@@ -29,6 +29,13 @@ impl WorldClock {
         self.day_speed = day_speed;
     }
 
+    /// Jump the time of day to `hour` without disturbing `total_hours`, the
+    /// monotonic counter that drives plant growth and other lifecycle state —
+    /// debugging the lighting shouldn't rewind the simulation.
+    pub fn set_hour(&mut self, hour: f32) {
+        self.hour = hour.rem_euclid(24.0);
+    }
+
     pub fn hour(&self) -> f32 {
         self.hour
     }
@@ -69,6 +76,23 @@ mod tests {
         clock.update(2.0);
         assert!((clock.hour() - 1.5).abs() < 1e-6);
         assert!((clock.total_hours() - 49.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_hour_changes_time_of_day_without_touching_total_hours() {
+        let mut clock = WorldClock::new(6.0, 30.0, 1.0);
+        clock.set_hour(12.0);
+        assert!((clock.hour() - 12.0).abs() < 1e-6);
+        assert!((clock.total_hours() - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_hour_wraps_out_of_range_values() {
+        let mut clock = WorldClock::new(6.0, 30.0, 1.0);
+        clock.set_hour(26.0);
+        assert!((clock.hour() - 2.0).abs() < 1e-6);
+        clock.set_hour(-1.0);
+        assert!((clock.hour() - 23.0).abs() < 1e-6);
     }
 
     #[test]
