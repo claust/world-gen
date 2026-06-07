@@ -1444,13 +1444,30 @@ struct SectionDecoder {
     declared: usize,
 }
 
+/// Upper bound on the output buffer pre-reserved from a section's declared length.
+/// Reserving the known size up front avoids repeated reallocations as the decode
+/// grows, but the cap keeps a corrupt or hostile `declared` (up to
+/// [`BASE_SECTION_MAX_BYTES`]) from forcing a huge allocation before any bytes are
+/// validated — real sections are well under this.
+#[cfg(any(target_arch = "wasm32", test))]
+const SECTION_DECODE_RESERVE_CAP: usize = 64 * 1024 * 1024;
+
 #[cfg(any(target_arch = "wasm32", test))]
 impl SectionDecoder {
     fn new(comp: Vec<u8>, declared: usize) -> Self {
         Self {
             inner: brotli::Decompressor::new(std::io::Cursor::new(comp), 4096),
-            out: Vec::new(),
+            out: Vec::with_capacity(declared.min(SECTION_DECODE_RESERVE_CAP)),
             declared,
+        }
+    }
+
+    /// Fraction of this section decoded so far, `0.0..=1.0`, for smooth progress.
+    fn fraction(&self) -> f32 {
+        if self.declared == 0 {
+            1.0
+        } else {
+            self.out.len() as f32 / self.declared as f32
         }
     }
 
@@ -1601,12 +1618,18 @@ impl BaseLoader {
                 let (comp, declared) = self.pending.pop_front().expect("pending section");
                 self.current = Some(SectionDecoder::new(comp, declared));
             }
-            if self.current.as_mut().unwrap().step(Self::DECODE_BUDGET)? {
-                let dec = self.current.take().unwrap();
-                self.decoded.push(dec.out);
-            }
-            // Three sections span the first half of the bar (each ~1/6).
-            return Ok(LoadStep::Working(self.decoded.len() as f32 / 6.0));
+            // Fold the in-flight section's own progress into the fraction so the
+            // bar still moves on a section that takes several steps to decode.
+            let partial = if self.current.as_mut().unwrap().step(Self::DECODE_BUDGET)? {
+                self.decoded.push(self.current.take().unwrap().out);
+                0.0
+            } else {
+                self.current.as_ref().unwrap().fraction()
+            };
+            // The three sections span the first half of the bar (each ~1/6).
+            return Ok(LoadStep::Working(
+                (self.decoded.len() as f32 + partial) / 6.0,
+            ));
         }
 
         // Phase 2: rebuild chunks in batches. Own the state for the call so the

@@ -2458,8 +2458,16 @@ fn clamp_camera_to_terrain(
 #[cfg(target_arch = "wasm32")]
 async fn yield_to_browser() {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        if let Some(win) = web_sys::window() {
-            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+        // Schedule a macrotask so the browser can paint before we resume. If the
+        // timer can't be scheduled (no window, or set_timeout errors), resolve
+        // immediately — a microtask yield is worse for rendering but must not hang
+        // the cooperative loader by leaving the promise forever pending.
+        let scheduled = web_sys::window().and_then(|win| {
+            win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0)
+                .ok()
+        });
+        if scheduled.is_none() {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
         }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
