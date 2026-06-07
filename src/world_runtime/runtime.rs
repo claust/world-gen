@@ -455,6 +455,18 @@ impl WorldRuntime {
         Ok(self.clock.day_speed())
     }
 
+    pub fn set_hour(&mut self, hour: f32) -> Result<f32, String> {
+        if !hour.is_finite() {
+            return Err("hour must be a finite number".to_string());
+        }
+        if !(0.0..24.0).contains(&hour) {
+            return Err("hour must be in range [0, 24)".to_string());
+        }
+
+        self.clock.set_hour(hour);
+        Ok(self.clock.hour())
+    }
+
     pub fn hour(&self) -> f32 {
         self.clock.hour()
     }

@@ -126,6 +126,9 @@ pub enum CommandKind {
     SetDaySpeed {
         value: f32,
     },
+    SetTime {
+        hour: f32,
+    },
     SetMoveKey {
         key: MoveKey,
         pressed: bool,
@@ -286,6 +289,17 @@ mod tests {
                 key: super::MoveKey::Down,
                 pressed: false
             }
+        ));
+    }
+
+    #[test]
+    fn deserializes_set_time() {
+        let raw = r#"{"id":"t-1","type":"set_time","hour":12.0}"#;
+        let command: CommandRequest = serde_json::from_str(raw).expect("valid set_time payload");
+        assert_eq!(command.id, "t-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::SetTime { hour } if (hour - 12.0).abs() < f32::EPSILON
         ));
     }
 
