@@ -167,6 +167,7 @@ impl WorldRenderer {
         self.depth = DepthTexture::new(device, config, "terrain-depth");
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_frame(
         &mut self,
         queue: &wgpu::Queue,
@@ -175,6 +176,7 @@ impl WorldRenderer {
         elapsed: f32,
         hour: f32,
         sun_direction: Vec3,
+        submerge_override: Option<f32>,
     ) {
         self.view_proj = view_proj;
         self.camera_position = camera_position;
@@ -185,9 +187,14 @@ impl WorldRenderer {
         self.shadow_enabled = shadow_enabled;
 
         // Underwater submerge factor: 0 above the surface, ramping to 1 over the
-        // ~1.5 m below sea level so crossing the surface fades smoothly.
+        // ~1.5 m below sea level so crossing the surface fades smoothly. The plant
+        // editor is a studio scene with no water, so it overrides this to 0 — its
+        // orbit camera sits below the world sea level and would otherwise be tinted
+        // by the underwater murk.
         const SUBMERGE_RAMP: f32 = 1.5;
-        let submerge = ((self.sea_level - camera_position.y) / SUBMERGE_RAMP).clamp(0.0, 1.0);
+        let submerge = submerge_override.unwrap_or_else(|| {
+            ((self.sea_level - camera_position.y) / SUBMERGE_RAMP).clamp(0.0, 1.0)
+        });
 
         self.frame_bg.update(
             queue,

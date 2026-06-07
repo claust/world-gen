@@ -1208,6 +1208,7 @@ impl AppState {
             self.elapsed_seconds,
             stats.hour,
             lighting.sun_direction,
+            None,
         );
         self.world_renderer.update_material(
             &self.gpu.queue,
@@ -1297,6 +1298,8 @@ impl AppState {
             self.elapsed_seconds,
             hour,
             light_dir,
+            // Studio scene: never apply underwater murk regardless of camera height.
+            Some(0.0),
         );
         self.world_renderer
             .update_material(&self.gpu.queue, light_dir, ambient, &palette);
@@ -1354,6 +1357,10 @@ impl AppState {
                                     editor.stop_auto_orbit();
                                 }
                             }
+                            // Up/Down zoom the orbit camera (mirrors the mouse
+                            // wheel); a press is one chunky zoom step.
+                            MoveKey::Up if pressed => editor.on_scroll(4.0),
+                            MoveKey::Down if pressed => editor.on_scroll(-4.0),
                             _ => {}
                         }
                     }
@@ -1547,6 +1554,7 @@ impl AppState {
             self.elapsed_seconds,
             menu_hour,
             light_dir,
+            None,
         );
         self.world_renderer
             .update_material(&self.gpu.queue, light_dir, ambient, &palette);
