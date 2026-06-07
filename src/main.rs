@@ -158,7 +158,9 @@ fn parse_generate_base_arg() -> Option<GenerateBaseRequest> {
 #[cfg(not(target_arch = "wasm32"))]
 fn generate_base_world(out_path: &str, profile: BaseWorldProfile) -> anyhow::Result<()> {
     use std::sync::Arc;
-    use world_gen::world_core::config::{GameConfig, WEB_DEFAULT_RIVER_GRID_RESOLUTION};
+    use world_gen::world_core::config::{
+        GameConfig, WEB_DEFAULT_HEIGHT_FIELD_RESOLUTION, WEB_DEFAULT_RIVER_GRID_RESOLUTION,
+    };
     use world_gen::world_core::herbarium::{Herbarium, PlantRegistry};
     use world_gen::world_core::storage::create_storage;
     use world_gen::world_runtime::PlantWorld;
@@ -169,11 +171,15 @@ fn generate_base_world(out_path: &str, profile: BaseWorldProfile) -> anyhow::Res
     let storage = create_storage(None);
     let mut config = GameConfig::load(&*storage);
     if let BaseWorldProfile::Web = profile {
-        // Browser builds intentionally use a coarser single-threaded river solve
-        // by default. The web deployment therefore needs its own base snapshot:
-        // river settings feed the generation key, so bundling the native
-        // 2048-river snapshot makes wasm reject the download on first launch.
+        // Browser builds intentionally use coarser single-threaded field solves by
+        // default. The web deployment therefore needs its own base snapshot: both
+        // the river grid and the low-frequency height field feed the generation
+        // key (the whole `HeightmapConfig`/`RiverConfig` are hashed), so every web
+        // default that differs from native must be applied here. Miss one and the
+        // bundled snapshot's key won't match a fresh wasm client, which then
+        // rejects the download and falls back to slow local generation.
         config.rivers.grid_resolution = WEB_DEFAULT_RIVER_GRID_RESOLUTION;
+        config.heightmap.low_freq_field_resolution = WEB_DEFAULT_HEIGHT_FIELD_RESOLUTION;
     }
     let herbarium = Herbarium::load(&*storage);
     let registry = Arc::new(PlantRegistry::from_herbarium(&herbarium));

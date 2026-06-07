@@ -85,6 +85,16 @@ struct WorldGenJob {
     _handle: std::thread::JoinHandle<()>,
 }
 
+/// State of the base-world snapshot download kicked off at launch.
+#[cfg(target_arch = "wasm32")]
+enum BasePrefetch {
+    /// The fetch is still running.
+    InFlight,
+    /// The fetch finished; `None` means it failed (a New Game falls back to local
+    /// generation). The bytes are kept (not taken) so a loading retry reuses them.
+    Ready(Option<Vec<u8>>),
+}
+
 pub struct AppState {
     window: &'static Window,
     gpu: GpuContext,
@@ -176,6 +186,15 @@ pub struct AppState {
     /// animating during the download.
     #[cfg(target_arch = "wasm32")]
     wasm_world_job: Option<std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<WorldRuntime>>>>>,
+    /// Live build fraction (`0.0..=1.0`) written by the cooperative web world
+    /// build and read each frame to drive the loading bar.
+    #[cfg(target_arch = "wasm32")]
+    wasm_world_progress: Option<std::rc::Rc<std::cell::Cell<f32>>>,
+    /// Base-world snapshot download started at launch (while the player is on the
+    /// start menu) so a New Game can consume it immediately instead of waiting on
+    /// the network. Persists for the app's lifetime and survives loading retries.
+    #[cfg(target_arch = "wasm32")]
+    wasm_base_prefetch: Option<std::rc::Rc<std::cell::RefCell<BasePrefetch>>>,
     thumbnail_renderer: Option<ThumbnailRenderer>,
     blur_pass: BlurPass,
     blur_capture_pending: bool,
@@ -355,6 +374,22 @@ impl AppState {
             gpu.config.height,
         );
 
+        // Start downloading the base-world snapshot now, overlapping the network
+        // with the time the player spends on the start menu, so clicking New Game
+        // consumes the bytes immediately instead of waiting on the fetch. The
+        // download is the same file regardless of `gen_key` (the query is only
+        // cache-busting); the snapshot is validated against the live key later.
+        let wasm_base_prefetch = {
+            let gen_key = herbarium.generation_key(&config);
+            let slot = std::rc::Rc::new(std::cell::RefCell::new(BasePrefetch::InFlight));
+            let slot_for_task = std::rc::Rc::clone(&slot);
+            wasm_bindgen_futures::spawn_local(async move {
+                let bytes = crate::world_core::storage::fetch_base_world_async(gen_key).await;
+                *slot_for_task.borrow_mut() = BasePrefetch::Ready(bytes);
+            });
+            Some(slot)
+        };
+
         Ok(Self {
             window,
             gpu,
@@ -394,6 +429,8 @@ impl AppState {
             world_map_tex: None,
             map_open: false,
             wasm_world_job: None,
+            wasm_world_progress: None,
+            wasm_base_prefetch,
             thumbnail_renderer: None,
             blur_pass,
             blur_capture_pending: false,
@@ -624,6 +661,7 @@ impl AppState {
         #[cfg(target_arch = "wasm32")]
         {
             self.wasm_world_job = None;
+            self.wasm_world_progress = None;
         }
     }
 
@@ -924,10 +962,11 @@ impl AppState {
         #[cfg(target_arch = "wasm32")]
         {
             // No threads on wasm. First entry: spawn an async task that downloads
-            // the prebuilt base snapshot (yielding to the browser so the loading
-            // screen keeps animating) and then builds the world. A validated
-            // download skips the multi-minute single-threaded generation; a miss
-            // still falls back to it (blocking, as before).
+            // the prebuilt base snapshot, then builds the world a step at a time,
+            // yielding to the browser between steps so the loading screen keeps
+            // animating instead of freezing during the decode + rebuild. A
+            // validated download skips the multi-minute single-threaded
+            // generation; a miss still falls back to it.
             if self.wasm_world_job.is_none() {
                 let registry = self.loading_registry.take().unwrap_or_else(|| {
                     std::sync::Arc::new(
@@ -939,42 +978,83 @@ impl AppState {
                 let config = self.config.clone();
                 let save = if resume { self.save.clone() } else { None };
                 let gen_key = self.herbarium.generation_key(&self.config);
+                let prefetch = self.wasm_base_prefetch.clone();
                 let slot: std::rc::Rc<std::cell::RefCell<Option<anyhow::Result<WorldRuntime>>>> =
                     std::rc::Rc::new(std::cell::RefCell::new(None));
+                let progress = std::rc::Rc::new(std::cell::Cell::new(0.0f32));
                 // The task holds only a Weak ref so leaving the loading screen
-                // (`abort_loading` drops `wasm_world_job`) lets us cancel before
-                // the expensive build.
+                // (`abort_loading` drops `wasm_world_job`) lets us cancel between
+                // build steps.
                 let weak = std::rc::Rc::downgrade(&slot);
+                let progress_for_task = std::rc::Rc::clone(&progress);
                 self.wasm_world_job = Some(slot);
+                self.wasm_world_progress = Some(progress);
                 self.loading_started = Some(Instant::now());
 
                 wasm_bindgen_futures::spawn_local(async move {
                     // Only a New Game downloads the base; a resume rebuilds from
                     // its own seed without it (matching the native path).
                     let base_bytes = if save.is_none() {
-                        crate::world_core::storage::fetch_base_world_async(gen_key).await
+                        // Consume the launch-time prefetch, cloning so a loading
+                        // retry can reuse it. If it's still in flight, yield until
+                        // it lands (the loading screen keeps animating). With no
+                        // prefetch slot, fetch inline as a fallback.
+                        match prefetch {
+                            Some(slot) => loop {
+                                if let BasePrefetch::Ready(bytes) = &*slot.borrow() {
+                                    break bytes.clone();
+                                }
+                                yield_to_browser().await;
+                            },
+                            None => {
+                                crate::world_core::storage::fetch_base_world_async(gen_key).await
+                            }
+                        }
                     } else {
                         None
                     };
-                    // If the user left the loading screen during the download the
-                    // slot is gone — bail before the blocking build/generation so
-                    // we don't freeze the UI for a result nobody will read.
-                    let Some(slot) = weak.upgrade() else {
-                        return;
-                    };
-                    let result = WorldRuntime::new_web(
+                    let mut builder = crate::world_runtime::WebWorldBuilder::new(
                         &config,
                         save.as_ref(),
                         registry,
                         base_bytes,
                         gen_key,
                     );
-                    *slot.borrow_mut() = Some(result);
+                    loop {
+                        // Re-acquire the slot each step so leaving the loading
+                        // screen (which drops the only other strong ref) cancels
+                        // the build before the next step runs.
+                        let Some(slot) = weak.upgrade() else {
+                            return;
+                        };
+                        match builder.step() {
+                            Ok(crate::world_runtime::BuildStep::Done(world)) => {
+                                *slot.borrow_mut() = Some(Ok(*world));
+                                return;
+                            }
+                            Ok(crate::world_runtime::BuildStep::Working(frac)) => {
+                                progress_for_task.set(frac);
+                                // Drop the strong ref before yielding so a cancel
+                                // mid-yield isn't blocked by us holding it.
+                                drop(slot);
+                                yield_to_browser().await;
+                            }
+                            Err(err) => {
+                                *slot.borrow_mut() = Some(Err(err));
+                                return;
+                            }
+                        }
+                    }
                 });
                 return;
             }
 
-            // Subsequent frames: poll the slot without blocking.
+            // Subsequent frames: drive the loading bar from the live build
+            // fraction (CreateWorld owns the 0.15..0.30 band), then poll the slot
+            // for the finished runtime without blocking.
+            if let (Some(p), Some(s)) = (&self.wasm_world_progress, &mut self.loading_state) {
+                s.progress = 0.15 + p.get() * 0.15;
+            }
             let done = self
                 .wasm_world_job
                 .as_ref()
@@ -983,6 +1063,7 @@ impl AppState {
                 Some(Ok(world)) => {
                     self.world = Some(world);
                     self.wasm_world_job = None;
+                    self.wasm_world_progress = None;
                     if let Some(s) = &mut self.loading_state {
                         s.phase = LoadingPhase::DispatchChunks;
                         s.progress = 0.30;
@@ -1074,6 +1155,7 @@ impl AppState {
         #[cfg(target_arch = "wasm32")]
         {
             self.wasm_world_job = None;
+            self.wasm_world_progress = None;
         }
     }
 
@@ -2367,4 +2449,18 @@ fn clamp_camera_to_terrain(
     if camera.position.y < min_y {
         camera.position.y = min_y;
     }
+}
+
+/// Yield control back to the browser for one turn so it can paint a frame (and
+/// run the winit redraw) before the caller resumes. Uses `setTimeout(0)` — a
+/// macrotask boundary — because a microtask yield (an already-resolved promise)
+/// would not let the browser render between steps.
+#[cfg(target_arch = "wasm32")]
+async fn yield_to_browser() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(win) = web_sys::window() {
+            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
