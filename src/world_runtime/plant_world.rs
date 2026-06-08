@@ -802,55 +802,30 @@ impl PlantWorld {
         let mut biome = Vec::with_capacity(total);
         let mut cell_bytes = Vec::with_capacity(total);
         for _ in 0..total {
-            let biome_code = meta_cur.read_u8()?;
-            let cell = meta_cur.read_u8()?;
-            let count = meta_cur.read_u32()? as usize;
-            // Each plant consumes at least one varint byte from `pos` and exactly
-            // three from `attr`; bound `count` by both before reserving so a
-            // corrupted length can't trigger a huge allocation ahead of EOF. Also
-            // cap by the number of distinct Morton cells — a 256 m chunk on the
-            // 10-bit grid can't hold more, and base plants are metres apart, so
-            // this never rejects real data but stops a crafted count from driving
-            // a multi-gigabyte `with_capacity`.
-            if count > MORTON_CELLS
-                || count > pos_cur.remaining()
-                || count.saturating_mul(3) > attr_cur.remaining()
-            {
-                anyhow::bail!("declared {count} plants exceed the section data");
-            }
-            let mut plants = Vec::with_capacity(count);
-            let mut prev = 0u32;
-            for _ in 0..count {
-                let delta = read_varint(&mut pos_cur)?;
-                let code = prev
-                    .checked_add(delta)
-                    .ok_or_else(|| anyhow::anyhow!("position code overflow"))?;
-                prev = code;
-                // `unmorton10` only reads the low `2*POS_BITS` bits, so reject any
-                // out-of-range code rather than silently wrapping it to a bogus
-                // in-range position.
-                if code as usize >= MORTON_CELLS {
-                    anyhow::bail!("position code {code} out of range");
-                }
-                let (x10, z10) = unmorton10(code);
-                let h8 = attr_cur.read_u8()?;
-                let r8 = attr_cur.read_u8()?;
-                let species = attr_cur.read_u8()?;
-                plants.push(Plant {
-                    local_x: x10 << POS_SHIFT,
-                    local_z: z10 << POS_SHIFT,
-                    height: unpack_height(h8),
-                    rotation: (r8 as u16) << 8,
-                    species,
-                    stage: MATURE,
-                    born_hour: 0.0,
-                });
-            }
+            let (plants, b, cell) = parse_base_chunk(&mut meta_cur, &mut pos_cur, &mut attr_cur)?;
             chunks.push(plants);
-            biome.push(biome_from_slot(biome_code));
+            biome.push(b);
             cell_bytes.push(cell);
         }
 
+        Ok(Self::assemble_base(
+            chunks, biome, cell_bytes, seed, config, registry, rivers,
+        ))
+    }
+
+    /// Assemble a world from the per-chunk lists decoded from a base snapshot,
+    /// rebuilding the derived indices (immature/base counts, totals, biome fill).
+    /// Shared by the one-shot [`read_base`] and the incremental [`BaseLoader`] so
+    /// both produce an identical world.
+    fn assemble_base(
+        chunks: Vec<Vec<Plant>>,
+        biome: Vec<Biome>,
+        cell_bytes: Vec<u8>,
+        seed: u32,
+        config: &GameConfig,
+        registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
+    ) -> Self {
         let population = chunks.iter().map(Vec::len).sum();
         let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
         let immature = chunks
@@ -879,8 +854,63 @@ impl PlantWorld {
             biome_fill: Vec::new(),
         };
         world.recompute_biome_fill();
-        Ok(world)
+        world
     }
+}
+
+/// Decode one chunk's record from the three section cursors, walked in lockstep:
+/// `meta` carries biome/cell/count, `pos` the Morton-delta positions, `attr` the
+/// packed height/rotation/species. Shared by the one-shot [`PlantWorld::read_base`]
+/// and the incremental [`BaseLoader`] so they reconstruct plants identically.
+fn parse_base_chunk(
+    meta_cur: &mut Cursor<'_>,
+    pos_cur: &mut Cursor<'_>,
+    attr_cur: &mut Cursor<'_>,
+) -> anyhow::Result<(Vec<Plant>, Biome, u8)> {
+    let biome_code = meta_cur.read_u8()?;
+    let cell = meta_cur.read_u8()?;
+    let count = meta_cur.read_u32()? as usize;
+    // Each plant consumes at least one varint byte from `pos` and exactly three
+    // from `attr`; bound `count` by both before reserving so a corrupted length
+    // can't trigger a huge allocation ahead of EOF. Also cap by the number of
+    // distinct Morton cells — a 256 m chunk on the 10-bit grid can't hold more,
+    // and base plants are metres apart, so this never rejects real data but stops
+    // a crafted count from driving a multi-gigabyte `with_capacity`.
+    if count > MORTON_CELLS
+        || count > pos_cur.remaining()
+        || count.saturating_mul(3) > attr_cur.remaining()
+    {
+        anyhow::bail!("declared {count} plants exceed the section data");
+    }
+    let mut plants = Vec::with_capacity(count);
+    let mut prev = 0u32;
+    for _ in 0..count {
+        let delta = read_varint(pos_cur)?;
+        let code = prev
+            .checked_add(delta)
+            .ok_or_else(|| anyhow::anyhow!("position code overflow"))?;
+        prev = code;
+        // `unmorton10` only reads the low `2*POS_BITS` bits, so reject any
+        // out-of-range code rather than silently wrapping it to a bogus
+        // in-range position.
+        if code as usize >= MORTON_CELLS {
+            anyhow::bail!("position code {code} out of range");
+        }
+        let (x10, z10) = unmorton10(code);
+        let h8 = attr_cur.read_u8()?;
+        let r8 = attr_cur.read_u8()?;
+        let species = attr_cur.read_u8()?;
+        plants.push(Plant {
+            local_x: x10 << POS_SHIFT,
+            local_z: z10 << POS_SHIFT,
+            height: unpack_height(h8),
+            rotation: (r8 as u16) << 8,
+            species,
+            stage: MATURE,
+            born_hour: 0.0,
+        });
+    }
+    Ok((plants, biome_from_slot(biome_code), cell))
 }
 
 /// True when chunk `idx` and all eight of its (wrapped) neighbours are saturated,
@@ -1387,6 +1417,275 @@ fn read_section(cur: &mut Cursor<'_>) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Read one section frame's lengths and hand back its compressed bytes (owned)
+/// plus the declared decompressed length, advancing past the frame. Same framing
+/// as [`read_section`] but it defers decompression to [`SectionDecoder`] so the
+/// incremental [`BaseLoader`] can spread the decode over several event-loop turns.
+#[cfg(any(target_arch = "wasm32", test))]
+fn take_section_frame(cur: &mut Cursor<'_>) -> anyhow::Result<(Vec<u8>, usize)> {
+    let uncomp_len = cur.read_u32()? as usize;
+    let comp_len = cur.read_u32()? as usize;
+    if uncomp_len > BASE_SECTION_MAX_BYTES {
+        anyhow::bail!("section length {uncomp_len} exceeds {BASE_SECTION_MAX_BYTES}");
+    }
+    if comp_len > cur.remaining() {
+        anyhow::bail!("compressed section {comp_len} exceeds remaining data");
+    }
+    Ok((cur.take(comp_len)?.to_vec(), uncomp_len))
+}
+
+/// Brotli-decompresses one section a bounded number of bytes at a time, so a large
+/// section can be decoded across several [`BaseLoader::step`] calls instead of one
+/// blocking burst (the web build has no worker thread to absorb it).
+#[cfg(any(target_arch = "wasm32", test))]
+struct SectionDecoder {
+    inner: brotli::Decompressor<std::io::Cursor<Vec<u8>>>,
+    out: Vec<u8>,
+    declared: usize,
+}
+
+/// Upper bound on the output buffer pre-reserved from a section's declared length.
+/// Reserving the known size up front avoids repeated reallocations as the decode
+/// grows, but the cap keeps a corrupt or hostile `declared` (up to
+/// [`BASE_SECTION_MAX_BYTES`]) from forcing a huge allocation before any bytes are
+/// validated — real sections are well under this.
+#[cfg(any(target_arch = "wasm32", test))]
+const SECTION_DECODE_RESERVE_CAP: usize = 64 * 1024 * 1024;
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl SectionDecoder {
+    fn new(comp: Vec<u8>, declared: usize) -> Self {
+        Self {
+            inner: brotli::Decompressor::new(std::io::Cursor::new(comp), 4096),
+            out: Vec::with_capacity(declared.min(SECTION_DECODE_RESERVE_CAP)),
+            declared,
+        }
+    }
+
+    /// Fraction of this section decoded so far, `0.0..=1.0`, for smooth progress.
+    fn fraction(&self) -> f32 {
+        if self.declared == 0 {
+            1.0
+        } else {
+            self.out.len() as f32 / self.declared as f32
+        }
+    }
+
+    /// Decode up to `budget` more bytes. Returns `Ok(true)` once the whole section
+    /// is decoded and its length validated against the declared size; the same
+    /// over-/under-run checks as [`read_section`], applied incrementally.
+    fn step(&mut self, budget: usize) -> anyhow::Result<bool> {
+        use std::io::Read;
+        let mut chunk = [0u8; 64 * 1024];
+        let mut produced = 0usize;
+        while produced < budget {
+            let n = self.inner.read(&mut chunk)?;
+            if n == 0 {
+                if self.out.len() != self.declared {
+                    anyhow::bail!(
+                        "section length mismatch: decoded {} want {}",
+                        self.out.len(),
+                        self.declared
+                    );
+                }
+                return Ok(true);
+            }
+            if self.out.len() + n > self.declared {
+                anyhow::bail!("decompressed section exceeds declared length");
+            }
+            self.out.extend_from_slice(&chunk[..n]);
+            produced += n;
+        }
+        Ok(false)
+    }
+}
+
+/// One unit of progress from [`BaseLoader::step`]. The finished world is boxed so
+/// the common `Working` value stays small (the load returns one per step).
+#[cfg(any(target_arch = "wasm32", test))]
+pub enum LoadStep {
+    /// Still working; `0.0..=1.0` is the fraction of the load completed.
+    Working(f32),
+    /// The world is fully reconstructed.
+    Done(Box<PlantWorld>),
+}
+
+/// Resumable loader for a base-world snapshot. Construction validates the header,
+/// rejecting a stale or foreign snapshot exactly like
+/// [`PlantWorld::from_base_snapshot`]; [`step`](Self::step) then decodes the three
+/// Brotli sections and rebuilds the per-chunk plants a bounded amount at a time.
+///
+/// Native loads stay one-shot on a worker thread via
+/// [`PlantWorld::from_base_snapshot`]. This incremental path exists for the web
+/// build, which has no worker thread: stepping it from the async loader and
+/// yielding to the browser between steps keeps the loading screen animating
+/// instead of freezing the tab for the whole decode-and-rebuild.
+#[cfg(any(target_arch = "wasm32", test))]
+pub struct BaseLoader {
+    seed: u32,
+    config: GameConfig,
+    registry: Arc<PlantRegistry>,
+    rivers: Arc<RiverField>,
+    total: usize,
+    /// Compressed sections still to decode, in order: meta, pos, attr.
+    pending: std::collections::VecDeque<(Vec<u8>, usize)>,
+    current: Option<SectionDecoder>,
+    /// Decoded sections, accumulated in the same meta/pos/attr order.
+    decoded: Vec<Vec<u8>>,
+    rebuild: Option<RebuildState>,
+}
+
+/// Cursor offsets and accumulating output for the per-chunk rebuild phase.
+#[cfg(any(target_arch = "wasm32", test))]
+struct RebuildState {
+    meta_off: usize,
+    pos_off: usize,
+    attr_off: usize,
+    next_chunk: usize,
+    chunks: Vec<Vec<Plant>>,
+    biome: Vec<Biome>,
+    cell_bytes: Vec<u8>,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl BaseLoader {
+    /// Bytes decoded per [`step`](Self::step) during the decode phase.
+    const DECODE_BUDGET: usize = 4 * 1024 * 1024;
+    /// Chunks rebuilt per [`step`](Self::step) during the rebuild phase.
+    const REBUILD_BATCH: usize = 1024;
+
+    /// Validate the header and stage the three compressed sections. Returns `Err`
+    /// on a bad/foreign/corrupt header (caller falls back to local generation),
+    /// matching [`PlantWorld::from_base_snapshot`]'s reject-and-regenerate path.
+    pub fn new(
+        bytes: &[u8],
+        gen_key: u64,
+        expected_seed: u32,
+        config: &GameConfig,
+        registry: Arc<PlantRegistry>,
+        rivers: Arc<RiverField>,
+    ) -> anyhow::Result<Self> {
+        let mut cur = Cursor::new(bytes);
+        if cur.read_u32()? != BASE_MAGIC {
+            anyhow::bail!("bad magic");
+        }
+        if cur.read_u32()? != BASE_VERSION {
+            anyhow::bail!("unsupported version");
+        }
+        let key = cur.read_u64()?;
+        if key != gen_key {
+            anyhow::bail!("generation key {key:#018x} does not match {gen_key:#018x}");
+        }
+        let seed = cur.read_u32()?;
+        if seed != expected_seed {
+            anyhow::bail!("seed {seed} does not match world seed {expected_seed}");
+        }
+        let n = cur.read_u32()?;
+        if n != WORLD_SIZE_CHUNKS as u32 {
+            anyhow::bail!("world size {n} does not match {WORLD_SIZE_CHUNKS}");
+        }
+        let pos_bits = cur.read_u8()?;
+        if pos_bits as u32 != POS_BITS {
+            anyhow::bail!("position precision {pos_bits} does not match {POS_BITS}");
+        }
+        cur.skip(3)?; // reserved
+        let total = (n as usize) * (n as usize);
+
+        let mut pending = std::collections::VecDeque::with_capacity(3);
+        pending.push_back(take_section_frame(&mut cur)?); // meta
+        pending.push_back(take_section_frame(&mut cur)?); // pos
+        pending.push_back(take_section_frame(&mut cur)?); // attr
+
+        Ok(Self {
+            seed,
+            config: config.clone(),
+            registry,
+            rivers,
+            total,
+            pending,
+            current: None,
+            decoded: Vec::with_capacity(3),
+            rebuild: None,
+        })
+    }
+
+    /// Advance the load by a bounded amount of work and report progress. The
+    /// decode phase owns the first half of the fraction, the rebuild the second.
+    pub fn step(&mut self) -> anyhow::Result<LoadStep> {
+        // Phase 1: decode the three sections, one bounded slice per call.
+        if self.decoded.len() < 3 {
+            if self.current.is_none() {
+                let (comp, declared) = self.pending.pop_front().expect("pending section");
+                self.current = Some(SectionDecoder::new(comp, declared));
+            }
+            // Fold the in-flight section's own progress into the fraction so the
+            // bar still moves on a section that takes several steps to decode.
+            let partial = if self.current.as_mut().unwrap().step(Self::DECODE_BUDGET)? {
+                self.decoded.push(self.current.take().unwrap().out);
+                0.0
+            } else {
+                self.current.as_ref().unwrap().fraction()
+            };
+            // The three sections span the first half of the bar (each ~1/6).
+            return Ok(LoadStep::Working(
+                (self.decoded.len() as f32 + partial) / 6.0,
+            ));
+        }
+
+        // Phase 2: rebuild chunks in batches. Own the state for the call so the
+        // section borrows below don't collide with the `Option` field.
+        let total = self.total;
+        let mut rb = self.rebuild.take().unwrap_or_else(|| RebuildState {
+            meta_off: 0,
+            pos_off: 0,
+            attr_off: 0,
+            next_chunk: 0,
+            chunks: Vec::with_capacity(total),
+            biome: Vec::with_capacity(total),
+            cell_bytes: Vec::with_capacity(total),
+        });
+        let mut meta_cur = Cursor {
+            buf: &self.decoded[0],
+            pos: rb.meta_off,
+        };
+        let mut pos_cur = Cursor {
+            buf: &self.decoded[1],
+            pos: rb.pos_off,
+        };
+        let mut attr_cur = Cursor {
+            buf: &self.decoded[2],
+            pos: rb.attr_off,
+        };
+        let end = (rb.next_chunk + Self::REBUILD_BATCH).min(total);
+        for _ in rb.next_chunk..end {
+            let (plants, b, cell) = parse_base_chunk(&mut meta_cur, &mut pos_cur, &mut attr_cur)?;
+            rb.chunks.push(plants);
+            rb.biome.push(b);
+            rb.cell_bytes.push(cell);
+        }
+        rb.meta_off = meta_cur.pos;
+        rb.pos_off = pos_cur.pos;
+        rb.attr_off = attr_cur.pos;
+        rb.next_chunk = end;
+
+        if rb.next_chunk >= total {
+            let world = PlantWorld::assemble_base(
+                rb.chunks,
+                rb.biome,
+                rb.cell_bytes,
+                self.seed,
+                &self.config,
+                Arc::clone(&self.registry),
+                Arc::clone(&self.rivers),
+            );
+            return Ok(LoadStep::Done(Box::new(world)));
+        }
+        let frac = 0.5 + 0.5 * (rb.next_chunk as f32 / total.max(1) as f32);
+        self.rebuild = Some(rb);
+        Ok(LoadStep::Working(frac))
+    }
+}
+
 fn write_plant(buf: &mut Vec<u8>, p: &Plant) {
     buf.extend_from_slice(&p.local_x.to_le_bytes());
     buf.extend_from_slice(&p.local_z.to_le_bytes());
@@ -1687,6 +1986,89 @@ mod tests {
                 "a different seed must invalidate the cache"
             );
         }
+    }
+
+    #[test]
+    fn incremental_base_loader_matches_one_shot() {
+        let reg = registry();
+        let total = (WORLD_SIZE_CHUNKS as usize) * (WORLD_SIZE_CHUNKS as usize);
+        let mut chunks = vec![Vec::new(); total];
+        chunks[5].push(grid_plant(10.0, 50.0, 0));
+        chunks[5].push(grid_plant(20.0, 80.0, 3));
+        chunks[42].push(grid_plant(33.0, 12.0, 2));
+        chunks[total - 1].push(grid_plant(10.0, 50.0, 1));
+        for c in &mut chunks {
+            sort_chunk_canonical(c);
+        }
+        let world = test_world(chunks, Arc::clone(&reg));
+        let config = GameConfig::default();
+        let gen_key = 0x0011_2233_4455_6677u64;
+
+        // Brotli decode is quality-agnostic, so both shipped qualities must drive
+        // the incremental loader to the same world the one-shot path produces.
+        for quality in [PlantWorld::LOCAL_QUALITY, PlantWorld::DOWNLOAD_QUALITY] {
+            let bytes = world.serialize_base(gen_key, quality);
+            let one_shot = PlantWorld::from_base_snapshot(
+                &bytes,
+                gen_key,
+                world.seed,
+                &config,
+                Arc::clone(&reg),
+                Arc::new(RiverField::empty()),
+            )
+            .expect("one-shot load");
+
+            let mut loader = BaseLoader::new(
+                &bytes,
+                gen_key,
+                world.seed,
+                &config,
+                Arc::clone(&reg),
+                Arc::new(RiverField::empty()),
+            )
+            .expect("incremental loader header validates");
+            let mut steps = 0;
+            let incremental = loop {
+                steps += 1;
+                match loader.step().expect("incremental step") {
+                    LoadStep::Working(frac) => assert!((0.0..=1.0).contains(&frac)),
+                    LoadStep::Done(world) => break world,
+                }
+            };
+            // A full-size world spans far more than one rebuild batch, so the load
+            // must genuinely span several steps (that's the whole point — it yields).
+            assert!(steps > 3, "expected a multi-step load, took {steps}");
+
+            assert_eq!(incremental.population(), one_shot.population());
+            assert_eq!(incremental.populated_chunks(), one_shot.populated_chunks());
+            assert_eq!(incremental.chunks, one_shot.chunks);
+            assert_eq!(incremental.biome, one_shot.biome);
+            assert_eq!(incremental.cell_bytes, one_shot.cell_bytes);
+            assert_eq!(incremental.base_count, one_shot.base_count);
+            assert_eq!(incremental.immature, one_shot.immature);
+        }
+
+        // A mismatched generation key or seed is rejected at construction, exactly
+        // like [`PlantWorld::from_base_snapshot`].
+        let bytes = world.serialize_base(gen_key, PlantWorld::LOCAL_QUALITY);
+        assert!(BaseLoader::new(
+            &bytes,
+            gen_key ^ 1,
+            world.seed,
+            &config,
+            registry(),
+            Arc::new(RiverField::empty()),
+        )
+        .is_err());
+        assert!(BaseLoader::new(
+            &bytes,
+            gen_key,
+            world.seed + 1,
+            &config,
+            registry(),
+            Arc::new(RiverField::empty()),
+        )
+        .is_err());
     }
 
     #[test]

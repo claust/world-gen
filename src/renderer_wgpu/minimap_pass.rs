@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::IVec2;
 use wgpu::util::DeviceExt;
 
-use super::hud_font::HudVertex;
+use super::hud_font::{HudVertex, SDF_PLAIN};
 use super::minimap_colors::biome_color_rgba;
 use super::pipeline::DEPTH_FORMAT;
 use crate::world_core::chunk::{ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
@@ -510,31 +510,37 @@ fn push_solid_quad(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, c
             position: tl,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: tr,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: bl,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: bl,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: tr,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: br,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
     ]);
 }
@@ -561,31 +567,37 @@ fn push_textured_quad_uv(
             position: tl,
             uv: [uv_min[0], uv_min[1]],
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: tr,
             uv: [uv_max[0], uv_min[1]],
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: bl,
             uv: [uv_min[0], uv_max[1]],
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: bl,
             uv: [uv_min[0], uv_max[1]],
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: tr,
             uv: [uv_max[0], uv_min[1]],
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: br,
             uv: [uv_max[0], uv_max[1]],
             color,
+            sdf: SDF_PLAIN,
         },
     ]);
 }
@@ -603,16 +615,19 @@ fn push_solid_tri(
             position: a,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: b,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
         HudVertex {
             position: c,
             uv: NO_UV,
             color,
+            sdf: SDF_PLAIN,
         },
     ]);
 }

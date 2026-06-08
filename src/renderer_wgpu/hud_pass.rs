@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use wgpu::util::DeviceExt;
 
-use super::hud_font::{self, HudVertex, MsdfFont};
+use super::hud_font::{self, HudVertex, MsdfFont, SDF_PLAIN};
 use super::pipeline::DEPTH_FORMAT;
 
 #[repr(C)]
@@ -330,22 +330,95 @@ impl HudPass {
 /// Sentinel UV marking a vertex as solid-color (no texture sampling).
 const NO_UV: [f32; 2] = [-1.0, -1.0];
 
+// SDF shape ids carried in `HudVertex.sdf[0]`; the shader reconstructs each shape from
+// the vertex's normalized local coordinate (in `uv`) and feathers the edge to ~1px.
+// `sdf[0] == 0` ([`SDF_PLAIN`]) means an ordinary solid/text vertex. Must match `hud.wgsl`.
+/// Filled rhombus, boundary `|x| + |y| = 1`.
+const SDF_DIAMOND: f32 = 1.0;
+/// Filled rhombus that also fades in across the E–W seam (`y = 0`), so an overlaid
+/// half cross-fades against the layer below instead of stepping. `sdf[1]` unused.
+const SDF_DIAMOND_SEAM: f32 = 2.0;
+/// Filled disc, boundary `|p| = 1`.
+const SDF_DISC: f32 = 3.0;
+/// Annulus: kept where `inner <= |p| <= 1`, with `sdf[1]` the inner radius (normalized).
+const SDF_RING: f32 = 4.0;
+/// Filled box, boundary `max(|x|, |y|) = 1` (used for the thin sun-ray spokes).
+const SDF_BOX: f32 = 5.0;
+
 fn push_tri(verts: &mut Vec<HudVertex>, a: [f32; 2], b: [f32; 2], c: [f32; 2], color: [f32; 4]) {
     verts.push(HudVertex {
         position: a,
         uv: NO_UV,
         color,
+        sdf: SDF_PLAIN,
     });
     verts.push(HudVertex {
         position: b,
         uv: NO_UV,
         color,
+        sdf: SDF_PLAIN,
     });
     verts.push(HudVertex {
         position: c,
         uv: NO_UV,
         color,
+        sdf: SDF_PLAIN,
     });
+}
+
+/// Appends an anti-aliased SDF primitive as a rotated screen-space quad.
+///
+/// The quad is centered at `(cx, cy)` and oriented by `(cos_t, sin_t)` (its local
+/// x-axis maps to `(cos_t, sin_t)`). `hw`/`hh` are the shape's half-extents in pixels
+/// along its local x/y axes; `margin` pixels of headroom are added on every side so the
+/// fragment shader has room to feather the edge. Each vertex carries its normalized
+/// local coordinate in `uv` (shape edge at `|coord| = 1`) and `[shape, param]` in `sdf`,
+/// from which `hud.wgsl` evaluates the matching signed distance field.
+#[allow(clippy::too_many_arguments)]
+fn push_sdf_quad(
+    verts: &mut Vec<HudVertex>,
+    cx: f32,
+    cy: f32,
+    cos_t: f32,
+    sin_t: f32,
+    hw: f32,
+    hh: f32,
+    margin: f32,
+    shape: f32,
+    param: f32,
+    color: [f32; 4],
+) {
+    let ext_x = 1.0 + margin / hw;
+    let ext_y = 1.0 + margin / hh;
+    let corner = |nx: f32, ny: f32| {
+        let sx = nx * hw;
+        let sy = ny * hh;
+        HudVertex {
+            position: [cx + sx * cos_t - sy * sin_t, cy + sx * sin_t + sy * cos_t],
+            uv: [nx, ny],
+            color,
+            sdf: [shape, param],
+        }
+    };
+    let tl = corner(-ext_x, -ext_y);
+    let tr = corner(ext_x, -ext_y);
+    let br = corner(ext_x, ext_y);
+    let bl = corner(-ext_x, ext_y);
+    verts.extend_from_slice(&[tl, tr, br, tl, br, bl]);
+}
+
+/// Convenience for a non-rotated, axis-aligned circular SDF primitive (disc/ring)
+/// of radius `r` centered at `(cx, cy)`.
+fn push_sdf_circle(
+    verts: &mut Vec<HudVertex>,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    shape: f32,
+    param: f32,
+    color: [f32; 4],
+) {
+    push_sdf_quad(verts, cx, cy, 1.0, 0.0, r, r, 1.5, shape, param, color);
 }
 
 fn format_compact_count(count: usize) -> String {
@@ -401,21 +474,42 @@ fn build_compass(font: &MsdfFont, verts: &mut Vec<HudVertex>, yaw: f32, screen_w
         [cx + rx, cy + ry]
     };
 
-    // Diamond corners: north(0), east(π/2), south(π), west(3π/2)
-    let n = rot(0.0, radius);
-    let e = rot(std::f32::consts::FRAC_PI_2, radius);
-    let s = rot(std::f32::consts::PI, radius);
-    let w = rot(3.0 * std::f32::consts::FRAC_PI_2, radius);
-    let center = [cx, cy];
-
     let north_color = [0.9, 0.15, 0.1, 0.9]; // bright red
     let south_color = [0.35, 0.1, 0.08, 0.9]; // dark
 
-    // 4 triangles forming diamond
-    push_tri(verts, center, w, n, north_color);
-    push_tri(verts, center, n, e, north_color);
-    push_tri(verts, center, e, s, south_color);
-    push_tri(verts, center, s, w, south_color);
+    // The diamond is two overlaid SDF quads (red, then brown on top), each feathering
+    // the rhombus edge to ~1px in the shader — replacing a hard-edged triangle fan that
+    // aliased against the scene. The brown layer fades in across the E–W seam (local
+    // y = 0) so the red/brown divider is anti-aliased too, cross-fading over the red
+    // layer rather than letting the background bleed through. Local x maps to screen via
+    // (cos_y, sin_y), so the diamond's local +x is the east point and -y is north.
+    let margin = 1.5;
+    push_sdf_quad(
+        verts,
+        cx,
+        cy,
+        cos_y,
+        sin_y,
+        radius,
+        radius,
+        margin,
+        SDF_DIAMOND,
+        0.0,
+        north_color,
+    );
+    push_sdf_quad(
+        verts,
+        cx,
+        cy,
+        cos_y,
+        sin_y,
+        radius,
+        radius,
+        margin,
+        SDF_DIAMOND_SEAM,
+        0.0,
+        south_color,
+    );
 
     // Cardinal labels
     let label_color = [1.0, 1.0, 1.0, 0.95];
@@ -450,42 +544,26 @@ fn build_sky_clock(verts: &mut Vec<HudVertex>, hour: f32, screen_w: f32) {
     let cy = 150.0;
     let radius = 26.0;
     let ring_w = 1.5;
-    let segments: usize = 32;
 
     // --- Dark background disc for contrast ---
     let bg_r = radius + 6.0;
     let bg_color = [0.0, 0.0, 0.0, 0.35];
-    for i in 0..segments {
-        let a0 = (i as f32 / segments as f32) * TAU;
-        let a1 = ((i + 1) as f32 / segments as f32) * TAU;
-        push_tri(
-            verts,
-            [cx, cy],
-            [cx + a0.cos() * bg_r, cy + a0.sin() * bg_r],
-            [cx + a1.cos() * bg_r, cy + a1.sin() * bg_r],
-            bg_color,
-        );
-    }
+    push_sdf_circle(verts, cx, cy, bg_r, SDF_DISC, 0.0, bg_color);
 
-    // --- Circle ring ---
+    // --- Circle ring --- (annulus normalized to its outer radius; the shader keeps the
+    // band between the inner ratio and 1.0 and anti-aliases both edges)
     let inner_r = radius - ring_w;
     let outer_r = radius + ring_w;
     let ring_color = [0.8, 0.8, 0.8, 0.6];
-
-    for i in 0..segments {
-        let a0 = (i as f32 / segments as f32) * TAU;
-        let a1 = ((i + 1) as f32 / segments as f32) * TAU;
-        let (s0, c0) = (a0.sin(), a0.cos());
-        let (s1, c1) = (a1.sin(), a1.cos());
-
-        let pi = [cx + s0 * inner_r, cy - c0 * inner_r];
-        let po = [cx + s0 * outer_r, cy - c0 * outer_r];
-        let qi = [cx + s1 * inner_r, cy - c1 * inner_r];
-        let qo = [cx + s1 * outer_r, cy - c1 * outer_r];
-
-        push_tri(verts, pi, po, qo, ring_color);
-        push_tri(verts, pi, qo, qi, ring_color);
-    }
+    push_sdf_circle(
+        verts,
+        cx,
+        cy,
+        outer_r,
+        SDF_RING,
+        inner_r / outer_r,
+        ring_color,
+    );
 
     // --- Horizon line ---
     let horizon_color = [0.6, 0.6, 0.6, 0.35];
@@ -548,40 +626,39 @@ fn build_sky_clock(verts: &mut Vec<HudVertex>, hour: f32, screen_w: f32) {
     };
 
     let body_r = 6.0;
-    let body_segs: usize = 12;
-    for i in 0..body_segs {
-        let a0 = (i as f32 / body_segs as f32) * TAU;
-        let a1 = ((i + 1) as f32 / body_segs as f32) * TAU;
-        push_tri(
-            verts,
-            [bx, by],
-            [bx + a0.cos() * body_r, by + a0.sin() * body_r],
-            [bx + a1.cos() * body_r, by + a1.sin() * body_r],
-            body_color,
-        );
-    }
+    push_sdf_circle(verts, bx, by, body_r, SDF_DISC, 0.0, body_color);
 
-    // Sun rays (only when above horizon)
+    // Sun rays (only when above horizon): thin radial spokes, each an anti-aliased SDF
+    // box. The box's local x-axis is set perpendicular to the spoke so its half-extents
+    // are (width, length); it's centered at the spoke's midpoint out from the sun body.
     if is_sun {
         let ray_color = [1.0, 0.9, 0.3, 0.5];
         let ray_inner = body_r + 1.5;
         let ray_outer = body_r + 4.5;
         let ray_half_w = 0.6;
+        let ray_half_len = (ray_outer - ray_inner) * 0.5;
+        let ray_mid = (ray_inner + ray_outer) * 0.5;
         let ray_count = 8;
         for i in 0..ray_count {
             let a = (i as f32 / ray_count as f32) * TAU;
-            let rdx = a.cos();
-            let rdy = a.sin();
-            let rpx = -rdy * ray_half_w;
-            let rpy = rdx * ray_half_w;
-
-            let r0 = [bx + rdx * ray_inner + rpx, by + rdy * ray_inner + rpy];
-            let r1 = [bx + rdx * ray_inner - rpx, by + rdy * ray_inner - rpy];
-            let r2 = [bx + rdx * ray_outer + rpx, by + rdy * ray_outer + rpy];
-            let r3 = [bx + rdx * ray_outer - rpx, by + rdy * ray_outer - rpy];
-
-            push_tri(verts, r0, r2, r3, ray_color);
-            push_tri(verts, r0, r3, r1, ray_color);
+            let (rdy_dir, rdx_dir) = (a.sin(), a.cos());
+            // Spoke direction (rdx_dir, rdy_dir); local x-axis = perpendicular to it.
+            let (perp_x, perp_y) = (-rdy_dir, rdx_dir);
+            let mx = bx + rdx_dir * ray_mid;
+            let my = by + rdy_dir * ray_mid;
+            push_sdf_quad(
+                verts,
+                mx,
+                my,
+                perp_x,
+                perp_y,
+                ray_half_w,
+                ray_half_len,
+                1.0,
+                SDF_BOX,
+                0.0,
+                ray_color,
+            );
         }
     }
 }
