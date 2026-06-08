@@ -107,9 +107,13 @@ impl RiverField {
 
         // 3. Priority-flood: fill pits, build the drainage tree, accumulate area.
         //    `filled` is the depression-filled routing surface — the level water
-        //    would pool/flow to — which we keep as the river sheet's elevation.
-        let hy = compute_hydrology(&route, res, config.sea_level);
-        let surf = hy.filled.clone();
+        //    would pool/flow to — which we keep (moved, not copied) as the river
+        //    sheet's elevation `surf`.
+        let Hydrology {
+            accum,
+            receiver,
+            filled: surf,
+        } = compute_hydrology(&route, res, config.sea_level);
 
         // 4. Bake carve depth + wetness from upstream drainage area.
         let cell_area = (cell as f64) * (cell as f64);
@@ -134,7 +138,7 @@ impl RiverField {
             }
         };
         for i in 0..n2 {
-            let a = hy.accum[i];
+            let a = accum[i];
             if a <= threshold {
                 continue;
             }
@@ -145,7 +149,7 @@ impl RiverField {
             // Downstream direction: from this cell toward its receiver. World x
             // grows with the column index and world z with the row index, so the
             // grid step doubles as the world-space flow direction once normalized.
-            let r = hy.receiver[i];
+            let r = receiver[i];
             if r != u32::MAX {
                 let dx = wrap_step((r as usize % res) as i64, (i % res) as i64) as f32;
                 let dz = wrap_step((r as usize / res) as i64, (i / res) as i64) as f32;

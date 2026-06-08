@@ -99,7 +99,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     // Belt-and-braces: also drop anything outside the marked channel corridor.
-    if (input.wetness < 0.02) {
+    // Matches `RIVER_SURFACE_THRESHOLD` (world_core::chunk), the same cutoff the
+    // CPU uses to populate `river_flow`; keeping them equal means no vertex below
+    // it renders water with a zero (fallback-direction) flow vector.
+    if (input.wetness < 0.04) {
         discard;
     }
 
