@@ -81,7 +81,7 @@ impl Default for RiverConfig {
             smooth_radius: 2,
             smooth_iters: 2,
             min_drainage_area_m2: 150_000.0,
-            max_carve_depth: 14.0,
+            max_carve_depth: 20.0,
         }
     }
 }

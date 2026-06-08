@@ -47,6 +47,11 @@ pub struct RiverField {
     /// animation of the river water surface.
     flow_x: Vec<f32>,
     flow_z: Vec<f32>,
+    /// Per-cell water-routing surface elevation (the pit-filled hydrology field).
+    /// Sampled as the river water sheet's elevation (minus a freeboard), it is
+    /// smooth and locally flat across a channel, so the rendered surface reads as
+    /// level water rather than a sheet draped over the carved bed's V-section.
+    surf: Vec<f32>,
 }
 
 impl RiverField {
@@ -59,6 +64,7 @@ impl RiverField {
             wet: vec![0.0],
             flow_x: vec![0.0],
             flow_z: vec![0.0],
+            surf: vec![0.0],
         }
     }
 
@@ -100,7 +106,10 @@ impl RiverField {
         );
 
         // 3. Priority-flood: fill pits, build the drainage tree, accumulate area.
+        //    `filled` is the depression-filled routing surface — the level water
+        //    would pool/flow to — which we keep as the river sheet's elevation.
         let hy = compute_hydrology(&route, res, config.sea_level);
+        let surf = hy.filled.clone();
 
         // 4. Bake carve depth + wetness from upstream drainage area.
         let cell_area = (cell as f64) * (cell as f64);
@@ -166,14 +175,17 @@ impl RiverField {
             wet,
             flow_x,
             flow_z,
+            surf,
         }
     }
 
     /// Bilinearly sample the field at world `(x, z)` (wrapping toroidally).
-    /// Returns `(carve_depth_metres, wetness_0_1)`.
-    pub fn sample(&self, x: f32, z: f32) -> (f32, f32) {
+    /// Returns `(carve_depth_metres, wetness_0_1, water_surface_elevation_m)`.
+    /// The surface elevation is the smoothed routing surface; the caller drops a
+    /// freeboard off it to place the water sheet below the surrounding banks.
+    pub fn sample(&self, x: f32, z: f32) -> (f32, f32, f32) {
         if self.res <= 1 {
-            return (0.0, 0.0);
+            return (0.0, 0.0, 0.0);
         }
         let res = self.res;
         let cell = WORLD_SIZE_METERS as f32 / res as f32;
@@ -200,7 +212,7 @@ impl RiverField {
             let bot = c * (1.0 - tx) + d * tx;
             top * (1.0 - tz) + bot * tz
         };
-        (lerp(&self.carve), lerp(&self.wet))
+        (lerp(&self.carve), lerp(&self.wet), lerp(&self.surf))
     }
 
     /// Bilinearly sample the downstream flow direction at world `(x, z)`,
@@ -286,6 +298,9 @@ struct Hydrology {
     accum: Vec<f32>,
     /// Each cell's downhill receiver cell index (`u32::MAX` for outlets/ocean).
     receiver: Vec<u32>,
+    /// The routing surface with depressions filled to their pour level — the
+    /// elevation standing/flowing water would settle at, used as the river sheet.
+    filled: Vec<f32>,
 }
 
 const NB8: [(i64, i64); 8] = [
@@ -362,7 +377,11 @@ fn compute_hydrology(heights: &[f32], res: usize, sea_level: f32) -> Hydrology {
         }
     }
 
-    Hydrology { accum, receiver }
+    Hydrology {
+        accum,
+        receiver,
+        filled,
+    }
 }
 
 #[cfg(test)]
@@ -378,10 +397,11 @@ mod tests {
         let field = RiverField::generate(42, &config);
         let l = WORLD_SIZE_METERS as f32;
         for &(x, z) in &[(0.0, 0.0), (123.0, 4567.0), (60000.0, 200.0)] {
-            let (c0, w0) = field.sample(x, z);
-            let (c1, w1) = field.sample(x + l, z - l);
+            let (c0, w0, s0) = field.sample(x, z);
+            let (c1, w1, s1) = field.sample(x + l, z - l);
             assert!((c0 - c1).abs() < 1e-3, "carve not periodic at ({x},{z})");
             assert!((w0 - w1).abs() < 1e-3, "wet not periodic at ({x},{z})");
+            assert!((s0 - s1).abs() < 1e-3, "surf not periodic at ({x},{z})");
         }
     }
 
@@ -390,7 +410,7 @@ mod tests {
         let mut config = GameConfig::default();
         config.rivers.enabled = false;
         let field = RiverField::generate(42, &config);
-        assert_eq!(field.sample(1234.0, 5678.0), (0.0, 0.0));
+        assert_eq!(field.sample(1234.0, 5678.0), (0.0, 0.0, 0.0));
     }
 
     #[test]

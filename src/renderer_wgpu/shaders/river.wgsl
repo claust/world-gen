@@ -64,6 +64,7 @@ struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) flow: vec2<f32>,
     @location(2) wetness: f32,
+    @location(3) depth: f32,
 };
 
 struct VertexOutput {
@@ -71,6 +72,7 @@ struct VertexOutput {
     @location(0) world_position: vec3<f32>,
     @location(1) flow: vec2<f32>,
     @location(2) wetness: f32,
+    @location(3) depth: f32,
 };
 
 @vertex
@@ -81,20 +83,23 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     out.world_position = input.position;
     out.flow = input.flow;
     out.wetness = input.wetness;
+    out.depth = input.depth;
     return out;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Mirror of `RIVER_SURFACE_THRESHOLD` (world_core::chunk): below this the CPU
-    // leaves the vertex on the bed (depth 0) and clears `has_river`. Discarding
-    // at the same value keeps the rendered fringe in step with the lifted mesh,
-    // so no un-lifted, bed-coplanar band survives to z-fight the terrain.
-    const RIVER_WET_CUTOFF: f32 = 0.04;
-
-    // Drop the dry fringe of the chunk grid so the surface ends in the channel
-    // rather than spilling across the banks.
-    if (input.wetness < RIVER_WET_CUTOFF) {
+    // The water sheet is a flat surface; the carved bed rises and falls beneath
+    // it. `depth` (sheet minus bed, interpolated per-fragment) is positive only
+    // where the bed is actually submerged. Discarding at ~0 puts the shoreline
+    // exactly on the waterline contour — a crisp geometric edge that follows the
+    // terrain's detail, instead of the old soft wetness fade that read as fog.
+    const SHORE_EPS: f32 = 0.0;
+    if (input.depth <= SHORE_EPS) {
+        discard;
+    }
+    // Belt-and-braces: also drop anything outside the marked channel corridor.
+    if (input.wetness < 0.02) {
         discard;
     }
 
@@ -175,10 +180,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let s2 = sin(u * 0.12 - v * 0.20 - elapsed * 0.65);
     let current = 1.0 + 0.11 * s1 + 0.06 * s2;
 
-    let edge = clamp((input.wetness - RIVER_WET_CUTOFF) / 0.25, 0.0, 1.0);
+    // Crisp shoreline: ramp opacity over the first ~0.4 m of depth only, so the
+    // bank is a sharp waterline with a thin wet edge rather than a wide feather.
+    let edge = clamp(input.depth / 0.4, 0.0, 1.0);
 
-    // River water reads slightly clearer/greener than the deep sea plane.
-    let river_color = vec3<f32>(0.08, 0.26, 0.38);
+    // Grade the body colour by depth so shallows near the bank read lighter and
+    // the channel centre reads as deep water — a strong cue for where the bank is
+    // and which way the bed falls away. Shallow picks up the bed/sky; deep is a
+    // saturated blue-green.
+    let depth_t = clamp(input.depth / 4.0, 0.0, 1.0);
+    let shallow_color = vec3<f32>(0.14, 0.34, 0.42);
+    let deep_color = vec3<f32>(0.04, 0.17, 0.30);
+    let river_color = mix(shallow_color, deep_color, depth_t);
     let water_body = (river_color * shade) * current;
 
     // Sky reflection (fresnel). The sun glint above only fires when the mirror
@@ -199,7 +212,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Opacity grows from the bank toward the channel centre and at glancing
     // angles, so shallow edges stay sheer and the deep middle reads as water.
-    let alpha = edge * mix(0.45, 0.92, fresnel * fresnel);
+    let alpha = edge * mix(0.62, 0.95, fresnel * fresnel);
 
     let final_color = scene_fog(lit, input.world_position);
     return vec4<f32>(final_color, alpha);

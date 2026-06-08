@@ -10,19 +10,20 @@ use wgpu::util::DeviceExt;
 use super::frustum::Frustum;
 use super::pipeline::create_water_pipeline;
 use super::river_normal_texture::RiverNormalTexture;
-use crate::world_core::chunk::{
-    river_water_depth, ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS,
-};
+use crate::world_core::chunk::{ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
 
-/// One vertex of the river water surface. Carries the downstream flow direction
-/// and wetness so the shader can animate the streaming ripples and fade the
-/// shallow banks. Position y is the water surface height (bed + depth).
+/// One vertex of the river water surface. Position y is the flat water-sheet
+/// elevation (`ChunkTerrain::river_surface`). Carries the downstream flow
+/// direction and wetness for the streaming ripples, plus the water `depth`
+/// (sheet minus carved bed): the shader discards where depth is non-positive,
+/// so the shoreline falls exactly where the bed pokes through the sheet.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct RiverVertex {
     position: [f32; 3],
     flow: [f32; 2],
     wetness: f32,
+    depth: f32,
 }
 
 struct GpuRiverChunk {
@@ -90,6 +91,11 @@ impl RiverPass {
                 wgpu::VertexAttribute {
                     offset: 20,
                     shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 3,
                     format: wgpu::VertexFormat::Float32,
                 },
             ],
@@ -162,14 +168,18 @@ impl RiverPass {
                     let wx = origin_x + x as f32 * cell_size;
                     let wz = origin_z + z as f32 * cell_size;
                     let wet = terrain.river[idx];
-                    // Lift the surface above the carved bed only where there is
-                    // actually water; dry vertices stay at the bed and are
-                    // discarded by the shader.
-                    let depth = river_water_depth(wet);
+                    // Flat water sheet: the surface sits at the precomputed
+                    // routing-surface elevation, level across the channel. `depth`
+                    // is how far the sheet stands above the carved bed; where it is
+                    // non-positive the bed pokes through and the shader discards,
+                    // so the shoreline is a crisp geometric edge, not an alpha fade.
+                    let surf = terrain.river_surface[idx];
+                    let depth = surf - terrain.heights[idx];
                     vertices.push(RiverVertex {
-                        position: [wx, terrain.heights[idx] + depth, wz],
+                        position: [wx, surf, wz],
                         flow: terrain.river_flow[idx],
                         wetness: wet,
+                        depth,
                     });
                 }
             }

@@ -37,6 +37,14 @@ pub const RIVER_SURFACE_THRESHOLD: f32 = 0.04;
 pub const RIVER_MIN_DEPTH: f32 = 0.35;
 pub const RIVER_DEPTH_SCALE: f32 = 6.0;
 
+/// Freeboard (metres) by which the river water sheet sits below the smoothed
+/// routing surface (the pit-filled hydrology field `RiverField::surf`). The
+/// rendered surface is this single, locally flat sheet — not a per-vertex lift
+/// off the bumpy carved bed — so a river reads as level water filling a channel
+/// instead of a sheet draped over the bed's cross-section. Larger = water sits
+/// lower in the channel (narrower, banks more exposed); smaller = fuller, wider.
+pub const RIVER_SURFACE_FREEBOARD: f32 = 4.0;
+
 /// Depth of river water above the carved bed for a given wetness, in metres.
 /// Returns 0 below `RIVER_SURFACE_THRESHOLD`, where no surface is drawn.
 pub fn river_water_depth(wetness: f32) -> f32 {
@@ -131,6 +139,13 @@ pub struct ChunkTerrain {
     /// parallel to `heights`. `(0, 0)` away from rivers. Drives the streaming
     /// animation of the river water surface.
     pub river_flow: Vec<[f32; 2]>,
+    /// Per-vertex river water-surface elevation in metres, parallel to `heights`
+    /// (the smoothed routing surface minus [`RIVER_SURFACE_FREEBOARD`]). This is
+    /// a locally *flat* sheet, independent of the bumpy carved bed, so the
+    /// rendered water is level across the channel. The water depth at a vertex is
+    /// `river_surface - heights`; where that is negative the bed pokes above the
+    /// sheet and the shader discards the fragment, giving a crisp shoreline.
+    pub river_surface: Vec<f32>,
     pub min_height: f32,
     pub max_height: f32,
     /// `true` when any vertex in this chunk is below `SEA_LEVEL`.
