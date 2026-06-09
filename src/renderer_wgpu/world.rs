@@ -52,6 +52,7 @@ pub struct WorldRenderer {
 pub struct RendererStats {
     pub buffered_mature_plants: usize,
     pub buffered_lod_plants: usize,
+    pub buffered_dead_plants: usize,
     pub buffered_house_instances: usize,
 }
 
@@ -465,12 +466,14 @@ impl WorldRenderer {
         let InstancedStats {
             buffered_mature_plants,
             buffered_lod_plants,
+            buffered_dead_plants,
             buffered_house_instances,
         } = self.instanced.stats();
 
         RendererStats {
             buffered_mature_plants,
             buffered_lod_plants,
+            buffered_dead_plants,
             buffered_house_instances,
         }
     }

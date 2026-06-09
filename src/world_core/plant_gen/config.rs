@@ -106,4 +106,24 @@ impl SpeciesConfig {
         c.body_plan.stem_count = c.body_plan.stem_count.min(3);
         c
     }
+
+    /// Derive the leafless snag rendered for `GrowthStage::Dead`: no foliage,
+    /// fewer and shorter limbs (twigs rot first), and a crooked, sagging
+    /// skeleton. The mesh is bark-only — without foliage there is no SDF pass —
+    /// so one snag prototype serves every render distance.
+    pub fn deadify(&self) -> Self {
+        let mut c = self.clone();
+        c.foliage.style = "none".to_string();
+        c.branching.max_depth = c.branching.max_depth.saturating_sub(1).max(1);
+        c.branching.branches_per_node = [
+            c.branching.branches_per_node[0].saturating_sub(1).max(1),
+            c.branching.branches_per_node[1].saturating_sub(1).max(1),
+        ];
+        c.branching.child_length_ratio *= 0.85;
+        c.trunk.straightness *= 0.5;
+        c.branching.apical_dominance *= 0.5;
+        c.branching.randomness = (c.branching.randomness * 1.5 + 0.1).min(1.0);
+        c.branching.gravity_response += 0.4;
+        c
+    }
 }

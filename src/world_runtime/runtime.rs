@@ -33,6 +33,7 @@ pub struct RuntimeStats {
     pub loaded_visible_seedlings: usize,
     pub loaded_visible_young: usize,
     pub loaded_visible_mature: usize,
+    pub loaded_visible_dead: usize,
     /// Total plants across the whole world (every canonical chunk, loaded or not).
     pub world_population: usize,
     /// Canonical chunks holding at least one plant.
@@ -390,6 +391,7 @@ impl WorldRuntime {
         let mut loaded_visible_seedlings = 0;
         let mut loaded_visible_young = 0;
         let mut loaded_visible_mature = 0;
+        let mut loaded_visible_dead = 0;
 
         for chunk in self.streaming.chunks().values() {
             loaded_base_plants += chunk.content.base_plants.len();
@@ -400,6 +402,7 @@ impl WorldRuntime {
                     GrowthStage::Seedling => loaded_visible_seedlings += 1,
                     GrowthStage::Young => loaded_visible_young += 1,
                     GrowthStage::Mature => loaded_visible_mature += 1,
+                    GrowthStage::Dead => loaded_visible_dead += 1,
                 }
             }
         }
@@ -414,6 +417,7 @@ impl WorldRuntime {
             loaded_visible_seedlings,
             loaded_visible_young,
             loaded_visible_mature,
+            loaded_visible_dead,
             world_population: self.plant_world.population(),
             world_populated_chunks: self.plant_world.populated_chunks(),
             spread_last_added: self.plant_world.last_spread_added(),

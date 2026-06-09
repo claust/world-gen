@@ -234,6 +234,7 @@ impl FloraLayer {
                     height: plant_height,
                     species_index: selected_idx,
                     growth_stage: GrowthStage::Mature,
+                    decay: 0.0,
                 });
             }
         }
@@ -387,6 +388,7 @@ impl FloraLayer {
                     height: plant_height,
                     species_index: selected_idx,
                     growth_stage: GrowthStage::Mature,
+                    decay: 0.0,
                 });
             }
         }

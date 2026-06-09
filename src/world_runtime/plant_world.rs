@@ -52,12 +52,14 @@ pub struct Plant {
 }
 
 const MATURE: u8 = stage_to_u8(GrowthStage::Mature);
+const DEAD: u8 = stage_to_u8(GrowthStage::Dead);
 
 const fn stage_to_u8(stage: GrowthStage) -> u8 {
     match stage {
         GrowthStage::Seedling => 0,
         GrowthStage::Young => 1,
         GrowthStage::Mature => 2,
+        GrowthStage::Dead => 3,
     }
 }
 
@@ -65,6 +67,7 @@ fn stage_from_u8(value: u8) -> GrowthStage {
     match value {
         0 => GrowthStage::Seedling,
         1 => GrowthStage::Young,
+        3 => GrowthStage::Dead,
         _ => GrowthStage::Mature,
     }
 }
@@ -133,6 +136,7 @@ impl Plant {
             height: dequantize_span(self.height),
             species_index: self.species as usize,
             growth_stage: stage_from_u8(self.stage),
+            decay: 0.0,
         }
     }
 }
@@ -141,9 +145,18 @@ impl Plant {
 pub struct PlantWorld {
     /// One list per canonical chunk, indexed `cz * WORLD_SIZE_CHUNKS + cx`.
     chunks: Vec<Vec<Plant>>,
-    /// Count of plants not yet `Mature`, per chunk — lets the growth tick skip
-    /// fully-grown chunks.
+    /// Count of plants not yet `Mature` (dead snags excluded), per chunk —
+    /// feeds the spread pass's saturation logic.
     immature: Vec<u32>,
+    /// Earliest sim-hour at which any plant in the chunk crosses a life
+    /// threshold (young/mature/dead/despawn) — lets the growth tick skip
+    /// settled chunks without freezing mature plants short of their death.
+    /// `0.0` forces a recompute on the next pass; `INFINITY` means nothing left
+    /// to happen (empty, or all-mature immortals).
+    next_event: Vec<f64>,
+    /// Sim-hour of the most recent growth pass; snag decay (the render-side
+    /// shrink) is measured against this.
+    growth_hours: f64,
     /// Per chunk: all-mature and saturated — the last spread pass added nothing
     /// here. A chunk's plants can only spread into the 8 adjacent chunks (spread
     /// radius ≪ chunk size), so phase 1 skips a chunk only when it *and* all eight
@@ -293,14 +306,19 @@ impl PlantWorld {
         let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
         let immature = chunks
             .iter()
-            .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
+            .map(|c| c.iter().filter(|p| p.stage < MATURE).count() as u32)
             .collect();
         let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let saturated = vec![false; chunks.len()];
 
+        // Force a full recompute of per-chunk life timelines on the first
+        // growth pass (it also reaps anything whose despawn lies in the past).
+        let next_event = vec![0.0; chunks.len()];
         let mut world = Self {
             chunks,
             immature,
+            next_event,
+            growth_hours: 0.0,
             saturated,
             base_count,
             biome,
@@ -359,49 +377,140 @@ impl PlantWorld {
         self.populated_chunks
     }
 
-    /// Packed plants for a canonical chunk.
-    fn chunk(&self, canon: IVec2) -> &[Plant] {
-        &self.chunks[chunk_index(canon)]
-    }
-
     /// Reconstruct renderable instances for the raw chunk at `raw_coord`, reading
     /// the canonical chunk's plant list and resampling ground height from
-    /// `terrain`.
+    /// `terrain`. Dead snags carry their decay fraction (0 freshly dead → 1
+    /// about to despawn) so the renderer can ease them smaller as they rot.
     pub fn instances_for(&self, raw_coord: IVec2, terrain: &ChunkTerrain) -> Vec<PlantInstance> {
         let canon = canonical_chunk(raw_coord);
-        self.chunk(canon)
+        let idx = chunk_index(canon);
+        let base_count = self.base_count[idx] as usize;
+        self.chunks[idx]
             .iter()
-            .map(|plant| plant.to_instance(raw_coord, terrain))
+            .enumerate()
+            .map(|(pi, plant)| {
+                let mut instance = plant.to_instance(raw_coord, terrain);
+                if plant.stage == DEAD {
+                    if let Some(species) = self.registry.species.get(plant.species as usize) {
+                        let schedule =
+                            life_schedule(self.seed, idx, plant, species, pi < base_count);
+                        if schedule.gone_at.is_finite() {
+                            let span = (schedule.gone_at - schedule.dead_at).max(1e-6);
+                            let age = (self.growth_hours - plant.born_hour as f64).max(0.0);
+                            instance.decay =
+                                ((age - schedule.dead_at) / span).clamp(0.0, 1.0) as f32;
+                        }
+                    }
+                }
+                instance
+            })
             .collect()
     }
 
-    /// Advance growth on the global clock. Growth is analytic — each plant's
-    /// stage is a function of its `born_hour` and the species' stage durations —
-    /// so this only walks chunks that still hold immature plants. Returns whether
-    /// any plant's stage advanced (so the render bridge can refresh loaded chunks).
+    /// Advance the life cycle on the global clock. Stages — including death and
+    /// despawn — are analytic functions of each plant's `born_hour` and stable
+    /// identity, so this only walks chunks whose earliest pending transition
+    /// (`next_event`) has arrived. Plants past their `gone_at` are removed,
+    /// freeing their ground: the chunk (and its 8 neighbours, which can reach
+    /// the freed spot) is un-saturated so the spread pass resumes there.
+    /// Returns whether anything changed (so the render bridge can refresh
+    /// loaded chunks).
     pub fn tick_growth(&mut self, total_hours: f64) -> bool {
-        let registry = &self.registry;
+        self.growth_hours = total_hours;
+        let registry = Arc::clone(&self.registry);
+        let seed = self.seed;
         let mut changed = false;
-        for (idx, chunk) in self.chunks.iter_mut().enumerate() {
-            if self.immature[idx] == 0 {
+        let mut reaped_chunks: Vec<usize> = Vec::new();
+        for idx in 0..self.chunks.len() {
+            if total_hours < self.next_event[idx] {
+                continue;
+            }
+            let base_count = self.base_count[idx] as usize;
+            let chunk = &mut self.chunks[idx];
+            if chunk.is_empty() {
+                self.next_event[idx] = f64::INFINITY;
                 continue;
             }
             let mut immature = 0u32;
-            for plant in chunk.iter_mut() {
-                if plant.stage != MATURE {
-                    let next = stage_to_u8(stage_for(plant, total_hours, registry));
-                    if next != plant.stage {
-                        plant.stage = next;
-                        changed = true;
+            let mut next_event = f64::INFINITY;
+            let mut removed_base = 0u32;
+            let mut write = 0usize;
+            for read in 0..chunk.len() {
+                let mut plant = chunk[read];
+                let Some(species) = registry.species.get(plant.species as usize) else {
+                    chunk[write] = plant;
+                    write += 1;
+                    continue;
+                };
+                let schedule = life_schedule(seed, idx, &plant, species, read < base_count);
+                let age = (total_hours - plant.born_hour as f64).max(0.0);
+                let Some(stage) = schedule.stage_at(age) else {
+                    // Despawned: drop the record, freeing its spacing-grid spot
+                    // for the next spread pass (the grid is rebuilt per pass).
+                    if read < base_count {
+                        removed_base += 1;
                     }
-                    if plant.stage != MATURE {
-                        immature += 1;
-                    }
+                    changed = true;
+                    continue;
+                };
+                if stage != plant.stage {
+                    plant.stage = stage;
+                    changed = true;
                 }
+                if plant.stage < MATURE {
+                    immature += 1;
+                }
+                next_event = next_event.min(plant.born_hour as f64 + schedule.next_threshold(age));
+                chunk[write] = plant;
+                write += 1;
             }
+            let removed = chunk.len() - write;
+            chunk.truncate(write);
             self.immature[idx] = immature;
+            self.next_event[idx] = next_event;
+            if removed > 0 {
+                self.base_count[idx] -= removed_base;
+                self.population -= removed;
+                if self.chunks[idx].is_empty() {
+                    self.populated_chunks -= 1;
+                }
+                reaped_chunks.push(idx);
+            }
+        }
+        if !reaped_chunks.is_empty() {
+            // Freed ground is reachable by the 8-neighbourhood's spread radius,
+            // so the whole block must wake up or the gap never refills.
+            let mut any_unsaturated = false;
+            for &idx in &reaped_chunks {
+                any_unsaturated |= self.unsaturate_neighbourhood(idx);
+            }
+            if any_unsaturated {
+                self.recompute_biome_fill();
+            }
         }
         changed
+    }
+
+    /// Clear the saturation flag on chunk `idx` and its 8 (wrapped) neighbours.
+    /// Returns whether any flag actually flipped.
+    fn unsaturate_neighbourhood(&mut self, idx: usize) -> bool {
+        let n = WORLD_SIZE_CHUNKS;
+        let cx = (idx as i32) % n;
+        let cz = (idx as i32) / n;
+        let mut flipped = false;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let nx = (cx + dx).rem_euclid(n);
+                let nz = (cz + dz).rem_euclid(n);
+                let nidx = (nz * n + nx) as usize;
+                // Unit-test worlds are smaller than the real canonical grid;
+                // a wrapped neighbour outside them has no flag to clear.
+                if let Some(flag) = self.saturated.get_mut(nidx) {
+                    flipped |= std::mem::replace(flag, false);
+                }
+            }
+        }
+        flipped
     }
 
     /// Global spread pass on the canonical grid. Two-phase to stay race-free:
@@ -481,6 +590,9 @@ impl PlantWorld {
                 }
                 self.immature[idx] += count;
                 self.population += count as usize;
+                // New seedlings bring new life thresholds; recompute the
+                // chunk's timeline on the next growth pass.
+                self.next_event[idx] = 0.0;
             } else {
                 // Nothing landed: saturated iff nothing is left growing here. A
                 // neighbour maturing and spreading in (above) clears this again.
@@ -635,7 +747,7 @@ impl PlantWorld {
             self.chunks[idx].reserve(count);
             for _ in 0..count {
                 let plant = read_plant(&mut cur)?;
-                if plant.stage != MATURE {
+                if plant.stage < MATURE {
                     self.immature[idx] += 1;
                 }
                 self.chunks[idx].push(plant);
@@ -830,14 +942,19 @@ impl PlantWorld {
         let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
         let immature = chunks
             .iter()
-            .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
+            .map(|c| c.iter().filter(|p| p.stage < MATURE).count() as u32)
             .collect();
         let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let saturated = vec![false; chunks.len()];
 
+        // Force a full recompute of per-chunk life timelines on the first
+        // growth pass (it also reaps anything whose despawn lies in the past).
+        let next_event = vec![0.0; chunks.len()];
         let mut world = Self {
             chunks,
             immature,
+            next_event,
+            growth_hours: 0.0,
             saturated,
             base_count,
             biome,
@@ -1765,20 +1882,108 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// Analytic growth stage for a packed plant at `total_hours`.
-fn stage_for(plant: &Plant, total_hours: f64, registry: &PlantRegistry) -> GrowthStage {
-    let Some(species) = registry.species.get(plant.species as usize) else {
-        return stage_from_u8(plant.stage);
-    };
-    let age = (total_hours - plant.born_hour as f64).max(0.0);
-    let young_at = species.placement.seedling_hours.max(0.0) as f64;
-    let mature_at = young_at + species.placement.young_hours.max(0.0) as f64;
-    if age >= mature_at {
-        GrowthStage::Mature
-    } else if age >= young_at {
-        GrowthStage::Young
+/// A plant's full life timeline in age-space (sim-hours since `born_hour`).
+/// `dead_at`/`gone_at` are `INFINITY` for immortal species (`lifespan_hours <=
+/// 0`). Death and despawn are analytic, exactly like growth: the timeline is a
+/// pure function of the plant's stable identity, so a reloaded world removes
+/// the same plants a live one did — no tombstones in the save.
+#[derive(Clone, Copy, Debug)]
+struct LifeSchedule {
+    young_at: f64,
+    mature_at: f64,
+    dead_at: f64,
+    gone_at: f64,
+}
+
+impl LifeSchedule {
+    /// Cached stage byte for a plant of this schedule at `age`, or `None` once
+    /// it is past `gone_at` and should despawn.
+    fn stage_at(&self, age: f64) -> Option<u8> {
+        if age >= self.gone_at {
+            None
+        } else if age >= self.dead_at {
+            Some(DEAD)
+        } else if age >= self.mature_at {
+            Some(MATURE)
+        } else if age >= self.young_at {
+            Some(stage_to_u8(GrowthStage::Young))
+        } else {
+            Some(stage_to_u8(GrowthStage::Seedling))
+        }
+    }
+
+    /// First threshold strictly ahead of `age`, in age-space (`INFINITY` when
+    /// nothing is left to happen — a mature immortal).
+    fn next_threshold(&self, age: f64) -> f64 {
+        if age < self.young_at {
+            self.young_at
+        } else if age < self.mature_at {
+            self.mature_at
+        } else if age < self.dead_at {
+            self.dead_at
+        } else {
+            self.gone_at
+        }
+    }
+}
+
+/// Deterministic per-plant unit hash for death timing, keyed on stable identity
+/// (world seed, canonical chunk, quantized position, birth time, species) —
+/// deliberately *not* the plant's index, which shifts as neighbours despawn.
+fn death_unit(seed: u32, chunk_idx: usize, plant: &Plant, salt: u32) -> f32 {
+    let pos = ((plant.local_x as u32) << 16) | plant.local_z as u32;
+    hash_to_unit_float(hash4(
+        seed.wrapping_add(salt),
+        chunk_idx as u32,
+        pos,
+        plant.born_hour.to_bits() ^ plant.species as u32,
+    ))
+}
+
+/// Analytic life timeline for a packed plant. `is_base` marks deterministic
+/// base-flora plants (the prefix of each chunk's list): they are **mature from
+/// creation** (their growth thresholds are zero — a new world must not demote
+/// the baked forest to seedlings), and instead of the spread plants' ±25%
+/// lifespan jitter they draw a uniform fraction of a full lifespan, so the
+/// starting forest dies as a steady trickle spread over one lifespan, never a
+/// wavefront.
+fn life_schedule(
+    seed: u32,
+    chunk_idx: usize,
+    plant: &Plant,
+    species: &crate::world_core::herbarium::PlantSpeciesInfo,
+    is_base: bool,
+) -> LifeSchedule {
+    let (young_at, mature_at) = if is_base {
+        (0.0, 0.0)
     } else {
-        GrowthStage::Seedling
+        let young_at = species.placement.seedling_hours.max(0.0) as f64;
+        (
+            young_at,
+            young_at + species.placement.young_hours.max(0.0) as f64,
+        )
+    };
+    let lifespan = species.placement.lifespan_hours;
+    if lifespan <= 0.0 {
+        return LifeSchedule {
+            young_at,
+            mature_at,
+            dead_at: f64::INFINITY,
+            gone_at: f64::INFINITY,
+        };
+    }
+    let life_factor = if is_base {
+        death_unit(seed, chunk_idx, plant, 4301)
+    } else {
+        0.75 + 0.5 * death_unit(seed, chunk_idx, plant, 4301)
+    };
+    let snag_factor = 0.75 + 0.5 * death_unit(seed, chunk_idx, plant, 4302);
+    let dead_at = mature_at + (lifespan * life_factor) as f64;
+    LifeSchedule {
+        young_at,
+        mature_at,
+        dead_at,
+        gone_at: dead_at + (species.placement.snag_hours.max(0.0) * snag_factor) as f64,
     }
 }
 
@@ -1800,15 +2005,18 @@ mod tests {
         let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
         let immature = chunks
             .iter()
-            .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
+            .map(|c| c.iter().filter(|p| p.stage < MATURE).count() as u32)
             .collect();
         let saturated = vec![false; chunks.len()];
         let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let biome = vec![Biome::Forest; chunks.len()];
         let cell_bytes = vec![0u8; chunks.len()];
+        let next_event = vec![0.0; chunks.len()];
         PlantWorld {
             chunks,
             immature,
+            next_event,
+            growth_hours: 0.0,
             saturated,
             base_count,
             biome,
@@ -2121,6 +2329,7 @@ mod tests {
             height: 12.5,
             species_index: 3,
             growth_stage: GrowthStage::Mature,
+            decay: 0.0,
         };
         let packed = Plant::pack(&original, origin_x, origin_z);
 
@@ -2227,6 +2436,146 @@ mod tests {
     }
 
     #[test]
+    fn life_schedule_jitters_within_bounds_and_orders_thresholds() {
+        let reg = registry();
+        let species = &reg.species[0];
+        let lifespan = species.placement.lifespan_hours as f64;
+        let snag = species.placement.snag_hours as f64;
+        assert!(lifespan > 0.0 && snag > 0.0);
+
+        for i in 0..200u32 {
+            let plant = seedling(i as f32, i as f32 * 7.0);
+            let mature_at =
+                (species.placement.seedling_hours + species.placement.young_hours) as f64;
+
+            // Spread plants: ±25% jitter on both phases.
+            let s1 = life_schedule(7, i as usize, &plant, species, false);
+            assert_eq!(s1.mature_at, mature_at);
+            let lived = s1.dead_at - s1.mature_at;
+            assert!(lived >= lifespan * 0.75 - 1e-6 && lived <= lifespan * 1.25 + 1e-6);
+            let stood = s1.gone_at - s1.dead_at;
+            assert!(stood >= snag * 0.75 - 1e-6 && stood <= snag * 1.25 + 1e-6);
+
+            // Base plants: a uniform fraction of one lifespan, so the starting
+            // forest trickles out instead of dying in a wave.
+            let s2 = life_schedule(7, i as usize, &plant, species, true);
+            let lived = s2.dead_at - s2.mature_at;
+            assert!(lived >= 0.0 && lived <= lifespan + 1e-6);
+        }
+    }
+
+    #[test]
+    fn snags_stand_then_despawn_freeing_the_ground() {
+        let reg = registry();
+        let total = (WORLD_SIZE_CHUNKS as usize) * (WORLD_SIZE_CHUNKS as usize);
+        let n = WORLD_SIZE_CHUNKS as usize;
+        let idx = 5 * n + 5;
+        let mut chunks = vec![Vec::new(); total];
+        chunks[idx].push(grid_plant(10.0, 50.0, 0)); // base plant, mature
+        let mut world = test_world(chunks, Arc::clone(&reg));
+        for flag in world.saturated.iter_mut() {
+            *flag = true;
+        }
+
+        let plant = world.chunks[idx][0];
+        let schedule = life_schedule(world.seed, idx, &plant, &reg.species[0], true);
+        assert!(schedule.gone_at.is_finite());
+
+        // At dead_at the plant flips to a standing snag: still present, not
+        // immature, and no longer a spread source.
+        assert!(world.tick_growth(plant.born_hour as f64 + schedule.dead_at + 0.01));
+        assert_eq!(world.chunks[idx][0].stage, DEAD);
+        assert_eq!(world.population(), 1);
+        assert_eq!(world.immature[idx], 0);
+        assert!(emit_chunk_candidates(idx, &world.chunks, &reg, world.seed).is_empty());
+
+        // At gone_at it despawns: record removed, counters adjusted, and the
+        // chunk plus its 8 neighbours woken so spread can reclaim the ground.
+        assert!(world.tick_growth(plant.born_hour as f64 + schedule.gone_at + 0.01));
+        assert!(world.chunks[idx].is_empty());
+        assert_eq!(world.population(), 0);
+        assert_eq!(world.base_count[idx], 0);
+        assert_eq!(world.populated_chunks(), 0);
+        let woken = world.saturated.iter().filter(|s| !**s).count();
+        assert_eq!(woken, 9, "the 3x3 neighbourhood must be unsaturated");
+        for dz in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let nidx = ((5 + dz) * n as i32 + (5 + dx)) as usize;
+                assert!(!world.saturated[nidx]);
+            }
+        }
+    }
+
+    #[test]
+    fn immortal_species_never_die() {
+        let reg = registry();
+        let cattail = reg
+            .species
+            .iter()
+            .position(|s| s.placement.lifespan_hours <= 0.0)
+            .expect("an immortal species (cattail)") as u8;
+        let mut world = test_world(
+            vec![vec![Plant {
+                species: cattail,
+                ..grid_plant(10.0, 50.0, 0)
+            }]],
+            Arc::clone(&reg),
+        );
+
+        // Far beyond any mortal lifespan, the reed clump still stands mature.
+        world.tick_growth(1.0e9);
+        assert_eq!(world.chunks[0].len(), 1);
+        assert_eq!(world.chunks[0][0].stage, MATURE);
+        assert_eq!(world.population(), 1);
+    }
+
+    #[test]
+    fn a_reloaded_world_reaps_exactly_what_a_live_world_did() {
+        let reg = registry();
+        // One mortal base plant plus two spread seedlings born at hour 0.
+        let base = grid_plant(10.0, 50.0, 0);
+        let make = |reg: Arc<PlantRegistry>| {
+            let mut world = test_world(vec![Vec::new(), vec![base], Vec::new()], reg);
+            world.chunks[1].push(seedling(20.0, 0.0));
+            world.chunks[1].push(seedling(30.0, 0.0));
+            world.immature[1] = 2;
+            world.population += 2;
+            world
+        };
+
+        let mut live = make(Arc::clone(&reg));
+        // Save before anything dies, so the blob still holds every plant.
+        let storage = MemBytes::default();
+        live.save_spread(&storage).unwrap();
+
+        // Pick the first despawn among the three plants and tick just past it:
+        // the live world reaps that plant (and only it).
+        let species = &reg.species[0];
+        let gone = |pi: usize, is_base: bool| {
+            let plant = live.chunks[1][pi];
+            let s = life_schedule(live.seed, 1, &plant, species, is_base);
+            plant.born_hour as f64 + s.gone_at
+        };
+        let t = gone(0, true).min(gone(1, false)).min(gone(2, false)) + 0.01;
+        live.tick_growth(t);
+        assert!(
+            live.chunks[1].len() < 3,
+            "at least one plant must have despawned"
+        );
+
+        // A fresh world restored from the pre-death save and ticked to the same
+        // hour converges on the identical plant list and derived counters.
+        let mut reloaded = test_world(vec![Vec::new(), vec![base], Vec::new()], reg);
+        reloaded.apply_saved_spread(&storage);
+        reloaded.tick_growth(t);
+
+        assert_eq!(reloaded.chunks[1], live.chunks[1]);
+        assert_eq!(reloaded.population(), live.population());
+        assert_eq!(reloaded.base_count[1], live.base_count[1]);
+        assert_eq!(reloaded.immature[1], live.immature[1]);
+    }
+
+    #[test]
     fn tick_growth_promotes_immature_plants_to_mature() {
         let reg = registry();
         let species = &reg.species[0];
@@ -2244,6 +2593,9 @@ mod tests {
             }]],
             Arc::clone(&reg),
         );
+        // The seedling is a spread plant, not part of the mature-from-creation
+        // base prefix.
+        world.base_count[0] = 0;
 
         // Before any growth time, it stays a seedling.
         assert!(!world.tick_growth(0.0));

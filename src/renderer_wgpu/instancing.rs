@@ -15,7 +15,10 @@ pub struct InstanceData {
     pub position: [f32; 3],
     pub rotation_y: f32,
     pub scale: [f32; 3],
-    pub _pad: f32,
+    /// Lean angle in radians, applied around the instance's local X axis
+    /// before the yaw rotation (so the random yaw scatters the lean
+    /// direction). Zero for everything except dead snags.
+    pub tilt: f32,
     pub color: [f32; 4],
 }
 
@@ -252,14 +255,43 @@ pub fn sign_post_mesh() -> (Vec<Vertex>, Vec<u32>) {
     (verts, indices)
 }
 
+/// Per-species instance lists, split by which prototype mesh draws them.
+#[derive(Default)]
+pub struct PlantInstanceBuckets {
+    /// Mature plants; drawn full-res nearby and as LOD at distance.
+    pub mature: Vec<InstanceData>,
+    /// Seedlings and young plants; always drawn with the LOD mesh.
+    pub lod: Vec<InstanceData>,
+    /// Dead snags; drawn with the bark-only snag mesh at every distance.
+    pub dead: Vec<InstanceData>,
+}
+
+/// How far the snag's render scale eases down across the decay phase
+/// (1.0 → 0.8 of the dead scale), suggesting collapse before despawn.
+const DEAD_DECAY_SHRINK: f32 = 0.2;
+/// Dead snag lean range in radians (~2.3°–6.9°), scattered per plant.
+const DEAD_TILT_MIN: f32 = 0.04;
+const DEAD_TILT_SPAN: f32 = 0.08;
+
+/// Deterministic per-plant lean for a dead snag, keyed on its position bits so
+/// the same snag always leans the same way.
+fn dead_tilt(p: &PlantInstance) -> f32 {
+    let h = crate::world_core::content::sampling::hash4(
+        0x534E_4147, // "SNAG"
+        p.position.x.to_bits(),
+        p.position.z.to_bits(),
+        p.rotation.to_bits(),
+    );
+    DEAD_TILT_MIN + DEAD_TILT_SPAN * crate::world_core::content::sampling::hash_to_unit_float(h)
+}
+
 /// Build per-species instance data from plant instances.
-/// Returns a Vec where index i = (mature instances, forced-LOD instances) for species i.
 pub fn build_plant_instances(
     plants: &[PlantInstance],
     species: &[PlantSpeciesInfo],
-) -> Vec<(Vec<InstanceData>, Vec<InstanceData>)> {
-    let mut per_species: Vec<(Vec<InstanceData>, Vec<InstanceData>)> = (0..species.len())
-        .map(|_| (Vec::new(), Vec::new()))
+) -> Vec<PlantInstanceBuckets> {
+    let mut per_species: Vec<PlantInstanceBuckets> = (0..species.len())
+        .map(|_| PlantInstanceBuckets::default())
         .collect();
 
     for p in plants {
@@ -268,11 +300,26 @@ pub fn build_plant_instances(
             continue;
         }
         let ref_height = (species[idx].height_range[0] + species[idx].height_range[1]) * 0.5;
-        let scale = (p.height / ref_height.max(0.01)) * p.growth_stage.scale_factor();
+        let mut scale = (p.height / ref_height.max(0.01)) * p.growth_stage.scale_factor();
+        let dead = p.growth_stage == GrowthStage::Dead;
+        if dead {
+            scale *= 1.0 - DEAD_DECAY_SHRINK * p.decay.clamp(0.0, 1.0);
+        }
 
         // Procedural meshes bake their colours in (white tint). Billboards are a
         // flat untextured card, so they carry the species leaf colour as a tint.
-        let color = if species[idx].kind == "shrub" {
+        // Dead instances of either kind get the shared weathered-wood tint —
+        // but a billboard's tint IS its albedo (not a multiplier over baked
+        // colours), so dead shrubs take a darkened tint or they'd glow nearly
+        // white next to their dark-green living neighbours.
+        let color = if dead {
+            let t = crate::world_core::lifecycle::DEAD_TINT;
+            if species[idx].kind == "shrub" {
+                [t[0] * 0.45, t[1] * 0.45, t[2] * 0.45, t[3]]
+            } else {
+                t
+            }
+        } else if species[idx].kind == "shrub" {
             let c = species[idx].leaf_color;
             [c[0], c[1], c[2], 1.0]
         } else {
@@ -283,13 +330,14 @@ pub fn build_plant_instances(
             position: [p.position.x, p.position.y, p.position.z],
             rotation_y: p.rotation,
             scale: [scale, scale, scale],
-            _pad: 0.0,
+            tilt: if dead { dead_tilt(p) } else { 0.0 },
             color,
         };
 
         match p.growth_stage {
-            GrowthStage::Mature => per_species[idx].0.push(instance),
-            GrowthStage::Seedling | GrowthStage::Young => per_species[idx].1.push(instance),
+            GrowthStage::Mature => per_species[idx].mature.push(instance),
+            GrowthStage::Seedling | GrowthStage::Young => per_species[idx].lod.push(instance),
+            GrowthStage::Dead => per_species[idx].dead.push(instance),
         }
     }
 
@@ -303,7 +351,7 @@ pub fn build_house_instances(houses: &[HouseInstance]) -> Vec<InstanceData> {
             position: [h.position.x, h.position.y, h.position.z],
             rotation_y: h.rotation,
             scale: [1.0, 1.0, 1.0],
-            _pad: 0.0,
+            tilt: 0.0,
             color: [1.0, 1.0, 1.0, 1.0],
         })
         .collect()
@@ -332,7 +380,7 @@ pub fn upload_instances(
 mod tests {
     use glam::Vec3;
 
-    use super::build_plant_instances;
+    use super::{build_plant_instances, DEAD_DECAY_SHRINK, DEAD_TILT_MIN, DEAD_TILT_SPAN};
     use crate::world_core::chunk::PlantInstance;
     use crate::world_core::herbarium::{Herbarium, PlantRegistry};
     use crate::world_core::lifecycle::GrowthStage;
@@ -347,6 +395,7 @@ mod tests {
                 height: 10.0,
                 species_index: 0,
                 growth_stage: GrowthStage::Mature,
+                decay: 0.0,
             },
             PlantInstance {
                 position: Vec3::new(1.0, 0.0, 0.0),
@@ -354,6 +403,7 @@ mod tests {
                 height: 10.0,
                 species_index: 0,
                 growth_stage: GrowthStage::Seedling,
+                decay: 0.0,
             },
             PlantInstance {
                 position: Vec3::new(2.0, 0.0, 0.0),
@@ -361,6 +411,7 @@ mod tests {
                 height: 10.0,
                 species_index: 0,
                 growth_stage: GrowthStage::Young,
+                decay: 0.0,
             },
         ];
 
@@ -370,10 +421,52 @@ mod tests {
             (registry.species[0].height_range[0] + registry.species[0].height_range[1]) * 0.5;
         let mature_scale = 10.0 / ref_height.max(0.01);
 
-        assert_eq!(per_species[0].0.len(), 1);
-        assert_eq!(per_species[0].1.len(), 2);
-        assert!((per_species[0].0[0].scale[0] - mature_scale).abs() < 1e-5);
-        assert!((per_species[0].1[0].scale[0] - mature_scale * 0.15).abs() < 1e-5);
-        assert!((per_species[0].1[1].scale[0] - mature_scale * 0.5).abs() < 1e-5);
+        assert_eq!(per_species[0].mature.len(), 1);
+        assert_eq!(per_species[0].lod.len(), 2);
+        assert!((per_species[0].mature[0].scale[0] - mature_scale).abs() < 1e-5);
+        assert!((per_species[0].lod[0].scale[0] - mature_scale * 0.15).abs() < 1e-5);
+        assert!((per_species[0].lod[1].scale[0] - mature_scale * 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dead_plants_bucket_separately_with_tint_lean_and_decay_shrink() {
+        let registry = PlantRegistry::from_herbarium(&Herbarium::default_seeded());
+        let mk = |decay: f32| PlantInstance {
+            position: Vec3::new(40.0, 0.0, 12.0),
+            rotation: 1.0,
+            height: 10.0,
+            species_index: 0,
+            growth_stage: GrowthStage::Dead,
+            decay,
+        };
+        let per_species = build_plant_instances(&[mk(0.0), mk(1.0)], &registry.species);
+
+        assert!(per_species[0].mature.is_empty());
+        assert!(per_species[0].lod.is_empty());
+        let dead = &per_species[0].dead;
+        assert_eq!(dead.len(), 2);
+
+        let ref_height =
+            (registry.species[0].height_range[0] + registry.species[0].height_range[1]) * 0.5;
+        let snag_scale = (10.0 / ref_height.max(0.01)) * GrowthStage::Dead.scale_factor();
+        // Fresh snag at full dead scale, fully decayed one eased down by the shrink.
+        assert!((dead[0].scale[0] - snag_scale).abs() < 1e-5);
+        assert!((dead[1].scale[0] - snag_scale * (1.0 - DEAD_DECAY_SHRINK)).abs() < 1e-5);
+
+        for inst in dead {
+            assert_eq!(inst.color, crate::world_core::lifecycle::DEAD_TINT);
+            assert!(inst.tilt >= DEAD_TILT_MIN && inst.tilt <= DEAD_TILT_MIN + DEAD_TILT_SPAN);
+        }
+
+        // A living plant keeps a zero tilt and the white tint.
+        let living = build_plant_instances(
+            &[PlantInstance {
+                growth_stage: GrowthStage::Mature,
+                ..mk(0.0)
+            }],
+            &registry.species,
+        );
+        assert_eq!(living[0].mature[0].tilt, 0.0);
+        assert_eq!(living[0].mature[0].color, [1.0, 1.0, 1.0, 1.0]);
     }
 }

@@ -514,10 +514,12 @@ impl AppState {
                 loaded_visible_seedlings: stats.loaded_visible_seedlings,
                 loaded_visible_young: stats.loaded_visible_young,
                 loaded_visible_mature: stats.loaded_visible_mature,
+                loaded_visible_dead: stats.loaded_visible_dead,
             },
             renderer: RendererSnapshot {
                 buffered_mature_plants: renderer.buffered_mature_plants,
                 buffered_lod_plants: renderer.buffered_lod_plants,
+                buffered_dead_plants: renderer.buffered_dead_plants,
                 buffered_house_instances: renderer.buffered_house_instances,
             },
             timestamp_ms: now_timestamp_ms(),

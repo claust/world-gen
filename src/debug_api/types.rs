@@ -64,6 +64,7 @@ pub struct LifecycleSnapshot {
     pub loaded_visible_seedlings: usize,
     pub loaded_visible_young: usize,
     pub loaded_visible_mature: usize,
+    pub loaded_visible_dead: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +79,7 @@ pub struct BiomeFill {
 pub struct RendererSnapshot {
     pub buffered_mature_plants: usize,
     pub buffered_lod_plants: usize,
+    pub buffered_dead_plants: usize,
     pub buffered_house_instances: usize,
 }
 
