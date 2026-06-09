@@ -503,28 +503,38 @@ impl AppState {
         matches!(self.screen, Screen::Herbarium)
     }
 
+    /// Whether plain gameplay currently wants the cursor captured: we're
+    /// `Playing` with nothing else (config panel, map, or help) claiming it. Both
+    /// overlay toggles consult this before recapturing on close so dismissing one
+    /// overlay never steals the cursor back while another is still open.
+    fn gameplay_wants_cursor(&self) -> bool {
+        matches!(self.screen, Screen::Playing)
+            && !self.config_panel.is_visible()
+            && !self.map_open
+            && !self.show_help
+    }
+
     /// Toggle the full-world map overlay (`M`). Releases the cursor while open and
-    /// recaptures it on close — but only when normal gameplay actually wants the
-    /// cursor captured (`Playing`, no config panel). The keyboard path already
-    /// gates on the screen, but the debug API can toggle this from any screen, so
-    /// guard the recapture here too rather than locking the cursor on a menu.
+    /// recaptures it on close — but only when gameplay actually wants the cursor
+    /// (see `gameplay_wants_cursor`). The keyboard path already gates on the
+    /// screen, but the debug API can toggle this from any state, so guard the
+    /// recapture here too rather than locking the cursor on a menu/other overlay.
     fn toggle_map_overlay(&mut self) {
         self.map_open = !self.map_open;
         if self.map_open {
             self.release_cursor();
-        } else if matches!(self.screen, Screen::Playing) && !self.config_panel.is_visible() {
+        } else if self.gameplay_wants_cursor() {
             self.capture_cursor();
         }
     }
 
     /// Toggle the keyboard-shortcuts help overlay. Like the map, it releases the
-    /// cursor while open and recaptures it on close only when we're back to plain
-    /// gameplay (no config panel, not on a menu).
+    /// cursor while open and recaptures it on close only when gameplay wants it.
     fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
         if self.show_help {
             self.release_cursor();
-        } else if matches!(self.screen, Screen::Playing) && !self.config_panel.is_visible() {
+        } else if self.gameplay_wants_cursor() {
             self.capture_cursor();
         }
     }

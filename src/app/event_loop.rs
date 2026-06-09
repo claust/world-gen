@@ -84,6 +84,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             && !app.is_on_herbarium()
                             && !app.is_on_editor()
                             && !app.config_panel.is_visible()
+                            && !app.show_help
                         {
                             app.toggle_map_overlay();
                         }
@@ -448,6 +449,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             && !app.is_on_herbarium()
                             && !app.is_on_editor()
                             && !app.config_panel.is_visible()
+                            && !app.show_help
                         {
                             app.toggle_map_overlay();
                         }
