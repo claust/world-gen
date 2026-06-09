@@ -146,6 +146,14 @@ pub enum CommandKind {
         u: f32,
         v: f32,
     },
+    /// Save the current camera viewpoint into a favorite slot (1-based, 1–5).
+    SaveFavorite {
+        slot: u8,
+    },
+    /// Recall a saved favorite viewpoint (1-based slot, 1–5).
+    RecallFavorite {
+        slot: u8,
+    },
     FindNearest {
         kind: ObjectKind,
     },
@@ -175,6 +183,7 @@ pub enum PressableKey {
     Escape,
     M,
     P,
+    H,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
