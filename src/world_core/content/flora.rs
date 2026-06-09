@@ -130,6 +130,15 @@ impl FloraLayer {
                     continue;
                 }
 
+                // The wetness gate alone misses channel-edge shallows: wetness is
+                // interpolated from a coarse grid and can fall below the plantable
+                // cap on ground that is nonetheless under the water sheet. No land
+                // plant can seat below the waterline.
+                let sheet = sample_field_bilinear(&terrain.river_surface, local_x, local_z);
+                if height < sheet {
+                    continue;
+                }
+
                 // Compute base density from biome (reuse old forest/grassland model)
                 let base_density = biome_density(biome, moisture);
                 if rnd > base_density {
