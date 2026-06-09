@@ -278,7 +278,8 @@ fn experiment_terrain_subparts(
         |x, z| hm.sample_moisture(x, z) as f64
     );
     pass!("river sample (bilinear)", |x, z| {
-        let (a, b, _s) = rivers.sample(x, z);
+        let raw = hm.sample_height(x, z);
+        let (a, b, _s) = rivers.sample(raw, x, z);
         (a + b) as f64
     });
     std::hint::black_box(acc);
@@ -317,8 +318,8 @@ fn experiment_nested_parallelism(
                 let x = ox + (idx % SIDE) as f32 * cell;
                 let z = oz + (idx / SIDE) as f32 * cell;
                 let raw = hm.sample_height(x, z);
-                let (carve, _w, _s) = rivers.sample(x, z);
-                heights.push(raw - carve);
+                let (h, _w, _s) = rivers.sample(raw, x, z);
+                heights.push(h);
             }
             heights
         }
@@ -336,8 +337,8 @@ fn experiment_nested_parallelism(
                     let x = ox + (idx % SIDE) as f32 * cell;
                     let z = oz + (idx / SIDE) as f32 * cell;
                     let raw = hm.sample_height(x, z);
-                    let (carve, _w, _s) = rivers.sample(x, z);
-                    raw - carve
+                    let (h, _w, _s) = rivers.sample(raw, x, z);
+                    h
                 })
                 .collect()
         }

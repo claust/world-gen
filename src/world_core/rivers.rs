@@ -14,7 +14,7 @@
 //! ocean cell), then accumulate upstream area. Cells with enough upstream area
 //! become rivers. The grid wraps toroidally to match the world's noise period.
 
-use crate::world_core::chunk::WORLD_SIZE_METERS;
+use crate::world_core::chunk::{RIVER_SURFACE_FREEBOARD, WORLD_SIZE_METERS};
 use crate::world_core::config::GameConfig;
 use crate::world_core::heightmap::Heightmap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,6 +49,13 @@ pub const AQUATIC_MAX_WETNESS: f32 = 0.55;
 // depth both scale with channel size (`size` = nearest channel's normalized
 // log-drainage `wet`, 0..1) so creeks stay shallow and narrow while trunk
 // rivers cut deep, wide beds.
+//
+// The sharp wall's height *above the water* is then capped (`MAX_BRINK`): in a
+// steep valley the bank would otherwise be a tall near-vertical cliff (freeboard
+// plus the natural valley rise), so above the cap the cut blends back to natural
+// terrain and the bank reads as a bounded, house-scale step. This shapes only the
+// above-water rim — the bed is untouched, so the water level and channel width are
+// unchanged and the bed stays submerged (no return of the pooled-river artifact).
 
 /// Width (metres) of the bank wall: the band over which carve ramps from full
 /// depth down to zero just outside the channel half-width. Smaller = sharper.
@@ -63,32 +70,62 @@ const HALFWIDTH_SPAN: f32 = 14.0;
 const DEPTH_FLOOR: f32 = 0.4;
 const DEPTH_SPAN: f32 = 0.6;
 
+/// Cap (metres) on how tall the sharp bank wall stands *above the water sheet*.
+/// The wall's height above water is otherwise the freeboard plus however high the
+/// natural valley rises, so a steep valley turns the carved bank into a tall
+/// near-vertical cliff that dwarfs the ~5 m houses. Where the natural rim sits
+/// higher than `water + MAX_BRINK`, the sharp cut tops out here and the terrain
+/// above blends back to its natural height, so the defined bank stays a bounded,
+/// house-scale step instead of a cliff. Gentle valleys (rim below the cap) are
+/// untouched, so this never raises the water or widens a river.
+const MAX_BRINK: f32 = 2.5;
+/// Horizontal band (metres) over which the capped bank blends from the brink top
+/// back up to the natural terrain height — the gentle slope above the sharp step.
+const NATURAL_BLEND: f32 = 12.0;
+
 /// Hermite smoothstep, clamped to `0..1` outside `[edge0, edge1]`.
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Cross-channel carve shape at `dist` metres from the nearest channel, given
-/// that channel's `size` (0..1). Returns metres to subtract from the terrain:
-/// full `depth` inside the half-width, ramping to 0 over [`WALL_WIDTH`] beyond.
-fn carve_profile(dist: f32, size: f32, max_carve_depth: f32) -> f32 {
+/// Carved terrain height at one vertex. `raw` is the natural height, `dist` the
+/// metres to the nearest channel, `size` the channel size (0..1), `water` the
+/// river water-sheet elevation here. Shapes a flat bed inside the half-width, a
+/// steep wall up to the bank rim, then natural terrain — except the rim is capped
+/// at `water + MAX_BRINK` so a tall valley reads as a bounded step with a gentle
+/// natural slope above (see [`MAX_BRINK`]).
+fn carved_height(raw: f32, dist: f32, size: f32, water: f32, max_carve_depth: f32) -> f32 {
     let depth = max_carve_depth * (DEPTH_FLOOR + DEPTH_SPAN * size);
     let halfwidth = HALFWIDTH_MIN + HALFWIDTH_SPAN * size;
-    depth * (1.0 - smoothstep(halfwidth, halfwidth + WALL_WIDTH, dist))
+    let bed = raw - depth;
+    // Top of the sharp wall: the natural rim, but never more than MAX_BRINK above
+    // the water. Where the valley is gentle this is just `raw` and the cap is inert.
+    let rim = raw.min(water + MAX_BRINK);
+    // Sharp wall: flat `bed` inside the half-width, ramping up to `rim` over WALL_WIDTH.
+    let wall = 1.0 - smoothstep(halfwidth, halfwidth + WALL_WIDTH, dist);
+    let sharp = rim + (bed - rim) * wall;
+    // Above the (possibly capped) rim, blend gently back to the natural height so
+    // a capped wall continues as the real slope rather than a step.
+    let gentle = smoothstep(
+        halfwidth + WALL_WIDTH,
+        halfwidth + WALL_WIDTH + NATURAL_BLEND,
+        dist,
+    );
+    (sharp + (raw - rim) * gentle).clamp(bed, raw)
 }
 
 /// A baked global river field, sampled during terrain generation.
 pub struct RiverField {
     res: usize,
     /// Channel depth (metres) for the largest rivers; the per-vertex carve
-    /// scales this by [`carve_profile`].
+    /// scales this by [`carved_height`].
     max_carve_depth: f32,
     /// Per-cell wetness in `0..1` (riverbed tint strength; also the channel-size
     /// proxy propagated into [`chan_size`](Self::chan_size)).
     wet: Vec<f32>,
     /// Per-cell distance (metres) to the nearest channel cell, capped to the
-    /// band the wall profile uses. Bilinearly sampled and fed to [`carve_profile`];
+    /// band the wall profile uses. Bilinearly sampled and fed to [`carved_height`];
     /// near-linear in metres, so it interpolates a sharp wall the coarse grid
     /// could not represent directly.
     dist: Vec<f32>,
@@ -239,6 +276,56 @@ impl RiverField {
                 heap.push(Reverse((0, i as u32)));
             }
         }
+        // Bridge diagonal channel steps. The field above is distance to the
+        // nearest channel *cell*; bilinearly sampled along a diagonal run of
+        // channel cells it bulges to ~half a cell at each segment midpoint —
+        // the two off-diagonal corner cells sit a full cell away, dragging the
+        // interpolation up — which pinches the carve to zero and chops the river
+        // into one-cell-spaced pools. Seed those corner cells (a non-channel cell
+        // flanked by two channel cells that are diagonal to each other) so the
+        // interpolated distance along the diagonal centreline stays inside the
+        // wall and the carve runs unbroken.
+        //
+        // The seed must satisfy two constraints, which is why it scales with the
+        // channel rather than being a fixed fraction of a cell: the segment
+        // midpoint interpolates to half the seed, which must land within the
+        // half-width so the carve there is full depth (`seed <= 2 * halfwidth`);
+        // and the corner cell itself must stay at/outside the wall so it does not
+        // widen the channel (`seed >= halfwidth + WALL_WIDTH`). Seeding at exactly
+        // `halfwidth + WALL_WIDTH` puts the corner on the zero-carve edge — no
+        // widening — while keeping the midpoint at `(halfwidth + WALL_WIDTH) / 2`,
+        // inside the flat bed for any channel wide enough to carve.
+        let wet_at = |x: i64, z: i64| -> f32 {
+            wet[(z.rem_euclid(n) as usize) * res + x.rem_euclid(n) as usize]
+        };
+        // Perpendicular orthogonal-neighbour pairs. If both are channel they are
+        // diagonal to one another and this cell is their inner corner.
+        const BRIDGE_PAIRS: [((i64, i64), (i64, i64)); 4] = [
+            ((0, -1), (1, 0)),  // N & E
+            ((1, 0), (0, 1)),   // E & S
+            ((0, 1), (-1, 0)),  // S & W
+            ((-1, 0), (0, -1)), // W & N
+        ];
+        for i in 0..n2 {
+            if wet[i] > 0.0 {
+                continue;
+            }
+            let cx = (i % res) as i64;
+            let cz = (i / res) as i64;
+            let mut size = 0.0f32;
+            for (a, b) in BRIDGE_PAIRS {
+                let (wa, wb) = (wet_at(cx + a.0, cz + a.1), wet_at(cx + b.0, cz + b.1));
+                if wa > 0.0 && wb > 0.0 {
+                    size = size.max(wa).max(wb);
+                }
+            }
+            if size > 0.0 {
+                let bridge_seed = HALFWIDTH_MIN + HALFWIDTH_SPAN * size + WALL_WIDTH;
+                dist[i] = bridge_seed;
+                chan_size[i] = size;
+                heap.push(Reverse((qkey(bridge_seed), i as u32)));
+            }
+        }
         let diag = cell * std::f32::consts::SQRT_2;
         while let Some(Reverse((pk, ci))) = heap.pop() {
             let ci = ci as usize;
@@ -293,13 +380,15 @@ impl RiverField {
         }
     }
 
-    /// Bilinearly sample the field at world `(x, z)` (wrapping toroidally).
-    /// Returns `(carve_depth_metres, wetness_0_1, water_surface_elevation_m)`.
-    /// The surface elevation is the smoothed routing surface; the caller drops a
-    /// freeboard off it to place the water sheet below the surrounding banks.
-    pub fn sample(&self, x: f32, z: f32) -> (f32, f32, f32) {
+    /// Carved terrain height at world `(x, z)` (wrapping toroidally) given the
+    /// natural height `raw`. Returns `(carved_height_m, wetness_0_1,
+    /// routing_surface_elevation_m)`. The third value is the smoothed routing
+    /// surface *before* the freeboard, not the water sheet itself: the caller drops
+    /// [`RIVER_SURFACE_FREEBOARD`] off it to place the sheet below the banks — the
+    /// same freeboard this already applies internally to cap the bank wall.
+    pub fn sample(&self, raw: f32, x: f32, z: f32) -> (f32, f32, f32) {
         if self.res <= 1 {
-            return (0.0, 0.0, 0.0);
+            return (raw, 0.0, 0.0);
         }
         let res = self.res;
         let cell = WORLD_SIZE_METERS as f32 / res as f32;
@@ -326,16 +415,48 @@ impl RiverField {
             let bot = c * (1.0 - tx) + d * tx;
             top * (1.0 - tz) + bot * tz
         };
-        // Carve is shaped here from the *interpolated* distance and channel size
+        // Height is shaped here from the *interpolated* distance and channel size
         // rather than baked as a depth and interpolated: the wall profile applied
         // per vertex collapses the bank drop onto a few metres, so the channel
-        // reads as a walled cut instead of a wide bowl. See [`carve_profile`].
-        let carve = carve_profile(
+        // reads as a walled cut instead of a wide bowl. See [`carved_height`].
+        let surf = lerp(&self.surf);
+        let water = surf - RIVER_SURFACE_FREEBOARD;
+        let h = carved_height(
+            raw,
             lerp(&self.dist),
             lerp(&self.chan_size),
+            water,
             self.max_carve_depth,
         );
-        (carve, lerp(&self.wet), lerp(&self.surf))
+        (h, lerp(&self.wet), surf)
+    }
+
+    /// Bilinearly sample just the river wetness (`0..1`) at world `(x, z)`. For
+    /// callers that only gate on "in the channel" (plant placement, the map) and
+    /// don't need the carved height, so they need not supply the natural terrain.
+    pub fn wetness(&self, x: f32, z: f32) -> f32 {
+        if self.res <= 1 {
+            return 0.0;
+        }
+        let res = self.res;
+        let cell = WORLD_SIZE_METERS as f32 / res as f32;
+        let gx = x / cell;
+        let gz = z / cell;
+        let x0 = gx.floor();
+        let z0 = gz.floor();
+        let tx = gx - x0;
+        let tz = gz - z0;
+        let ix0 = (x0 as i64).rem_euclid(res as i64) as usize;
+        let iz0 = (z0 as i64).rem_euclid(res as i64) as usize;
+        let ix1 = (ix0 + 1) % res;
+        let iz1 = (iz0 + 1) % res;
+        let a = self.wet[iz0 * res + ix0];
+        let b = self.wet[iz0 * res + ix1];
+        let c = self.wet[iz1 * res + ix0];
+        let d = self.wet[iz1 * res + ix1];
+        let top = a * (1.0 - tx) + b * tx;
+        let bot = c * (1.0 - tx) + d * tx;
+        top * (1.0 - tz) + bot * tz
     }
 
     /// Bilinearly sample the downstream flow direction at world `(x, z)`,
@@ -520,38 +641,61 @@ mod tests {
         let field = RiverField::generate(42, &config);
         let l = WORLD_SIZE_METERS as f32;
         for &(x, z) in &[(0.0, 0.0), (123.0, 4567.0), (60000.0, 200.0)] {
-            let (c0, w0, s0) = field.sample(x, z);
-            let (c1, w1, s1) = field.sample(x + l, z - l);
-            assert!((c0 - c1).abs() < 1e-3, "carve not periodic at ({x},{z})");
+            // A fixed `raw` isolates the field's periodicity from the heightmap's.
+            let (c0, w0, s0) = field.sample(50.0, x, z);
+            let (c1, w1, s1) = field.sample(50.0, x + l, z - l);
+            assert!((c0 - c1).abs() < 1e-3, "height not periodic at ({x},{z})");
             assert!((w0 - w1).abs() < 1e-3, "wet not periodic at ({x},{z})");
             assert!((s0 - s1).abs() < 1e-3, "surf not periodic at ({x},{z})");
         }
     }
 
     #[test]
-    fn carve_profile_is_a_flat_bottomed_wall() {
+    fn carved_height_is_a_flat_bottomed_wall_capped_above_water() {
         let max = 20.0;
         let size = 0.8;
         let halfwidth = HALFWIDTH_MIN + HALFWIDTH_SPAN * size;
         let depth = max * (DEPTH_FLOOR + DEPTH_SPAN * size);
+        // A gentle valley: the natural rim sits below the brink cap (water is high
+        // relative to the rim), so the cap is inert and the carve is the plain
+        // flat-bottomed wall down to `raw - depth`.
+        let raw = 50.0;
+        let water_low = raw; // water + MAX_BRINK > raw, so rim stays at raw (uncapped)
+        let bed = raw - depth;
 
         // Flat full-depth floor across the whole half-width.
-        assert!((carve_profile(0.0, size, max) - depth).abs() < 1e-3);
-        assert!((carve_profile(halfwidth, size, max) - depth).abs() < 1e-3);
-        // Zero once past the wall, and the transition is confined to WALL_WIDTH.
-        assert_eq!(carve_profile(halfwidth + WALL_WIDTH, size, max), 0.0);
-        assert_eq!(carve_profile(halfwidth + WALL_WIDTH + 10.0, size, max), 0.0);
-        // The wall is steep: most of the drop happens over WALL_WIDTH metres, far
-        // sharper than the ~grid-cell-wide ramp a bilinearly-sampled depth gives.
-        let mid = carve_profile(halfwidth + 0.5 * WALL_WIDTH, size, max);
+        assert!((carved_height(raw, 0.0, size, water_low, max) - bed).abs() < 1e-3);
+        assert!((carved_height(raw, halfwidth, size, water_low, max) - bed).abs() < 1e-3);
+        // Back to natural terrain just past the sharp wall (cap inert here).
         assert!(
-            (mid - 0.5 * depth).abs() < 0.05 * depth,
+            (carved_height(raw, halfwidth + WALL_WIDTH, size, water_low, max) - raw).abs() < 1e-3
+        );
+        assert!((carved_height(raw, halfwidth + 50.0, size, water_low, max) - raw).abs() < 1e-3);
+        // The wall is steep: ~half the drop over half of WALL_WIDTH.
+        let mid = carved_height(raw, halfwidth + 0.5 * WALL_WIDTH, size, water_low, max);
+        assert!(
+            (mid - (bed + 0.5 * depth)).abs() < 0.05 * depth,
             "wall midpoint {mid}"
         );
 
-        // Depth and half-width both shrink with channel size: a creek cuts a
-        // shallower, narrower bed than a trunk.
-        assert!(carve_profile(0.0, 0.1, max) < carve_profile(0.0, 0.9, max));
+        // A steep valley: the natural rim towers above the cap, so the sharp wall
+        // tops out at `water + MAX_BRINK`, well below the natural rim.
+        let water_high = raw - 10.0; // rim (raw) is 10 m above water, > MAX_BRINK
+        let wall_top = carved_height(raw, halfwidth + WALL_WIDTH, size, water_high, max);
+        assert!(
+            (wall_top - (water_high + MAX_BRINK)).abs() < 1e-3,
+            "sharp wall should top out at the brink cap, got {wall_top}"
+        );
+        // Above the cap it blends back up to natural terrain, not a step.
+        assert!(
+            carved_height(
+                raw,
+                halfwidth + WALL_WIDTH + NATURAL_BLEND,
+                size,
+                water_high,
+                max
+            ) > raw - 1e-3
+        );
     }
 
     #[test]
@@ -559,7 +703,7 @@ mod tests {
         let mut config = GameConfig::default();
         config.rivers.enabled = false;
         let field = RiverField::generate(42, &config);
-        assert_eq!(field.sample(1234.0, 5678.0), (0.0, 0.0, 0.0));
+        assert_eq!(field.sample(50.0, 1234.0, 5678.0), (50.0, 0.0, 0.0));
     }
 
     #[test]
@@ -569,6 +713,66 @@ mod tests {
         let field = RiverField::generate(42, &config);
         let wet_cells = field.wet.iter().filter(|&&w| w > 0.0).count();
         assert!(wet_cells > 0, "expected the default world to grow rivers");
+    }
+
+    #[test]
+    fn channel_carves_an_unbroken_bed() {
+        // Regression: the distance field is distance-to-nearest-channel-*cell*,
+        // and bilinearly sampled along a diagonal run of channel cells it bulges
+        // to ~half a cell at each segment midpoint. That pinched the carve to
+        // zero, letting the bed re-emerge above the water sheet and chopping the
+        // river into one-cell-spaced pools. Walk a real channel downstream and
+        // assert the carved bed stays below the water sheet the whole way.
+        use crate::world_core::chunk::{RIVER_SURFACE_FREEBOARD, RIVER_SURFACE_THRESHOLD};
+        use crate::world_core::heightmap::Heightmap;
+
+        let mut config = GameConfig::default();
+        config.rivers.grid_resolution = 1024;
+        let field = RiverField::generate(42, &config);
+        let hm = Heightmap::new(42, config.heightmap.clone());
+
+        // Start from the strongest channel cell that actually has downstream flow,
+        // so the walk has somewhere to go: the wettest cell can be an outlet/ocean
+        // cell whose flow is `(0, 0)`, which would end the walk immediately.
+        let res = field.res;
+        let cell = WORLD_SIZE_METERS as f32 / res as f32;
+        let (start, _) = field
+            .wet
+            .iter()
+            .enumerate()
+            .filter(|(i, &w)| w > 0.0 && (field.flow_x[*i] != 0.0 || field.flow_z[*i] != 0.0))
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .expect("default world has a flowing channel");
+        let (mut wx, mut wz) = ((start % res) as f32 * cell, (start / res) as f32 * cell);
+
+        // Follow the flow field downstream at terrain-vertex resolution and count
+        // dry gaps: stretches inside the marked channel where the bed pokes above
+        // the sheet. The pre-fix field produced a gap at nearly every cell.
+        let mut gaps = 0;
+        let mut in_gap = false;
+        let mut steps = 0;
+        while steps < 600 {
+            let (fx, fz) = field.sample_flow(wx, wz);
+            if fx == 0.0 && fz == 0.0 {
+                break;
+            }
+            let raw = hm.sample_height(wx, wz);
+            let (bed, wet, surf) = field.sample(raw, wx, wz);
+            let sheet = surf - RIVER_SURFACE_FREEBOARD;
+            let dry = wet > RIVER_SURFACE_THRESHOLD && bed >= sheet;
+            if dry && !in_gap {
+                gaps += 1;
+            }
+            in_gap = dry;
+            wx += fx * 2.0;
+            wz += fz * 2.0;
+            steps += 1;
+        }
+        assert!(
+            steps > 100,
+            "walk terminated early ({steps} steps); test did not exercise a channel"
+        );
+        assert_eq!(gaps, 0, "channel broke into pools: {gaps} dry gaps");
     }
 
     #[test]

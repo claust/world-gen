@@ -66,8 +66,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
             let z = idx / side;
             let world_x = origin_x + x as f32 * cell_size;
             let world_z = origin_z + z as f32 * cell_size;
-            let (carve, wet, surf) = self.rivers.sample(world_x, world_z);
-            let h = raw - carve;
+            let (h, wet, surf) = self.rivers.sample(raw, world_x, world_z);
             heights.push(h);
             river.push(wet);
             // Flat water sheet: the smoothed routing surface dropped by a freeboard
