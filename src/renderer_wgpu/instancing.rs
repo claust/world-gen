@@ -273,13 +273,18 @@ const DEAD_DECAY_SHRINK: f32 = 0.2;
 const DEAD_TILT_MIN: f32 = 0.04;
 const DEAD_TILT_SPAN: f32 = 0.08;
 
-/// Deterministic per-plant lean for a dead snag, keyed on its position bits so
-/// the same snag always leans the same way.
+/// Deterministic per-plant lean for a dead snag. Rendered positions are
+/// rebased per world lap, so hash the canonical (wrap-independent) position,
+/// quantized to the 0.25 m base storage grid to absorb float noise from the
+/// rebasing — the same snag leans identically on every lap.
 fn dead_tilt(p: &PlantInstance) -> f32 {
+    let world = crate::world_core::chunk::WORLD_SIZE_METERS as f32;
+    let qx = (p.position.x.rem_euclid(world) * 4.0).round() as u32;
+    let qz = (p.position.z.rem_euclid(world) * 4.0).round() as u32;
     let h = crate::world_core::content::sampling::hash4(
         0x534E_4147, // "SNAG"
-        p.position.x.to_bits(),
-        p.position.z.to_bits(),
+        qx,
+        qz,
         p.rotation.to_bits(),
     );
     DEAD_TILT_MIN + DEAD_TILT_SPAN * crate::world_core::content::sampling::hash_to_unit_float(h)
