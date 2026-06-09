@@ -1,0 +1,26 @@
+{%- comment -%}
+Left sidebar for the Concepts section. Pass `current` (the page's concept
+slug) to highlight the active entry:
+  {% include concepts-sidebar.html current="shaders" %}
+Slugs must match the concept-<slug>.html file names.
+{%- endcomment -%}
+<nav class="concept-nav" aria-label="Technology concepts">
+    <a class="concept-nav-home{% if include.current == 'index' %} current{% endif %}" href="./concepts.html">All Concepts</a>
+
+    <div class="concept-nav-group">Rendering</div>
+    <a href="./concept-shaders.html"{% if include.current == "shaders" %} class="current" aria-current="page"{% endif %}>Shaders &amp; WGSL</a>
+    <a href="./concept-compute-shaders.html"{% if include.current == "compute-shaders" %} class="current" aria-current="page"{% endif %}>Compute Shaders</a>
+    <a href="./concept-bind-groups.html"{% if include.current == "bind-groups" %} class="current" aria-current="page"{% endif %}>Bind Groups</a>
+    <a href="./concept-instanced-rendering.html"{% if include.current == "instanced-rendering" %} class="current" aria-current="page"{% endif %}>Instanced Rendering</a>
+    <a href="./concept-frustum-culling.html"{% if include.current == "frustum-culling" %} class="current" aria-current="page"{% endif %}>Frustum Culling</a>
+    <a href="./concept-swapchain.html"{% if include.current == "swapchain" %} class="current" aria-current="page"{% endif %}>The Swapchain</a>
+
+    <div class="concept-nav-group">Building the World</div>
+    <a href="./concept-game-loop.html"{% if include.current == "game-loop" %} class="current" aria-current="page"{% endif %}>The Game Loop</a>
+    <a href="./concept-procedural-generation.html"{% if include.current == "procedural-generation" %} class="current" aria-current="page"{% endif %}>Procedural Generation</a>
+    <a href="./concept-chunk-streaming.html"{% if include.current == "chunk-streaming" %} class="current" aria-current="page"{% endif %}>Chunk Streaming</a>
+
+    <div class="concept-nav-group">Platform</div>
+    <a href="./concept-webgpu.html"{% if include.current == "webgpu" %} class="current" aria-current="page"{% endif %}>WebGPU &amp; wgpu</a>
+    <a href="./concept-webassembly.html"{% if include.current == "webassembly" %} class="current" aria-current="page"{% endif %}>WebAssembly</a>
+</nav>

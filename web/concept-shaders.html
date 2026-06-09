@@ -1,0 +1,288 @@
+---
+layout: concept
+concept: shaders
+title: "Shaders & WGSL | FloraForge Concepts"
+description: "What a shader is, how the GPU pipeline runs it, and what WGSL — the WebGPU shading language — looks like, with real shader code from the FloraForge engine."
+og_title: Shaders & WGSL — FloraForge Concepts
+og_description: "A full explanation of shaders: the GPU pipeline, vertex and fragment stages, and real WGSL code from FloraForge's sky renderer."
+og_type: article
+og_url: https://floraforge.eu/concept-shaders.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Rendering</p>
+                <h1>Shaders <span class="accent">&amp; WGSL</span></h1>
+                <p>
+                    Every pixel FloraForge puts on screen was computed by a shader — a small
+                    program that runs not on your CPU, but on the graphics card, thousands of
+                    copies at a time. This page explains what shaders are, how the GPU pipeline
+                    invokes them, and what their language looks like, using real code from the
+                    engine's sky renderer.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>What a shader actually is</h2>
+                <p>
+                    A shader is a function with a very unusual contract. You don't call it once —
+                    you hand it to the GPU, and the GPU calls it <em>for you</em>, in parallel,
+                    once for every item in some enormous set: every vertex of a mesh, every pixel
+                    of the screen, every cell of a grid. The shader never sees its neighbours and
+                    cannot share results with them; it gets one input, computes one output, and
+                    that isolation is exactly what lets the hardware run tens of thousands of
+                    copies simultaneously.
+                </p>
+                <p>
+                    The name is historical — the first shaders computed shading, the colour of lit
+                    surfaces — but the idea outgrew the name decades ago. Modern shaders generate
+                    geometry, simulate water, animate clouds, and in FloraForge's case even build
+                    the terrain itself. What unites them is the execution model: <strong>one small
+                    pure function, mapped over a huge dataset, on hardware built for exactly
+                    that.</strong>
+                </p>
+
+                <h2>The pipeline: from triangles to pixels</h2>
+                <p>
+                    Drawing-style shaders come in pairs, plugged into a fixed conveyor belt called
+                    the <em>render pipeline</em>. The engine submits raw vertices; the pipeline
+                    pushes them through both shader stages and the rasterizer between them:
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 330" role="img" aria-label="The GPU render pipeline: vertex data flows through the vertex shader, the rasterizer, and the fragment shader to become pixels in the frame.">
+                        <defs>
+                            <marker id="parrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#7cff9f"/>
+                            </marker>
+                        </defs>
+
+                        <!-- stage 1: vertex data -->
+                        <rect x="20" y="70" width="190" height="170" rx="16" fill="rgba(240,237,228,0.05)" stroke="rgba(240,237,228,0.3)" stroke-width="1.2"/>
+                        <text x="115" y="105" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Vertex data</text>
+                        <g stroke="#c7b99d" stroke-width="1.4" fill="none">
+                            <circle cx="75" cy="150" r="4" fill="#c7b99d"/>
+                            <circle cx="155" cy="140" r="4" fill="#c7b99d"/>
+                            <circle cx="115" cy="200" r="4" fill="#c7b99d"/>
+                            <path d="M75 150 L155 140 L115 200 Z" stroke-dasharray="4 3"/>
+                        </g>
+                        <text x="115" y="228" text-anchor="middle" fill="#c7b99d" font-size="12">positions · normals · colours</text>
+
+                        <!-- stage 2: vertex shader -->
+                        <rect x="270" y="70" width="190" height="170" rx="16" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="365" y="100" text-anchor="middle" fill="#7cff9f" font-size="12.5" font-family="JetBrains Mono, monospace">@vertex</text>
+                        <text x="365" y="128" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Vertex shader</text>
+                        <text x="365" y="158" text-anchor="middle" fill="#c7b99d" font-size="12.5">runs once per vertex</text>
+                        <text x="365" y="178" text-anchor="middle" fill="#c7b99d" font-size="12.5">projects 3D world position</text>
+                        <text x="365" y="196" text-anchor="middle" fill="#c7b99d" font-size="12.5">into 2D screen space</text>
+
+                        <!-- stage 3: rasterizer -->
+                        <rect x="520" y="70" width="170" height="170" rx="16" fill="rgba(240,237,228,0.05)" stroke="rgba(240,237,228,0.3)" stroke-width="1.2"/>
+                        <text x="605" y="105" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Rasterizer</text>
+                        <g fill="rgba(124,255,159,0.4)">
+                            <rect x="572" y="130" width="11" height="11"/><rect x="585" y="130" width="11" height="11"/>
+                            <rect x="559" y="143" width="11" height="11"/><rect x="572" y="143" width="11" height="11"/><rect x="585" y="143" width="11" height="11"/><rect x="598" y="143" width="11" height="11"/>
+                            <rect x="559" y="156" width="11" height="11"/><rect x="572" y="156" width="11" height="11"/><rect x="585" y="156" width="11" height="11"/><rect x="598" y="156" width="11" height="11"/><rect x="611" y="156" width="11" height="11"/>
+                            <rect x="572" y="169" width="11" height="11"/><rect x="585" y="169" width="11" height="11"/><rect x="598" y="169" width="11" height="11"/>
+                        </g>
+                        <text x="605" y="212" text-anchor="middle" fill="#c7b99d" font-size="12.5">fixed hardware — breaks each</text>
+                        <text x="605" y="228" text-anchor="middle" fill="#c7b99d" font-size="12.5">triangle into covered pixels</text>
+
+                        <!-- stage 4: fragment shader -->
+                        <rect x="750" y="70" width="190" height="170" rx="16" fill="rgba(246,197,145,0.12)" stroke="#f6c591" stroke-width="1.4"/>
+                        <text x="845" y="100" text-anchor="middle" fill="#f6c591" font-size="12.5" font-family="JetBrains Mono, monospace">@fragment</text>
+                        <text x="845" y="128" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Fragment shader</text>
+                        <text x="845" y="158" text-anchor="middle" fill="#c7b99d" font-size="12.5">runs once per pixel</text>
+                        <text x="845" y="178" text-anchor="middle" fill="#c7b99d" font-size="12.5">computes the final colour:</text>
+                        <text x="845" y="196" text-anchor="middle" fill="#c7b99d" font-size="12.5">light · fog · texture · sky</text>
+
+                        <!-- arrows -->
+                        <line x1="212" y1="155" x2="266" y2="155" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#parrow)"/>
+                        <line x1="462" y1="155" x2="516" y2="155" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#parrow)"/>
+                        <line x1="692" y1="155" x2="746" y2="155" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#parrow)"/>
+
+                        <!-- scale annotations -->
+                        <text x="365" y="280" text-anchor="middle" fill="rgba(240,237,228,0.5)" font-size="12.5">~16,000 vertices per terrain chunk</text>
+                        <text x="845" y="280" text-anchor="middle" fill="rgba(240,237,228,0.5)" font-size="12.5">~2,000,000 pixels per frame</text>
+                        <text x="480" y="315" text-anchor="middle" fill="#c7b99d" font-size="13" letter-spacing="1.5">all of it, every frame, 60+ times a second</text>
+                    </svg>
+                    <figcaption>
+                        The two programmable stages of the render pipeline. FloraForge supplies a
+                        vertex and a fragment shader for every material — terrain, water, sky,
+                        plants — and the rasterizer in between is fixed hardware.
+                    </figcaption>
+                </figure>
+
+                <p>
+                    The <strong>vertex shader</strong> answers one question: <em>where does this
+                    point land on screen?</em> It takes a vertex's 3D world position and multiplies
+                    it by the camera's view-projection matrix. The <strong>fragment shader</strong>
+                    answers the other: <em>what colour is this pixel?</em> For every pixel the
+                    rasterizer found inside a triangle, it combines lighting, fog, material colour
+                    and anything else the artist — or in FloraForge's case, the procedural rules —
+                    can express in code.
+                </p>
+
+                <h2>The language: WGSL</h2>
+                <p>
+                    Shaders are written in special-purpose languages, and FloraForge uses
+                    <strong>WGSL</strong> — the WebGPU Shading Language, the shader language
+                    standardised alongside <a href="./concept-webgpu.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">WebGPU</a>.
+                    It looks like a cousin of Rust: <code>fn</code>, <code>let</code>,
+                    <code>struct</code>, type annotations after a colon. Three things stand out
+                    against a general-purpose language:
+                </p>
+                <ul>
+                    <li><strong>Vector math is built in.</strong> <code>vec3&lt;f32&gt;</code>,
+                        <code>mat4x4&lt;f32&gt;</code>, dot products, swizzles like
+                        <code>p.xyz</code> — the things graphics code does constantly are part of
+                        the language, not a library.</li>
+                    <li><strong>Attributes wire it to the pipeline.</strong> <code>@vertex</code>
+                        and <code>@fragment</code> mark entry points; <code>@builtin(position)</code>
+                        and <code>@location(n)</code> declare exactly which value flows where
+                        between stages.</li>
+                    <li><strong>No recursion, no pointers into the heap, no surprises.</strong> The
+                        GPU must know every program's resource needs up front, so the language is
+                        deliberately closed — which is also what makes it safe to ship to a
+                        browser.</li>
+                </ul>
+                <p>
+                    Here is a complete, real vertex shader — the one that draws FloraForge's sky.
+                    It uses a classic trick: instead of submitting a mesh, it generates a single
+                    triangle big enough to cover the whole screen, computing the three corners
+                    from nothing but the vertex's index:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/shaders/sky.wgsl — the whole vertex stage</div>
+                <pre class="code-block"><code><span class="kw">struct</span> <span class="ty">VertexOutput</span> {
+    <span class="at">@builtin(position)</span> clip_position: <span class="ty">vec4&lt;f32&gt;</span>,
+    <span class="at">@location(0)</span> ndc: <span class="ty">vec2&lt;f32&gt;</span>,
+};
+
+<span class="at">@vertex</span>
+<span class="kw">fn</span> <span class="fn">vs_main</span>(<span class="at">@builtin(vertex_index)</span> id: <span class="ty">u32</span>) -&gt; <span class="ty">VertexOutput</span> {
+    <span class="cm">// Fullscreen triangle: 3 vertices covering the entire screen</span>
+    <span class="kw">let</span> uv = <span class="ty">vec2&lt;f32&gt;</span>(<span class="ty">f32</span>((id &lt;&lt; <span class="num">1u</span>) &amp; <span class="num">2u</span>), <span class="ty">f32</span>(id &amp; <span class="num">2u</span>));
+    <span class="kw">var</span> out: <span class="ty">VertexOutput</span>;
+    out.clip_position = <span class="ty">vec4&lt;f32&gt;</span>(uv * <span class="num">2.0</span> - <span class="num">1.0</span>, <span class="num">1.0</span>, <span class="num">1.0</span>);
+    out.ndc = out.clip_position.xy;
+    <span class="kw">return</span> out;
+}</code></pre>
+
+                <p>
+                    The GPU calls <code>vs_main</code> three times with <code>id</code> = 0, 1, 2,
+                    and the bit-twiddling on the index produces three corners that enclose the
+                    screen. No vertex buffer needed at all. The <code>VertexOutput</code> struct is
+                    the hand-off contract: <code>clip_position</code> goes to the rasterizer, and
+                    <code>ndc</code> is interpolated and delivered to the fragment shader at every
+                    pixel.
+                </p>
+
+                <h3>A fragment shader that paints clouds</h3>
+                <p>
+                    The sky's fragment shader then runs once for every pixel on screen. The clouds
+                    you see in FloraForge aren't textures — they're computed in this shader from
+                    layered noise, fresh every frame. This excerpt is the noise stack it uses,
+                    a textbook example of how procedural graphics code reads:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/shaders/sky.wgsl — procedural cloud noise</div>
+                <pre class="code-block"><code><span class="cm">// Cheap hash: turns a 2D coordinate into a pseudo-random 0–1 value.</span>
+<span class="kw">fn</span> <span class="fn">hash2d</span>(p: <span class="ty">vec2&lt;f32&gt;</span>) -&gt; <span class="ty">f32</span> {
+    <span class="kw">var</span> p3 = fract(<span class="ty">vec3&lt;f32&gt;</span>(p.x, p.y, p.x) * <span class="num">0.1031</span>);
+    p3 = p3 + dot(p3, p3.yzx + <span class="num">33.33</span>);
+    <span class="kw">return</span> fract((p3.x + p3.y) * p3.z);
+}
+
+<span class="cm">// Smooth noise: blend the hash values of the 4 surrounding grid corners.</span>
+<span class="kw">fn</span> <span class="fn">noise2d</span>(p: <span class="ty">vec2&lt;f32&gt;</span>) -&gt; <span class="ty">f32</span> {
+    <span class="kw">let</span> i = floor(p);
+    <span class="kw">let</span> f = fract(p);
+    <span class="kw">let</span> u = f * f * (<span class="num">3.0</span> - <span class="num">2.0</span> * f);
+
+    <span class="kw">let</span> a = <span class="fn">hash2d</span>(i);
+    <span class="kw">let</span> b = <span class="fn">hash2d</span>(i + <span class="ty">vec2&lt;f32&gt;</span>(<span class="num">1.0</span>, <span class="num">0.0</span>));
+    <span class="kw">let</span> c = <span class="fn">hash2d</span>(i + <span class="ty">vec2&lt;f32&gt;</span>(<span class="num">0.0</span>, <span class="num">1.0</span>));
+    <span class="kw">let</span> d = <span class="fn">hash2d</span>(i + <span class="ty">vec2&lt;f32&gt;</span>(<span class="num">1.0</span>, <span class="num">1.0</span>));
+
+    <span class="kw">return</span> mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+<span class="cm">// Fractal Brownian motion: stack 5 octaves of noise, each finer and fainter.</span>
+<span class="kw">fn</span> <span class="fn">fbm</span>(p: <span class="ty">vec2&lt;f32&gt;</span>) -&gt; <span class="ty">f32</span> {
+    <span class="kw">var</span> val = <span class="num">0.0</span>;
+    <span class="kw">var</span> amp = <span class="num">0.5</span>;
+    <span class="kw">var</span> pos = p;
+    <span class="kw">for</span> (<span class="kw">var</span> i = <span class="num">0</span>; i &lt; <span class="num">5</span>; i = i + <span class="num">1</span>) {
+        val = val + amp * <span class="fn">noise2d</span>(pos);
+        pos = pos * <span class="num">2.0</span> + <span class="ty">vec2&lt;f32&gt;</span>(<span class="num">1.7</span>, <span class="num">9.2</span>);
+        amp = amp * <span class="num">0.5</span>;
+    }
+    <span class="kw">return</span> val;
+}</code></pre>
+
+                <p>
+                    Read bottom-up, this is the recipe behind most procedural texture in games:
+                    a <em>hash</em> gives raw randomness, <em>noise</em> smooths it into rolling
+                    values, and <em>fbm</em> ("fractal Brownian motion") layers several scales of
+                    that noise so the result has both broad shapes and fine detail — exactly the
+                    structure of a real cloud bank. The same idea, in more dimensions, generates
+                    FloraForge's terrain (see
+                    <a href="./concept-procedural-generation.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">Procedural Generation</a>).
+                </p>
+
+                <h2>How shaders get their data</h2>
+                <p>
+                    A shader can't read your program's variables — it lives on another processor
+                    with its own memory. Everything it needs must be shipped over explicitly and
+                    declared in the shader's interface. In WGSL those declarations name a group
+                    and a binding slot:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/shaders/sky.wgsl — the shader's inputs</div>
+                <pre class="code-block"><code><span class="kw">struct</span> <span class="ty">FrameUniform</span> {
+    view_proj: <span class="ty">mat4x4&lt;f32&gt;</span>,
+    camera_position: <span class="ty">vec4&lt;f32&gt;</span>,
+    time: <span class="ty">vec4&lt;f32&gt;</span>,
+    <span class="cm">// …shadow and projection params…</span>
+};
+
+<span class="at">@group(0)</span> <span class="at">@binding(0)</span> <span class="kw">var</span>&lt;<span class="kw">uniform</span>&gt; frame: <span class="ty">FrameUniform</span>;
+<span class="at">@group(1)</span> <span class="at">@binding(0)</span> <span class="kw">var</span>&lt;<span class="kw">uniform</span>&gt; material: <span class="ty">MaterialUniform</span>;</code></pre>
+
+                <p>
+                    Group 0 holds what changes every frame (camera, clock); group 1 holds what
+                    changes per material (lighting, fog colours). That split is a deliberate
+                    performance pattern with its own page:
+                    <a href="./concept-bind-groups.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">Bind Groups</a>.
+                </p>
+
+                <h2>The shaders in FloraForge</h2>
+                <p>
+                    Every visual system in the engine is its own WGSL file in
+                    <code>src/renderer_wgpu/shaders/</code>:
+                </p>
+                <ul>
+                    <li><strong>terrain.wgsl</strong> — draws the ground: biome colours, shadows, fog.</li>
+                    <li><strong>terrain_gen.wgsl</strong> — a <a href="./concept-compute-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">compute shader</a> that <em>builds</em> each chunk's mesh from height and moisture data.</li>
+                    <li><strong>sky.wgsl</strong> — the gradient sky, sun, and procedural clouds quoted above.</li>
+                    <li><strong>water.wgsl</strong> — the animated sea and river surface.</li>
+                    <li><strong>instanced.wgsl</strong> — trees, shrubs and houses, drawn via <a href="./concept-instanced-rendering.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">instancing</a>.</li>
+                    <li><strong>shadows.wgsl</strong> — renders the sun's-eye-view depth map for shadowing.</li>
+                    <li><strong>shrub_billboard.wgsl, hud.wgsl, thumbnail.wgsl, lighting.wgsl</strong> — distant-plant billboards, the HUD and minimap, herbarium thumbnails, and shared lighting helpers.</li>
+                </ul>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    Because WGSL is the native language of WebGPU, <strong>every one of these
+                    shaders runs unchanged on desktop and in the browser build</strong> — the
+                    <code>wgpu</code> library translates them to Metal, Vulkan or Direct3D on
+                    native platforms, and passes them straight through in the browser. One shader
+                    codebase, every platform.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concepts.html"><small>Back</small>All Concepts</a>
+                    <a class="next" href="./concept-compute-shaders.html"><small>Next</small>Compute Shaders →</a>
+                </div>
+            </section>

@@ -1,0 +1,263 @@
+---
+layout: concept
+concept: frustum-culling
+title: "Frustum Culling | FloraForge Concepts"
+description: "What the view frustum is, why its name is Latin for a morsel, and how FloraForge tests every chunk's bounding box against six planes to skip drawing the world you can't see."
+og_title: Frustum Culling — FloraForge Concepts
+og_description: "The camera sees a truncated pyramid of space. Everything outside it can be skipped — and in an open world that's most of the map. Real plane-extraction and AABB-test code from FloraForge."
+og_type: article
+og_url: https://floraforge.eu/concept-frustum-culling.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Rendering</p>
+                <h1>Frustum <span class="accent">Culling</span></h1>
+                <p>
+                    At any moment, the camera in FloraForge can see only a wedge of the world —
+                    the rest is behind you, off to the side, or beyond the horizon. Frustum
+                    culling is the renderer's habit of checking, before drawing anything,
+                    whether it could possibly appear on screen, and skipping it if not. In a
+                    wide-open streamed world it is one of the largest single savings the
+                    engine makes.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>The shape of what you see</h2>
+                <p>
+                    A perspective camera doesn't see a box of space; it sees a pyramid, with
+                    its tip at the lens and its sides flaring out through the four edges of
+                    the screen. Two extra cuts finish the shape: a <strong>near plane</strong>
+                    just in front of the lens (you can't render things touching your eyeball)
+                    and a <strong>far plane</strong> in the distance, beyond which nothing is
+                    drawn. The result — a pyramid with its tip sliced off and its base capped —
+                    is the <strong>view frustum</strong>, and the six flat faces bounding it
+                    are the frustum's planes.
+                </p>
+                <p>
+                    The name is a small gift from antiquity: <em>frustum</em> is Latin for a
+                    piece, bit, or morsel — something broken or cut off. Geometers borrowed it
+                    for the solid you get when you slice the top off a cone or pyramid with a
+                    cut parallel to its base. A camera's view is exactly that morsel: a pyramid
+                    with its point at the lens, its tip lopped off by the near plane, its base
+                    capped by the far plane. (The plural, should you ever need it, is
+                    <em>frusta</em>.)
+                </p>
+                <p>
+                    Everything inside the frustum can end up on screen. Everything outside it
+                    <em>cannot</em>, no matter how detailed or well-lit — which makes any work
+                    spent on it pure waste. The GPU would eventually discard those triangles
+                    anyway during clipping, but only after the engine has paid to submit them
+                    and the vertex shader has paid to transform them. Culling moves the
+                    decision to the cheapest possible place: a few comparisons on the CPU,
+                    before the draw call is even recorded.
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 460" role="img" aria-label="Top-down view of the camera's frustum as a wedge of space: terrain chunks intersecting the wedge are highlighted and drawn, while chunks behind the camera, off to the side, or beyond the far plane are dimmed and skipped.">
+                        <!-- chunks: culled (dim, dashed) -->
+                        <g fill="rgba(240,237,228,0.02)" stroke="rgba(240,237,228,0.28)" stroke-width="1.2" stroke-dasharray="5 4">
+                            <rect x="5" y="115" width="90" height="90" rx="8"/>
+                            <rect x="5" y="215" width="90" height="90" rx="8"/>
+                            <rect x="215" y="15" width="90" height="90" rx="8"/>
+                            <rect x="215" y="315" width="90" height="90" rx="8"/>
+                            <rect x="315" y="15" width="90" height="90" rx="8"/>
+                            <rect x="315" y="315" width="90" height="90" rx="8"/>
+                            <rect x="415" y="15" width="90" height="90" rx="8"/>
+                            <rect x="415" y="315" width="90" height="90" rx="8"/>
+                            <rect x="815" y="15" width="90" height="90" rx="8"/>
+                            <rect x="815" y="115" width="90" height="90" rx="8"/>
+                            <rect x="815" y="215" width="90" height="90" rx="8"/>
+                            <rect x="815" y="315" width="90" height="90" rx="8"/>
+                        </g>
+                        <text x="50" y="164" text-anchor="middle" fill="rgba(240,237,228,0.45)" font-size="12">behind</text>
+                        <text x="50" y="268" text-anchor="middle" fill="rgba(240,237,228,0.45)" font-size="12">camera</text>
+                        <text x="860" y="158" text-anchor="middle" fill="rgba(240,237,228,0.45)" font-size="12">beyond the</text>
+                        <text x="860" y="176" text-anchor="middle" fill="rgba(240,237,228,0.45)" font-size="12">far plane</text>
+
+                        <!-- chunks: visible (green, drawn) -->
+                        <g fill="rgba(62,207,110,0.2)" stroke="#3ecf6e" stroke-width="1.4">
+                            <rect x="215" y="115" width="90" height="90" rx="8"/>
+                            <rect x="215" y="215" width="90" height="90" rx="8"/>
+                            <rect x="315" y="115" width="90" height="90" rx="8"/>
+                            <rect x="315" y="215" width="90" height="90" rx="8"/>
+                            <rect x="415" y="115" width="90" height="90" rx="8"/>
+                            <rect x="415" y="215" width="90" height="90" rx="8"/>
+                            <rect x="515" y="15" width="90" height="90" rx="8"/>
+                            <rect x="515" y="115" width="90" height="90" rx="8"/>
+                            <rect x="515" y="215" width="90" height="90" rx="8"/>
+                            <rect x="515" y="315" width="90" height="90" rx="8"/>
+                            <rect x="615" y="15" width="90" height="90" rx="8"/>
+                            <rect x="615" y="115" width="90" height="90" rx="8"/>
+                            <rect x="615" y="215" width="90" height="90" rx="8"/>
+                            <rect x="615" y="315" width="90" height="90" rx="8"/>
+                            <rect x="715" y="15" width="90" height="90" rx="8"/>
+                            <rect x="715" y="115" width="90" height="90" rx="8"/>
+                            <rect x="715" y="215" width="90" height="90" rx="8"/>
+                            <rect x="715" y="315" width="90" height="90" rx="8"/>
+                        </g>
+
+                        <!-- the frustum wedge (top-down) -->
+                        <line x1="110" y1="210" x2="170" y2="195" stroke="#7cff9f" stroke-width="1.2" stroke-dasharray="3 4"/>
+                        <line x1="110" y1="210" x2="170" y2="225" stroke="#7cff9f" stroke-width="1.2" stroke-dasharray="3 4"/>
+                        <polygon points="170,195 800,37.5 800,382.5 170,225" fill="rgba(124,255,159,0.07)" stroke="#7cff9f" stroke-width="1.6"/>
+
+                        <!-- camera -->
+                        <rect x="86" y="198" width="22" height="24" rx="4" fill="#f0ede4"/>
+                        <polygon points="108,202 108,218 126,210" fill="#f0ede4"/>
+                        <text x="97" y="246" text-anchor="middle" fill="#c7b99d" font-size="12">camera</text>
+
+                        <!-- plane labels -->
+                        <text x="170" y="182" text-anchor="middle" fill="#c7b99d" font-size="12">near plane</text>
+                        <text x="800" y="9" text-anchor="middle" fill="#c7b99d" font-size="12">far plane</text>
+                        <text x="480" y="96" text-anchor="middle" fill="#c7b99d" font-size="12" transform="rotate(-14 480 96)">side plane — a screen edge</text>
+                        <text x="480" y="332" text-anchor="middle" fill="#c7b99d" font-size="12" transform="rotate(14 480 332)">side plane — a screen edge</text>
+
+                        <!-- legend -->
+                        <rect x="230" y="428" width="16" height="16" rx="4" fill="rgba(62,207,110,0.2)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="256" y="441" fill="#c7b99d" font-size="13">inside the frustum — drawn (18 chunks)</text>
+                        <rect x="566" y="428" width="16" height="16" rx="4" fill="none" stroke="rgba(240,237,228,0.28)" stroke-width="1.2" stroke-dasharray="5 4"/>
+                        <text x="592" y="441" fill="#c7b99d" font-size="13">outside — skipped (12 chunks)</text>
+                    </svg>
+                    <figcaption>
+                        The frustum from above: a wedge of visible space between the near and
+                        far planes. Chunks that touch the wedge — even partially — are drawn;
+                        chunks behind the camera, beside it, or past the far plane never reach
+                        the GPU at all.
+                    </figcaption>
+                </figure>
+
+                <h2>Six planes from one matrix</h2>
+                <p>
+                    The elegant part is where the planes come from. The renderer already owns
+                    a complete description of the frustum: the <strong>view-projection
+                    matrix</strong>, the same one every <a href="./concept-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">vertex shader</a>
+                    uses to put points on screen. A point is inside the frustum exactly when
+                    its projected coordinates land within the screen's bounds, and each of
+                    those six "within bounds" conditions can be rewritten as a plane equation
+                    by adding or subtracting one row of the matrix from another. This trick is
+                    known as the Gribb–Hartmann method, and FloraForge's implementation is
+                    almost a transcription of the recipe:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/frustum.rs — six planes out of one matrix</div>
+                <pre class="code-block"><code><span class="cm">/// Extract 6 clip planes from a view-projection matrix (Gribb/Hartmann method).</span>
+<span class="kw">pub fn</span> <span class="fn">from_view_proj</span>(vp: <span class="ty">Mat4</span>) -&gt; <span class="ty">Self</span> {
+    <span class="kw">let</span> r0 = vp.<span class="fn">row</span>(<span class="num">0</span>);
+    <span class="kw">let</span> r1 = vp.<span class="fn">row</span>(<span class="num">1</span>);
+    <span class="kw">let</span> r2 = vp.<span class="fn">row</span>(<span class="num">2</span>);
+    <span class="kw">let</span> r3 = vp.<span class="fn">row</span>(<span class="num">3</span>);
+
+    <span class="kw">let</span> raw = [
+        r3 + r0, <span class="cm">// left</span>
+        r3 - r0, <span class="cm">// right</span>
+        r3 + r1, <span class="cm">// bottom</span>
+        r3 - r1, <span class="cm">// top</span>
+        r3 + r2, <span class="cm">// near</span>
+        r3 - r2, <span class="cm">// far</span>
+    ];
+
+    <span class="cm">// …normalise each plane so distances come out in metres…</span>
+}</code></pre>
+
+                <p>
+                    Each resulting plane is four numbers <code>[a, b, c, d]</code>: a direction
+                    the plane faces, plus an offset. For any point in the world,
+                    <code>a·x + b·y + c·z + d</code> is its signed distance from that plane —
+                    positive on the inside, negative on the outside. Six planes, six signed
+                    distances, and "inside the frustum" simply means all six are positive.
+                </p>
+
+                <h2>Testing a box against the planes</h2>
+                <p>
+                    Testing every tree or vertex individually would defeat the purpose, so
+                    culling operates on <strong>bounding boxes</strong> — in FloraForge's case
+                    an axis-aligned box (AABB) around each 256-metre terrain chunk. The test
+                    uses a lovely shortcut: against each plane, you only need to check
+                    <em>one</em> of the box's eight corners — the one furthest in the
+                    direction the plane faces, sometimes called the p-vertex. If even that
+                    most-favourable corner is behind the plane, the entire box must be:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/frustum.rs — the whole test, verbatim</div>
+                <pre class="code-block"><code><span class="cm">/// Returns true if the AABB is at least partially inside the frustum.</span>
+<span class="kw">pub fn</span> <span class="fn">is_aabb_visible</span>(&amp;<span class="kw">self</span>, min: <span class="ty">Vec3</span>, max: <span class="ty">Vec3</span>) -&gt; <span class="ty">bool</span> {
+    <span class="kw">for</span> plane <span class="kw">in</span> &amp;<span class="kw">self</span>.planes {
+        <span class="kw">let</span> (a, b, c, d) = (plane[<span class="num">0</span>], plane[<span class="num">1</span>], plane[<span class="num">2</span>], plane[<span class="num">3</span>]);
+
+        <span class="cm">// Find the corner most in the direction of the plane normal (p-vertex)</span>
+        <span class="kw">let</span> px = <span class="kw">if</span> a &gt;= <span class="num">0.0</span> { max.x } <span class="kw">else</span> { min.x };
+        <span class="kw">let</span> py = <span class="kw">if</span> b &gt;= <span class="num">0.0</span> { max.y } <span class="kw">else</span> { min.y };
+        <span class="kw">let</span> pz = <span class="kw">if</span> c &gt;= <span class="num">0.0</span> { max.z } <span class="kw">else</span> { min.z };
+
+        <span class="cm">// If the p-vertex is outside, the entire AABB is outside this plane</span>
+        <span class="kw">if</span> a * px + b * py + c * pz + d &lt; <span class="num">0.0</span> {
+            <span class="kw">return</span> <span class="ty">false</span>;
+        }
+    }
+    <span class="ty">true</span>
+}</code></pre>
+
+                <p>
+                    Note the direction of the guarantee. The test is <strong>conservative</strong>:
+                    it never culls a box that's even partially visible, but it can occasionally
+                    keep a box that hugs a corner of the frustum without truly overlapping it.
+                    That asymmetry is the right one — a false "visible" costs a little wasted
+                    GPU work that the hardware clipper cleans up anyway, while a false
+                    "invisible" would make a hillside blink out of existence as you turned
+                    your head.
+                </p>
+
+                <h2>Culling chunks, every pass, every frame</h2>
+                <p>
+                    Because FloraForge's world is organised into
+                    <a href="./concept-chunk-streaming.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">streamed chunks</a>,
+                    the chunk grid is the natural unit to cull. A helper builds the box for a
+                    chunk straight from its grid coordinate, with deliberately generous
+                    vertical bounds so no mountain peak or river canyon is ever wrongly
+                    clipped away:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/frustum.rs — from grid coordinate to bounding box</div>
+                <pre class="code-block"><code><span class="cm">/// Test visibility for a chunk at the given grid coordinate.</span>
+<span class="kw">pub fn</span> <span class="fn">is_chunk_visible</span>(&amp;<span class="kw">self</span>, coord: <span class="ty">IVec2</span>) -&gt; <span class="ty">bool</span> {
+    <span class="kw">let</span> min = <span class="ty">Vec3</span>::<span class="fn">new</span>(
+        coord.x <span class="kw">as</span> <span class="ty">f32</span> * CHUNK_SIZE_METERS,
+        MIN_Y,
+        coord.y <span class="kw">as</span> <span class="ty">f32</span> * CHUNK_SIZE_METERS,
+    );
+    <span class="kw">let</span> max = <span class="ty">Vec3</span>::<span class="fn">new</span>(min.x + CHUNK_SIZE_METERS, MAX_Y, min.z + CHUNK_SIZE_METERS);
+    <span class="kw">self</span>.<span class="fn">is_aabb_visible</span>(min, max)
+}</code></pre>
+
+                <p>
+                    Every frame, the renderer extracts a fresh <code>Frustum</code> from the
+                    current view-projection matrix — once — and threads it through every
+                    world-drawing pass: the compute-generated terrain, the
+                    <a href="./concept-instanced-rendering.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">instanced</a>
+                    trees and houses, and the river and sea surfaces. Each pass asks
+                    <code>is_chunk_visible</code> before submitting a chunk's draw call and
+                    silently drops the rest. The arithmetic is absurdly lopsided: six plane
+                    tests — a few dozen multiply-adds — stand in for transforming a chunk's
+                    ~16,000 terrain vertices plus every tree on it. And since the streaming
+                    system keeps chunks loaded in a full circle <em>around</em> the camera,
+                    while the frustum looks in only one direction, the majority of loaded
+                    chunks fail the test on any given frame. Most of the world, most of the
+                    time, costs nothing to not draw.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    The entire system is one ~70-line file, <code>src/renderer_wgpu/frustum.rs</code>.
+                    Chunk boxes use fixed vertical bounds of <strong>−256 m to +1024 m</strong> —
+                    comfortably enclosing any terrain the generator can produce — because a
+                    too-tight box that culled a real mountain would be a far worse bug than a
+                    slightly oversized one that occasionally draws an off-screen chunk.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-instanced-rendering.html"><small>Back</small>Instanced Rendering</a>
+                    <a class="next" href="./concept-swapchain.html"><small>Next</small>The Swapchain →</a>
+                </div>
+            </section>

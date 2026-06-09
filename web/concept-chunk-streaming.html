@@ -1,0 +1,270 @@
+---
+layout: concept
+concept: chunk-streaming
+title: "Chunk Streaming | FloraForge Concepts"
+description: "How FloraForge keeps an endless world in finite memory: 256-metre chunks, a rolling window around the camera, and background worker threads that generate terrain without ever stalling a frame."
+og_title: Chunk Streaming — FloraForge Concepts
+og_description: "Slicing the world into 256 m tiles and streaming them around the camera: the rolling window, worker-thread generation, and the code that runs it every frame."
+og_type: article
+og_url: https://floraforge.eu/concept-chunk-streaming.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Building the World</p>
+                <h1>Chunk <span class="accent">Streaming</span></h1>
+                <p>
+                    FloraForge's world is 65 kilometres on a side — far too much terrain,
+                    vegetation and water to hold in memory, let alone draw. The engine's
+                    answer is to keep only a small moving window of the world alive: a grid
+                    of tiles that loads ahead of you and dissolves behind you as you fly.
+                    This page explains that rolling window, and the worker threads that
+                    fill it without ever making a frame stutter.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>A world bigger than memory</h2>
+                <p>
+                    Thanks to <a href="./concept-procedural-generation.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">procedural generation</a>,
+                    the world doesn't need to be stored — any point of it can be computed
+                    on demand. But "on demand" needs a unit of demand, and that unit is the
+                    <strong>chunk</strong>: a fixed 256&nbsp;×&nbsp;256 metre square of
+                    world, carrying a 129&nbsp;×&nbsp;129 height grid, a moisture grid,
+                    river data, and the list of plants and houses standing on it. Chunks
+                    tile the world in a regular grid, so any position maps to a chunk
+                    coordinate with a single division. A chunk that isn't loaded simply
+                    doesn't exist anywhere in memory — it's pure math, waiting to be asked.
+                </p>
+
+                <h2>The rolling window</h2>
+                <p>
+                    Around the camera, the engine maintains a square window of live chunks:
+                    every chunk within <code>load_radius</code> of the one the camera
+                    stands in. At the default radius of 3 that is a 7&nbsp;×&nbsp;7 window
+                    — <strong>49 chunks, about 1.8 kilometres on a side</strong>. Every
+                    frame, the streaming system recomputes which chunks the window should
+                    contain, then makes reality match: chunks entering the window are
+                    requested, chunks that fell out of it are dropped on the spot. Because
+                    the window's size never changes, you can fly in one direction forever
+                    and the engine's memory use and per-frame workload stay flat — the
+                    world rolls beneath you like a treadmill.
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 575" role="img" aria-label="Top-down view of the chunk grid: a 7 by 7 window of loaded chunks centred on the camera, a dashed column ahead being generated on worker threads, and dim columns behind already dropped from memory.">
+                        <defs>
+                            <marker id="cam-arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#f6c591"/>
+                            </marker>
+                        </defs>
+
+                        <!-- flight direction -->
+                        <text x="395" y="42" text-anchor="end" fill="#f6c591" font-size="13">flight direction</text>
+                        <line x1="403" y1="38" x2="560" y2="38" stroke="#f6c591" stroke-width="2" marker-end="url(#cam-arrow)"/>
+
+                        <!-- dropped chunks behind the camera (cols 0-1) -->
+                        <g fill="rgba(240,237,228,0.04)" stroke="rgba(240,237,228,0.16)" stroke-width="1">
+                            <rect x="43" y="67" width="60" height="60" rx="6"/><rect x="109" y="67" width="60" height="60" rx="6"/>
+                            <rect x="43" y="133" width="60" height="60" rx="6"/><rect x="109" y="133" width="60" height="60" rx="6"/>
+                            <rect x="43" y="199" width="60" height="60" rx="6"/><rect x="109" y="199" width="60" height="60" rx="6"/>
+                            <rect x="43" y="265" width="60" height="60" rx="6"/><rect x="109" y="265" width="60" height="60" rx="6"/>
+                            <rect x="43" y="331" width="60" height="60" rx="6"/><rect x="109" y="331" width="60" height="60" rx="6"/>
+                            <rect x="43" y="397" width="60" height="60" rx="6"/><rect x="109" y="397" width="60" height="60" rx="6"/>
+                            <rect x="43" y="463" width="60" height="60" rx="6"/><rect x="109" y="463" width="60" height="60" rx="6"/>
+                        </g>
+
+                        <!-- the loaded 7×7 window (cols 2-8) -->
+                        <rect x="172" y="64" width="456" height="456" rx="12" fill="rgba(62,207,110,0.14)" stroke="#3ecf6e" stroke-width="1.6"/>
+                        <g stroke="rgba(62,207,110,0.3)" stroke-width="1">
+                            <line x1="238" y1="64" x2="238" y2="520"/><line x1="304" y1="64" x2="304" y2="520"/>
+                            <line x1="370" y1="64" x2="370" y2="520"/><line x1="436" y1="64" x2="436" y2="520"/>
+                            <line x1="502" y1="64" x2="502" y2="520"/><line x1="568" y1="64" x2="568" y2="520"/>
+                            <line x1="172" y1="130" x2="628" y2="130"/><line x1="172" y1="196" x2="628" y2="196"/>
+                            <line x1="172" y1="262" x2="628" y2="262"/><line x1="172" y1="328" x2="628" y2="328"/>
+                            <line x1="172" y1="394" x2="628" y2="394"/><line x1="172" y1="460" x2="628" y2="460"/>
+                        </g>
+
+                        <!-- camera cell + camera -->
+                        <rect x="370" y="262" width="66" height="66" fill="rgba(62,207,110,0.26)"/>
+                        <path d="M403,295 L478,265 L478,325 Z" fill="rgba(246,197,145,0.18)" stroke="#f6c591" stroke-width="1.2"/>
+                        <circle cx="403" cy="295" r="7" fill="#f6c591"/>
+                        <text x="396" y="320" text-anchor="middle" fill="#f6c591" font-size="11">camera</text>
+
+                        <!-- chunks ahead, generating on worker threads (col 9) -->
+                        <g fill="rgba(124,255,159,0.05)" stroke="#7cff9f" stroke-width="1.4" stroke-dasharray="5 4">
+                            <rect x="637" y="67" width="60" height="60" rx="6"/>
+                            <rect x="637" y="133" width="60" height="60" rx="6"/>
+                            <rect x="637" y="199" width="60" height="60" rx="6"/>
+                            <rect x="637" y="265" width="60" height="60" rx="6"/>
+                            <rect x="637" y="331" width="60" height="60" rx="6"/>
+                            <rect x="637" y="397" width="60" height="60" rx="6"/>
+                            <rect x="637" y="463" width="60" height="60" rx="6"/>
+                        </g>
+
+                        <!-- chunks that don't exist yet (col 10) -->
+                        <g fill="none" stroke="rgba(240,237,228,0.12)" stroke-width="1" stroke-dasharray="2 5">
+                            <rect x="703" y="67" width="60" height="60" rx="6"/>
+                            <rect x="703" y="133" width="60" height="60" rx="6"/>
+                            <rect x="703" y="199" width="60" height="60" rx="6"/>
+                            <rect x="703" y="265" width="60" height="60" rx="6"/>
+                            <rect x="703" y="331" width="60" height="60" rx="6"/>
+                            <rect x="703" y="397" width="60" height="60" rx="6"/>
+                            <rect x="703" y="463" width="60" height="60" rx="6"/>
+                        </g>
+                        <text x="733" y="54" text-anchor="middle" fill="rgba(240,237,228,0.4)" font-size="11">doesn't exist yet</text>
+
+                        <!-- legend -->
+                        <rect x="790" y="108" width="22" height="22" rx="5" fill="rgba(62,207,110,0.16)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="822" y="119" fill="#f0ede4" font-size="13" font-weight="600">loaded &amp; drawn</text>
+                        <text x="822" y="135" fill="#c7b99d" font-size="12">in memory, mesh on the GPU</text>
+
+                        <rect x="790" y="168" width="22" height="22" rx="5" fill="rgba(124,255,159,0.05)" stroke="#7cff9f" stroke-width="1.4" stroke-dasharray="4 3"/>
+                        <text x="822" y="179" fill="#f0ede4" font-size="13" font-weight="600">generating</text>
+                        <text x="822" y="195" fill="#c7b99d" font-size="12">on a background worker thread</text>
+
+                        <rect x="790" y="228" width="22" height="22" rx="5" fill="rgba(240,237,228,0.04)" stroke="rgba(240,237,228,0.2)" stroke-width="1"/>
+                        <text x="822" y="239" fill="#f0ede4" font-size="13" font-weight="600">dropped</text>
+                        <text x="822" y="255" fill="#c7b99d" font-size="12">freed the frame it left the window</text>
+
+                        <rect x="790" y="288" width="22" height="22" rx="5" fill="none" stroke="rgba(240,237,228,0.18)" stroke-width="1" stroke-dasharray="2 4"/>
+                        <text x="822" y="299" fill="#f0ede4" font-size="13" font-weight="600">not generated</text>
+                        <text x="822" y="315" fill="#c7b99d" font-size="12">pure math until it's needed</text>
+
+                        <circle cx="801" cy="358" r="7" fill="#f6c591"/>
+                        <text x="822" y="363" fill="#f0ede4" font-size="13" font-weight="600">the camera</text>
+
+                        <!-- bottom annotation -->
+                        <text x="400" y="555" text-anchor="middle" fill="#c7b99d" font-size="13" letter-spacing="1">the window: 7 × 7 = 49 chunks, ~1.8 km square — constant wherever you fly</text>
+                    </svg>
+                    <figcaption>
+                        The rolling window from above, mid-flight. The camera is flying
+                        east: the next column of chunks is already being generated on
+                        worker threads, while the columns behind it were dropped the moment
+                        they left the window.
+                    </figcaption>
+                </figure>
+
+                <p>
+                    The code that runs this every frame is short enough to read whole. Note
+                    the order: <em>first</em> collect whatever the workers finished, then
+                    re-centre the window, evict, and request what's newly missing:
+                </p>
+
+                <div class="code-title">src/world_runtime/streaming.rs — the per-frame streaming pass</div>
+                <pre class="code-block"><code><span class="kw">pub fn</span> <span class="fn">update</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, camera_position: <span class="ty">Vec3</span>, plant_world: &amp;<span class="ty">PlantWorld</span>) {
+    <span class="cm">// Collect chunks the worker threads finished since last frame.</span>
+    <span class="kw">for</span> <span class="kw">mut</span> chunk <span class="kw">in</span> <span class="kw">self</span>.loader.poll() {
+        <span class="kw">let</span> plants = plant_world.instances_for(chunk.coord, &amp;chunk.terrain);
+        chunk.content.set_plants(plants);
+        <span class="kw">self</span>.loaded.insert(chunk.coord, chunk);
+    }
+
+    <span class="kw">self</span>.center_chunk = <span class="fn">world_to_chunk</span>(camera_position);
+    <span class="kw">let</span> required = <span class="fn">required_coords</span>(<span class="kw">self</span>.center_chunk, <span class="kw">self</span>.load_radius);
+
+    <span class="cm">// Drop chunks that left the window; cancel queued work for them too.</span>
+    <span class="kw">self</span>.loaded.retain(|coord, _| required.contains(coord));
+    <span class="kw">self</span>.loader.cancel_outside(&amp;required);
+
+    <span class="kw">for</span> &amp;coord <span class="kw">in</span> &amp;required {
+        <span class="kw">if</span> !<span class="kw">self</span>.loaded.contains_key(&amp;coord) {
+            <span class="kw">self</span>.loader.dispatch(coord, <span class="kw">self</span>.seed);
+        }
+    }
+}</code></pre>
+
+                <h2>Never block the loop</h2>
+                <p>
+                    Generating a chunk is real work: two 16,641-point noise fields, river
+                    carving, biome classification, and plant placement. If the
+                    <a href="./concept-game-loop.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">game loop</a>
+                    did that work itself, every chunk boundary you crossed would cost a
+                    visible hitch — at flying speed, a whole column of seven chunks comes
+                    due at once. So the main loop never generates anything. It only does
+                    two cheap things: <strong>dispatch</strong> requests into a pool of
+                    background worker threads (one per CPU core), and <strong>poll</strong>
+                    a channel for finished results. Both sides of that hand-off are
+                    non-blocking — if no chunk is ready this frame, <code>poll</code>
+                    returns empty and the frame renders with what it has. A missing chunk
+                    is never waited for; it simply pops into existence a few frames later.
+                </p>
+
+                <div class="code-title">src/world_runtime/chunk_loader.rs — the worker-thread loader (trimmed)</div>
+                <pre class="code-block"><code><span class="kw">fn</span> <span class="fn">dispatch</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>, coord: <span class="ty">IVec2</span>, seed: <span class="ty">u32</span>) {
+    <span class="kw">if</span> <span class="kw">self</span>.pending.contains(&amp;coord) {
+        <span class="kw">return</span>;
+    }
+    <span class="kw">self</span>.pending.insert(coord);
+    <span class="kw">let</span> tx = <span class="kw">self</span>.sender.clone();
+    <span class="cm">// ...clone shared config, plant registry, and river field handles...</span>
+    <span class="kw">self</span>.pool.spawn(<span class="kw">move</span> || {
+        <span class="kw">let</span> generator = <span class="ty">ChunkGenerator</span>::new(seed, &amp;config, registry, rivers);
+        <span class="kw">let</span> chunk = generator.generate_chunk(coord);
+        <span class="kw">let</span> _ = tx.send(chunk);   <span class="cm">// back to the main thread via channel</span>
+    });
+}
+
+<span class="kw">fn</span> <span class="fn">poll</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>) -&gt; <span class="ty">Vec</span>&lt;<span class="ty">ChunkData</span>&gt; {
+    <span class="kw">let</span> <span class="kw">mut</span> completed = <span class="ty">Vec</span>::new();
+    <span class="kw">while</span> <span class="kw">let</span> <span class="ty">Ok</span>(chunk) = <span class="kw">self</span>.receiver.try_recv() {   <span class="cm">// never blocks</span>
+        <span class="kw">self</span>.pending.remove(&amp;chunk.coord);
+        completed.push(chunk);
+    }
+    completed
+}</code></pre>
+
+                <p>
+                    One subtlety repays attention: <code>cancel_outside</code>. If you turn
+                    around sharply, chunks that were queued but not yet started are no
+                    longer needed — they're struck from the pending set so a fast change of
+                    direction doesn't leave the workers grinding through a wake of obsolete
+                    requests.
+                </p>
+
+                <h2>What "loading a chunk" actually means</h2>
+                <p>
+                    On the worker thread, a chunk is built in layers: the terrain layer
+                    samples the height and moisture fields and carves the river channel
+                    through them; the biome layer classifies the result; the content layer
+                    decides which plants and houses stand where. Back on the main thread,
+                    the finished chunk takes its live plant list from the world-wide plant
+                    store and is handed to the renderer — which does <em>not</em> receive a
+                    mesh. It receives the raw height and moisture grids, and a
+                    <a href="./concept-compute-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">compute shader</a>
+                    builds the 129&nbsp;×&nbsp;129 vertex mesh directly on the GPU, where
+                    it will be drawn. Vegetation goes up as per-chunk instance buffers for
+                    <a href="./concept-instanced-rendering.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">instanced rendering</a>.
+                    From then on the chunk costs almost nothing until
+                    <a href="./concept-frustum-culling.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">frustum culling</a>
+                    decides each frame whether it's even on screen.
+                </p>
+
+                <h2>The browser does it with a budget</h2>
+                <p>
+                    The <a href="./concept-webassembly.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">WebAssembly build</a>
+                    has no worker threads available to this system, so it swaps in a
+                    different loader behind the same interface: a simple queue that
+                    generates <strong>at most two chunks per frame</strong>, synchronously,
+                    on the main thread. The cost is bounded per frame rather than moved off
+                    the thread — a budget instead of a worker pool. The streaming logic
+                    above doesn't know the difference; <code>dispatch</code> and
+                    <code>poll</code> just mean something else underneath.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    The window logic lives in <code>src/world_runtime/streaming.rs</code>
+                    (<code>StreamingWorld</code>), and the two loader implementations in
+                    <code>src/world_runtime/chunk_loader.rs</code> — a rayon thread pool
+                    with an mpsc channel natively, the per-frame queue on wasm.
+                    <strong>The streaming state is live telemetry:</strong> the debug API
+                    reports loaded and pending chunk counts every frame, so you can watch
+                    the window refill as you fly.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-procedural-generation.html"><small>Back</small>Procedural Generation</a>
+                    <a class="next" href="./concept-webgpu.html"><small>Next</small>WebGPU &amp; wgpu →</a>
+                </div>
+            </section>

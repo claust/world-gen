@@ -12,6 +12,7 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
 ---
         <section class="hero wrap">
             <p class="eyebrow">The Living World</p>
+            {% include biology-subnav.html current="guide" %}
             <h1>Where climate <span class="accent">decides what grows.</span></h1>
             <p>
                 Every FloraForge landscape is sorted into <button class="term" data-term="procedural-generation">procedurally</button> derived biomes,
@@ -517,11 +518,12 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
         <section class="cta wrap">
             <h2>See the biology in motion.</h2>
             <p>
-                Launch the browser build and fly across the biomes for yourself — or look under the
-                hood at how the engine grows and streams them.
+                This field guide is only the start. Read how every plant ages through its life
+                cycle and reproduces across the world — and where the simulation is headed next:
+                heritable traits and evolution.
             </p>
-            <a class="button button-primary" href="./index.html">Launch FloraForge</a>
-            <a class="button button-secondary" href="./engine.html">Inside the Engine</a>
+            <a class="button button-primary" href="./biology-growth.html">Growth &amp; Life Cycle</a>
+            <a class="button button-secondary" href="./biology-evolution.html">Evolution Roadmap</a>
         </section>
 
         <footer class="wrap">

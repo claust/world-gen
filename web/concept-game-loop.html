@@ -1,0 +1,253 @@
+---
+layout: concept
+concept: game-loop
+title: "The Game Loop | FloraForge Concepts"
+description: "The loop at the heart of every real-time engine: poll mode, the dt timestep and frame-rate independence, the update/render split, and fixed vs variable timesteps — with real code from FloraForge's event loop."
+og_title: The Game Loop — FloraForge Concepts
+og_description: "Why a game is a loop that never finishes: dt, frame-rate independence, the update/render discipline, and fixed vs variable timesteps in FloraForge."
+og_type: article
+og_url: https://floraforge.eu/concept-game-loop.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Building the World</p>
+                <h1>The <span class="accent">Game Loop</span></h1>
+                <p>
+                    Strip away the terrain, the plants, the renderer, and what remains of any
+                    real-time engine is a single loop that never stops: read input, advance the
+                    world by a sliver of time, draw it, repeat. This page is about that loop as an
+                    idea — why it polls instead of waits, what <em>dt</em> is, and the quiet
+                    discipline that keeps simulation and drawing from tangling.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>A program that never finishes</h2>
+                <p>
+                    Most programs are scripts in spirit: they do their job and stop, or they sleep
+                    until you click something. A game can't do either, because its world keeps
+                    moving whether or not you touch it — clouds drift, the sun sets, rivers flow.
+                    So the program becomes a loop, and each lap of the loop (a <strong>frame</strong>,
+                    or a <strong>tick</strong>) produces one complete picture of the world.
+                </p>
+                <p>
+                    The strange consequence is that <strong>nothing on screen persists</strong>.
+                    The world is redrawn from scratch every frame, and motion is just the
+                    difference between one frame and the next. A tree swaying in the wind isn't
+                    animated by some timer attached to the tree; it is simply drawn at a slightly
+                    different angle on every pass through the loop, 60 or more times a second,
+                    and your eye supplies the movement.
+                </p>
+
+                <h2>Poll, don't wait</h2>
+                <p>
+                    Window systems are built for event-driven programs — ones that sleep until the
+                    user does something. A game inverts that: it asks for the next frame the moment
+                    the current one is finished. FloraForge's window library, <code>winit</code>,
+                    calls this <strong>poll mode</strong>, and the loop's heartbeat is a tidy
+                    two-step: when winit announces it has run out of events
+                    (<code>AboutToWait</code>), the engine requests a redraw; when the redraw
+                    arrives (<code>RedrawRequested</code>), it runs one <code>update()</code> and
+                    one <code>render()</code>. Then the cycle starts over.
+                </p>
+
+                <div class="code-title">src/app/event_loop.rs — the loop's heartbeat (trimmed)</div>
+                <pre class="code-block"><code>event_loop.<span class="fn">run</span>(<span class="kw">move</span> |event, target| {
+    target.<span class="fn">set_control_flow</span>(<span class="ty">ControlFlow</span>::Poll);
+
+    <span class="kw">match</span> event {
+        <span class="ty">Event</span>::WindowEvent { window_id, event } <span class="kw">if</span> window_id == app.window.<span class="fn">id</span>() =&gt; {
+            <span class="cm">// …keyboard and mouse events are routed to egui or the camera…</span>
+            <span class="kw">match</span> event {
+                <span class="ty">WindowEvent</span>::RedrawRequested =&gt; {
+                    app.<span class="fn">update</span>();
+                    <span class="kw">match</span> app.<span class="fn">render</span>() {
+                        <span class="ty">Ok</span>(()) =&gt; {}
+                        <span class="ty">Err</span>(<span class="ty">SurfaceError</span>::Lost) =&gt; app.<span class="fn">resize</span>(app.gpu.size),
+                        <span class="ty">Err</span>(<span class="ty">SurfaceError</span>::OutOfMemory) =&gt; target.<span class="fn">exit</span>(),
+                        <span class="ty">Err</span>(<span class="ty">SurfaceError</span>::Timeout | <span class="ty">SurfaceError</span>::Outdated) =&gt; {}
+                        <span class="ty">Err</span>(e) =&gt; <span class="fn">log::error!</span>(<span class="str">"surface error: {e}"</span>),
+                    }
+                }
+                _ =&gt; {}
+            }
+        }
+        <span class="ty">Event</span>::AboutToWait =&gt; {
+            app.window.<span class="fn">request_redraw</span>();
+        }
+        _ =&gt; {}
+    }
+})?;</code></pre>
+
+                <p>
+                    That's the whole engine, from a distance: one <code>update()</code>, one
+                    <code>render()</code>, forever. Input doesn't get a step of its own — key and
+                    mouse events arrive between frames and are stashed as state ("the W key is
+                    currently held") that the next <code>update()</code> reads.
+                </p>
+
+                <h2>dt: how the simulation survives any frame rate</h2>
+                <p>
+                    Poll mode means the loop runs as fast as the machine allows, and that speed is
+                    never constant — a laptop on battery, a heavy view, a background download all
+                    change it. If the camera moved a fixed distance per frame, the world would
+                    literally run faster on faster computers, the bug that plagued early PC games.
+                </p>
+                <p>
+                    The fix is one measurement at the top of every update: <strong>dt</strong>
+                    (delta time), the wall-clock time since the previous frame. Everything that
+                    moves is expressed as a <em>rate</em> — metres per second, radians per second —
+                    and multiplied by dt. Cover a frame in 7&nbsp;ms or 33&nbsp;ms, the camera
+                    still flies at the same metres per second.
+                </p>
+
+                <div class="code-title">src/app/mod.rs — measuring dt at the top of update()</div>
+                <pre class="code-block"><code><span class="kw">fn</span> <span class="fn">update</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>) {
+    <span class="kw">let</span> now = <span class="ty">Instant</span>::<span class="fn">now</span>();
+    <span class="kw">let</span> dt = now.<span class="fn">duration_since</span>(<span class="kw">self</span>.last_frame).<span class="fn">as_secs_f32</span>();
+    <span class="kw">self</span>.last_frame = now;
+
+    <span class="kw">self</span>.frame_time_ms = <span class="kw">self</span>.frame_time_ms * <span class="num">0.94</span> + (dt * <span class="num">1000.0</span>) * <span class="num">0.06</span>;
+    <span class="kw">self</span>.elapsed_seconds += dt;
+
+    <span class="cm">// …branch on the current screen, then advance the world by dt…</span>
+}</code></pre>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 400" role="img" aria-label="Two timelines covering the same 200 milliseconds of world time: at 144 fps the engine takes 29 small dt steps of about 7 milliseconds, at 30 fps six large steps of about 33 milliseconds, and both timelines end at the same simulated position.">
+                        <defs>
+                            <marker id="gl-sand" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#c7b99d"/>
+                            </marker>
+                        </defs>
+
+                        <!-- fast lane: 144 fps -->
+                        <text x="150" y="84" fill="#f0ede4" font-size="15" font-weight="600">144 fps <tspan fill="#c7b99d" font-weight="400" font-size="13"> — update(dt) runs 29 times</tspan></text>
+                        <line x1="150" y1="120" x2="912" y2="120" stroke="rgba(240,237,228,0.25)" stroke-width="2" marker-end="url(#gl-sand)"/>
+                        <path d="M150 110 V130 M175.5 110 V130 M201 110 V130 M226.5 110 V130 M252 110 V130 M277.5 110 V130 M303 110 V130 M328.5 110 V130 M354 110 V130 M379.5 110 V130 M405 110 V130 M430.5 110 V130 M456 110 V130 M481.5 110 V130 M507 110 V130 M532.5 110 V130 M558 110 V130 M583.5 110 V130 M609 110 V130 M634.5 110 V130 M660 110 V130 M685.5 110 V130 M711 110 V130 M736.5 110 V130 M762 110 V130 M787.5 110 V130 M813 110 V130 M838.5 110 V130 M864 110 V130 M889.5 110 V130" stroke="#3ecf6e" stroke-width="1.6" fill="none"/>
+                        <circle cx="150" cy="120" r="5" fill="rgba(124,255,159,0.25)"/>
+                        <circle cx="889.5" cy="120" r="6" fill="#7cff9f"/>
+                        <text x="163" y="155" fill="#c7b99d" font-size="12.5">each step: dt ≈ 7 ms</text>
+
+                        <!-- slow lane: 30 fps -->
+                        <text x="150" y="204" fill="#f0ede4" font-size="15" font-weight="600">30 fps <tspan fill="#c7b99d" font-weight="400" font-size="13"> — update(dt) runs 6 times</tspan></text>
+                        <line x1="150" y1="240" x2="912" y2="240" stroke="rgba(240,237,228,0.25)" stroke-width="2" marker-end="url(#gl-sand)"/>
+                        <path d="M150 230 V250 M273.25 230 V250 M396.5 230 V250 M519.75 230 V250 M643 230 V250 M766.25 230 V250 M889.5 230 V250" stroke="#c7b99d" stroke-width="1.8" fill="none"/>
+                        <circle cx="150" cy="240" r="5" fill="rgba(124,255,159,0.25)"/>
+                        <circle cx="889.5" cy="240" r="6" fill="#7cff9f"/>
+                        <text x="211" y="275" text-anchor="middle" fill="#c7b99d" font-size="12.5">each step: dt ≈ 33 ms</text>
+
+                        <!-- shared start / end markers -->
+                        <line x1="150" y1="98" x2="150" y2="262" stroke="rgba(240,237,228,0.18)" stroke-width="1" stroke-dasharray="4 4"/>
+                        <line x1="889.5" y1="98" x2="889.5" y2="262" stroke="rgba(124,255,159,0.5)" stroke-width="1.4" stroke-dasharray="4 4"/>
+                        <text x="889.5" y="300" text-anchor="middle" fill="#7cff9f" font-size="13">same world time,</text>
+                        <text x="889.5" y="318" text-anchor="middle" fill="#7cff9f" font-size="13">same camera position</text>
+
+                        <text x="490" y="370" text-anchor="middle" fill="#c7b99d" font-size="13.5" letter-spacing="1" font-family="JetBrains Mono, monospace">position += speed × dt</text>
+                    </svg>
+                    <figcaption>
+                        The same 200 ms of world time on two machines. The fast one slices it into
+                        many small dt steps, the slow one into a few big ones — but because every
+                        rate is multiplied by dt, both arrive at the same place. A slow machine
+                        just shows you the same world less often.
+                    </figcaption>
+                </figure>
+
+                <h2>Update, then render — and never the twain</h2>
+                <p>
+                    Inside one lap, the work splits into two halves with deliberately different
+                    personalities. <strong>Update is the think phase</strong>: it moves the camera,
+                    advances the day/night clock,
+                    <a href="./concept-chunk-streaming.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">streams chunks</a>
+                    in and out, grows plants — pure logic that mutates the state of the world,
+                    caring only about dt. <strong>Render is the draw phase</strong>: it reads that
+                    state and turns it into GPU commands, changing nothing. It is the only half
+                    that ever touches the
+                    <a href="./concept-swapchain.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">swapchain</a>.
+                </p>
+                <p>
+                    The split buys two things. First, correctness: the simulation behaves
+                    identically however fast the graphics run, because update never depends on how
+                    the world <em>looks</em>. Second, debuggability — a rule of thumb worth
+                    memorising: <strong>if something moves wrong, the bug is in update; if
+                    something looks wrong, the bug is in render.</strong> The two halves almost
+                    never tangle, so the rule almost never lies.
+                </p>
+                <p>
+                    What FloraForge's <code>update()</code> and <code>render()</code> actually do,
+                    stage by stage — the streaming, the render passes, the loading pipeline — is
+                    the subject of its own illustrated tour:
+                    <a href="./engine.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">Inside the Engine</a>.
+                    This page stays with the loop itself.
+                </p>
+
+                <h2>Fixed vs variable timestep</h2>
+                <p>
+                    Measuring dt every lap gives a <strong>variable timestep</strong>: smooth,
+                    simple, and what FloraForge uses for normal play. Its weakness is
+                    reproducibility. Because dt jitters from frame to frame, no two runs take the
+                    same sequence of steps, and tiny floating-point differences compound — two
+                    flights through the world will never match exactly. Physics-heavy games suffer
+                    worse: a huge dt after a hitch can step a fast object clean through a wall.
+                </p>
+                <p>
+                    The alternative is a <strong>fixed timestep</strong>: pretend exactly the same
+                    dt elapsed every frame, regardless of the clock. The simulation becomes
+                    deterministic — same inputs, same steps, same world — which is precisely what
+                    a benchmark needs. FloraForge's FPS benchmark replays a scripted camera
+                    flythrough on a fixed dt of 1/60&nbsp;s, so the workload is identical on every
+                    run and only the measured wall-clock frame time varies:
+                </p>
+
+                <div class="code-title">src/app/mod.rs — benchmark mode swaps in a fixed timestep</div>
+                <pre class="code-block"><code><span class="cm">// In benchmark mode, drive the camera from the script on a fixed timestep</span>
+<span class="cm">// so the simulated workload is identical across runs; the real wall-clock</span>
+<span class="cm">// `dt` is what we record. Otherwise sim_dt == dt and behavior is unchanged.</span>
+<span class="kw">let</span> sim_dt = <span class="kw">if let</span> <span class="ty">Some</span>(<span class="kw">mut</span> bench) = <span class="kw">self</span>.benchmark.<span class="fn">take</span>() {
+    bench.<span class="fn">tick</span>(dt * <span class="num">1000.0</span>, &amp;<span class="kw">mut</span> <span class="kw">self</span>.camera, &amp;<span class="kw">mut</span> <span class="kw">self</span>.camera_controller);
+    <span class="kw">let</span> fixed = bench.<span class="fn">fixed_dt</span>();
+    <span class="kw">self</span>.benchmark = <span class="ty">Some</span>(bench);
+    fixed
+} <span class="kw">else</span> {
+    dt
+};</code></pre>
+
+                <p>
+                    Notice the two clocks living side by side: the world advances by
+                    <code>sim_dt</code> (fixed, deterministic), while the report records the real
+                    <code>dt</code> (variable, the thing being measured). Many engines go further
+                    and run a fixed-step simulation under a variable-rate renderer at all times;
+                    FloraForge keeps it simple — variable for play, fixed for measurement.
+                </p>
+
+                <h2>One loop, five screens</h2>
+                <p>
+                    A subtlety that surprises newcomers: the menu is the game loop too. FloraForge
+                    has no separate "menu mode" — a small state machine
+                    (<code>StartMenu</code>, <code>Loading</code>, <code>Playing</code>,
+                    <code>Herbarium</code>, <code>PlantEditor</code>) decides what
+                    <code>update()</code> and <code>render()</code> mean this frame, and everything
+                    shares the one code path. The payoff shows during loading: rather than freezing
+                    the window while the
+                    <a href="./concept-procedural-generation.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">procedurally generated</a>
+                    world is built, the work is split into phases that each run on their own lap of
+                    the loop — so the progress bar keeps animating, because the loop never stopped.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    The loop in <code>src/app/event_loop.rs</code> exists twice — once for native
+                    desktop and once for the browser build, where winit's
+                    <code>event_loop.spawn()</code> hands control back to the browser between
+                    laps. Both versions share the same skeleton: <strong>Poll mode,
+                    <code>AboutToWait</code> → <code>request_redraw()</code> →
+                    <code>RedrawRequested</code> → <code>update()</code> + <code>render()</code></strong>.
+                    One loop, compiled for two worlds.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-swapchain.html"><small>Back</small>The Swapchain</a>
+                    <a class="next" href="./concept-procedural-generation.html"><small>Next</small>Procedural Generation →</a>
+                </div>
+            </section>

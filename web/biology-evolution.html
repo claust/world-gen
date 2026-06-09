@@ -1,0 +1,354 @@
+---
+layout: article
+nav: biology
+title: "The Evolution Roadmap | FloraForge"
+description: "A design document for heritable plant traits in FloraForge: turning fixed species recipes into evolving genomes, with the existing placement test as a free fitness function."
+og_title: The Evolution Roadmap — FloraForge Biology
+og_description: "Forward-looking design: small per-plant genomes, mutation on spread, and selection that already exists — how FloraForge plans to let species adapt to the terrain."
+og_type: article
+og_url: https://floraforge.eu/biology-evolution.html
+css: ./assets/article.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+        <section class="hero wrap">
+            <p class="eyebrow">The Living World</p>
+            {% include biology-subnav.html current="evolution" %}
+            <h1>When species learn to <span class="accent">adapt.</span></h1>
+            <p>
+                This page is a roadmap, not a changelog. Today every oak in FloraForge shares one
+                fixed recipe. The plan is to make those numbers <strong>heritable</strong> — a tiny
+                genome per plant, mutating as it spreads — so that, over many sim-days, populations
+                drift to fit the ground they grow on. The remarkable part is how little new machinery
+                it needs: the growth and spread systems already shipped do most of the work.
+            </p>
+            <div class="hero-meta">
+                <span>Design document</span>
+                <span>Not yet in the game</span>
+                <span>Builds on growth &amp; spread</span>
+                <span>The vision</span>
+            </div>
+        </section>
+
+        <!-- ===================== TODAY ===================== -->
+        <section class="block wrap" id="today">
+            <p class="section-label">The baseline</p>
+            <h2>Where the simulation stands today</h2>
+            <p class="lead">
+                A species is currently a <strong>fixed recipe</strong>: a single JSON file plus a
+                placement profile. Every individual of that species shares the exact same numbers;
+                two oaks differ only because each is shaped by its own per-plant random seed. Nothing
+                a plant experiences in the world changes what it passes on, because today it passes on
+                nothing at all.
+            </p>
+
+            <div class="layers">
+                <div class="layer core">
+                    <div class="tag">Form recipe<small>oak.json &amp; siblings</small></div>
+                    <p>
+                        Body plan and height range, trunk taper, base flare and straightness,
+                        branching (apical dominance, max depth, the 137.5° spiral arrangement,
+                        insertion angles, gravity response), crown shape, density and asymmetry,
+                        foliage style, and bark/leaf colour. The growth engine expands these into a
+                        unique 3D plant.
+                    </p>
+                </div>
+                <div class="layer runtime">
+                    <div class="tag">Survival profile<small>PlacementConfig</small></div>
+                    <p>
+                        Where the recipe is allowed to grow: permitted biomes, a spawn weight, a
+                        moisture band, an altitude band, a near-water boost, a maximum slope, and the
+                        life-cycle numbers — <code>spread_radius</code>, <code>spread_chance</code>,
+                        <code>seedling_hours</code>, <code>young_hours</code>.
+                    </p>
+                </div>
+                <div class="layer render">
+                    <div class="tag">Per-plant RNG<small>the only variation</small></div>
+                    <p>
+                        The single source of individuality today. It jitters geometry within the
+                        recipe's bounds, but it is not inherited — a plant's offspring start from the
+                        same preset, not from their parent.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <div class="wrap"><div class="divider"></div></div>
+
+        <!-- ===================== PLAN ===================== -->
+        <section class="block wrap" id="plan">
+            <p class="section-label">The vision</p>
+            <h2>From recipe to genome</h2>
+            <p class="lead">
+                The planned change is a single shift in where a trait's value comes from: not the
+                shared preset, but the individual plant. Five steps, drawn as a loop because that is
+                exactly what it is — each generation feeds the next.
+            </p>
+
+            <div class="phases">
+                <div class="phase cpu">
+                    <h3><code>1</code> Seed a genome</h3>
+                    <p class="sub">Planned</p>
+                    <p style="color:var(--sand);font-size:0.95rem;">
+                        Each plant carries a compact vector of trait values, initialised from its
+                        species preset. At world creation every individual is still effectively the
+                        baseline — the genome simply records it explicitly.
+                    </p>
+                </div>
+                <div class="phase cpu">
+                    <h3><code>2</code> Inherit &amp; mutate</h3>
+                    <p class="sub">Planned</p>
+                    <p style="color:var(--sand);font-size:0.95rem;">
+                        On the daily spread pass, a seedling copies its parent's genome with small,
+                        bounded mutations. Reproduction already exists — this rides the same pass.
+                    </p>
+                </div>
+                <div class="phase gpu">
+                    <h3><code>3</code> Selection, for free</h3>
+                    <p class="sub">Already in the engine</p>
+                    <p style="color:var(--sand);font-size:0.95rem;">
+                        The existing placement validation <em>is</em> the fitness function. A
+                        drought-tolerant mutant's seedlings survive where the baseline is rejected —
+                        no new code path, just a candidate that passes a test its parent's offspring
+                        would fail.
+                    </p>
+                </div>
+                <div class="phase cpu">
+                    <h3><code>4</code> Drift to fit</h3>
+                    <p class="sub">Planned</p>
+                    <p style="color:var(--sand);font-size:0.95rem;">
+                        Over many sim-days, populations shift to match local terrain: willows hugging
+                        rivers ever tighter, oaks on dry ridges growing shorter and deeper-rooted.
+                    </p>
+                </div>
+                <div class="phase gpu">
+                    <h3><code>5</code> Speciation</h3>
+                    <p class="sub">Planned</p>
+                    <p style="color:var(--sand);font-size:0.95rem;">
+                        When a local population's genome drifts far enough from the preset, it is
+                        promoted to a named variant in the herbarium — a new species born from place.
+                    </p>
+                </div>
+            </div>
+
+            <div class="diagram-card">
+                <svg class="loop-svg" viewBox="0 0 760 360" role="img" aria-label="The evolution loop: inherit, then mutate, then place and validate (selection), then mature, then spread, returning to inherit.">
+                    <defs>
+                        <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                            <path d="M0 0 L10 5 L0 10 z" fill="#7cff9f"/>
+                        </marker>
+                    </defs>
+                    <!-- guide circle -->
+                    <circle cx="380" cy="180" r="130" fill="none" stroke="rgba(124,255,159,0.12)" stroke-width="1.5" stroke-dasharray="4 7"/>
+
+                    <!-- arcs between nodes (clockwise) -->
+                    <path d="M430 64 A130 130 0 0 1 506 150" fill="none" stroke="#3ecf6e" stroke-width="2" marker-end="url(#arrow)"/>
+                    <path d="M505 218 A130 130 0 0 1 430 296" fill="none" stroke="#3ecf6e" stroke-width="2" marker-end="url(#arrow)"/>
+                    <path d="M330 296 A130 130 0 0 1 255 210" fill="none" stroke="#3ecf6e" stroke-width="2" marker-end="url(#arrow)"/>
+                    <path d="M255 150 A130 130 0 0 1 330 64" fill="none" stroke="#3ecf6e" stroke-width="2" marker-end="url(#arrow)"/>
+
+                    <!-- nodes -->
+                    <g font-family="Space Grotesk" text-anchor="middle">
+                        <g>
+                            <circle cx="380" cy="50" r="40" fill="rgba(30,77,43,0.5)" stroke="var(--line)"/>
+                            <text x="380" y="48" font-size="14" font-weight="600" fill="#f0ede4">Inherit</text>
+                            <text x="380" y="65" font-size="10" fill="#c7b99d">copy genome</text>
+                        </g>
+                        <g>
+                            <circle cx="560" cy="180" r="40" fill="rgba(30,77,43,0.5)" stroke="var(--line)"/>
+                            <text x="560" y="178" font-size="14" font-weight="600" fill="#f0ede4">Mutate</text>
+                            <text x="560" y="195" font-size="10" fill="#c7b99d">small drift</text>
+                        </g>
+                        <g>
+                            <circle cx="380" cy="310" r="44" fill="rgba(62,207,110,0.16)" stroke="rgba(124,255,159,0.4)"/>
+                            <text x="380" y="305" font-size="14" font-weight="600" fill="#7cff9f">Select</text>
+                            <text x="380" y="321" font-size="10" fill="#cfe6d6">placement test</text>
+                            <text x="380" y="334" font-size="9" fill="#9fdcae">(already exists)</text>
+                        </g>
+                        <g>
+                            <circle cx="200" cy="180" r="40" fill="rgba(30,77,43,0.5)" stroke="var(--line)"/>
+                            <text x="200" y="178" font-size="14" font-weight="600" fill="#f0ede4">Mature</text>
+                            <text x="200" y="195" font-size="10" fill="#c7b99d">analytic growth</text>
+                        </g>
+                    </g>
+                    <!-- centre -->
+                    <text x="380" y="176" text-anchor="middle" font-size="13" font-weight="600" fill="#7cff9f" font-family="Space Grotesk">SPREAD</text>
+                    <text x="380" y="194" text-anchor="middle" font-size="10" fill="#c7b99d" font-family="Space Grotesk">one round / sim-day</text>
+                </svg>
+                <p class="diagram-caption">
+                    Only <strong>inherit</strong> and <strong>mutate</strong> are new. Maturation runs
+                    on the analytic growth clock that already exists; selection is the placement
+                    validation that already gatekeeps every seedling. Evolution is mostly wiring,
+                    not invention.
+                </p>
+            </div>
+        </section>
+
+        <div class="wrap"><div class="divider"></div></div>
+
+        <!-- ===================== TRAITS ===================== -->
+        <section class="block wrap" id="traits">
+            <p class="section-label">Candidates</p>
+            <h2>Traits that could evolve</h2>
+            <p class="lead">
+                Not every number should be heritable, but the placement profile is full of values
+                that map cleanly onto real evolutionary trade-offs. A shortlist of strong candidates,
+                each one a tension rather than a free win.
+            </p>
+
+            <div class="species-grid">
+                <article class="species">
+                    <div class="species-body">
+                        <div class="species-titles"><div class="kind">Life history</div><h3>Growth speed vs height</h3></div>
+                        <p style="margin-top:0.6rem;">Shorter <code>seedling_hours</code>/<code>young_hours</code> reach maturity — and reproduction — sooner, but trade away the final height that wins light. The classic fast-and-small versus slow-and-tall split.</p>
+                    </div>
+                </article>
+                <article class="species">
+                    <div class="species-body">
+                        <div class="species-titles"><div class="kind">Climate</div><h3>Drought tolerance</h3></div>
+                        <p style="margin-top:0.6rem;">Widening the lower edge of the <code>min_moisture</code> band lets seedlings survive drier ground, opening grassland and desert fringes the baseline is rejected from.</p>
+                    </div>
+                </article>
+                <article class="species">
+                    <div class="species-body">
+                        <div class="species-titles"><div class="kind">Climate</div><h3>Altitude hardiness</h3></div>
+                        <p style="margin-top:0.6rem;">Raising <code>max_altitude</code> and shrugging off steeper <code>max_slope</code> pushes a lineage up the mountains, toward ground its ancestors could not hold.</p>
+                    </div>
+                </article>
+                <article class="species">
+                    <div class="species-body">
+                        <div class="species-titles"><div class="kind">Reproduction</div><h3>r / K strategy</h3></div>
+                        <p style="margin-top:0.6rem;">High <code>spread_chance</code> with short <code>spread_radius</code> floods nearby ground with cheap seeds; the opposite invests in fewer, farther, more robust ones. Many cheap vs few hardy.</p>
+                    </div>
+                </article>
+                <article class="species">
+                    <div class="species-body">
+                        <div class="species-titles"><div class="kind">Habitat</div><h3>Near-water affinity</h3></div>
+                        <p style="margin-top:0.6rem;">A stronger <code>near_water_boost</code> binds a lineage to shorelines and river margins — the niche willows and palms already lean into, sharpened generation by generation.</p>
+                    </div>
+                </article>
+                <article class="species">
+                    <div class="species-body">
+                        <div class="species-titles"><div class="kind">Form</div><h3>Crown density vs exposure</h3></div>
+                        <p style="margin-top:0.6rem;">A denser crown gathers more light but catches more wind on exposed ridges. A form trait whose pay-off depends on where the plant ends up standing.</p>
+                    </div>
+                </article>
+                <article class="species">
+                    <div class="species-body">
+                        <div class="species-titles"><div class="kind">Marker</div><h3>Bark &amp; leaf colour</h3></div>
+                        <p style="margin-top:0.6rem;">Colour drifting with climate makes adaptation <em>visible</em>: a hillside whose oaks have paled or reddened as their genome diverged from the lowland stock — evolution you can see from the air.</p>
+                    </div>
+                </article>
+            </div>
+
+            <div class="climate-card">
+                <svg class="climate-svg" viewBox="0 0 760 280" role="img" aria-label="A moisture gradient from dry to wet, with tree silhouettes shifting form across it over generations: compact deep-rooted forms in the dry left, tall broad weeping forms in the wet right.">
+                    <!-- gradient bar -->
+                    <defs>
+                        <linearGradient id="moist" x1="0" y1="0" x2="1" y2="0">
+                            <stop offset="0" stop-color="#ad9457"/>
+                            <stop offset="0.5" stop-color="#4d7a33"/>
+                            <stop offset="1" stop-color="#2e612e"/>
+                        </linearGradient>
+                    </defs>
+                    <rect x="40" y="210" width="680" height="18" rx="4" fill="url(#moist)" opacity="0.85"/>
+                    <text x="50" y="252" font-size="12" fill="#c7b99d">dry</text>
+                    <text x="710" y="252" text-anchor="end" font-size="12" fill="#cfe6d6">wet</text>
+                    <text x="380" y="252" text-anchor="middle" font-size="12" fill="#7cff9f">MOISTURE GRADIENT · generations of drift →</text>
+
+                    <!-- dry-adapted: short, compact, deep root hint -->
+                    <g transform="translate(140,210)">
+                        <rect x="-4" y="-46" width="8" height="46" rx="2" fill="hsl(30,35%,28%)"/>
+                        <ellipse cx="0" cy="-54" rx="26" ry="11" fill="hsl(95,40%,38%)"/>
+                        <path d="M-2 0 Q-4 16 -8 26 M2 0 Q4 16 8 26" stroke="hsl(30,35%,28%)" stroke-width="2" fill="none" opacity="0.5"/>
+                    </g>
+                    <text x="140" y="120" text-anchor="middle" font-size="11" fill="#e7d9b8">compact · deep-rooted</text>
+
+                    <!-- mid: balanced dome -->
+                    <g transform="translate(380,210)">
+                        <rect x="-5" y="-66" width="10" height="66" rx="2" fill="hsl(25,40%,22%)"/>
+                        <circle cx="0" cy="-78" r="30" fill="hsl(115,50%,32%)"/>
+                        <circle cx="-18" cy="-70" r="16" fill="hsl(115,50%,32%)"/>
+                        <circle cx="18" cy="-70" r="16" fill="hsl(115,50%,32%)"/>
+                    </g>
+                    <text x="380" y="104" text-anchor="middle" font-size="11" fill="#dfeccd">balanced dome</text>
+
+                    <!-- wet: tall, weeping -->
+                    <g transform="translate(620,210)">
+                        <rect x="-5" y="-90" width="10" height="90" rx="2" fill="hsl(30,30%,30%)"/>
+                        <ellipse cx="0" cy="-96" rx="34" ry="20" fill="hsl(100,45%,40%)"/>
+                        <g stroke="hsl(100,45%,40%)" stroke-width="3" stroke-linecap="round">
+                            <path d="M-26 -92 Q-27 -60 -28 -30"/>
+                            <path d="M0 -82 Q0 -48 0 -16"/>
+                            <path d="M26 -92 Q27 -60 28 -30"/>
+                        </g>
+                    </g>
+                    <text x="620" y="92" text-anchor="middle" font-size="11" fill="#cfe6d6">tall · weeping · water-bound</text>
+                </svg>
+                <p class="climate-caption">
+                    The hoped-for outcome: a single ancestral species, carried across a moisture
+                    gradient, drifting into distinct local forms — without any of those forms being
+                    hand-authored. Selection writes them, the terrain decides.
+                </p>
+            </div>
+        </section>
+
+        <div class="wrap"><div class="divider"></div></div>
+
+        <!-- ===================== CONSTRAINTS ===================== -->
+        <section class="block wrap" id="constraints">
+            <p class="section-label">Engineering</p>
+            <h2>Why this engine is ready for it</h2>
+            <p class="lead">
+                Evolution is appealing in the abstract and ruinous in the details if the data model
+                fights it. FloraForge's does not — but only if the design respects four hard
+                constraints the existing systems impose. Honesty about these is what keeps the plan
+                tractable.
+            </p>
+
+            <div class="states">
+                <div class="state-card">
+                    <h4>genome must stay tiny</h4>
+                    <p>A plant is a packed 16-byte struct — quantized position and height, rotation, a species index, a stage byte, and <code>born_hour</code>. Millions are held resident. A genome has to be a handful of compact, quantized values, not a sprawling record.</p>
+                </div>
+                <div class="state-card">
+                    <h4>growth stays analytic</h4>
+                    <p>Stage is computed from age on demand, not advanced per tick. Heritable life-cycle traits must keep that property: a genome can change the thresholds, but the model stays a pure function of age.</p>
+                </div>
+                <div class="state-card">
+                    <h4>determinism is sacred</h4>
+                    <p>Spread RNG is keyed on a plant's index within its chunk and the world seed, so a downloaded base snapshot and a local regeneration evolve identically. Mutation must draw from that same keyed stream — reproducible from the seed, never wall-clock random.</p>
+                </div>
+                <div class="state-card">
+                    <h4>state lives in the delta</h4>
+                    <p>The base world is regenerable and versioned by a <code>gen_key</code>; only the spread-delta is saved. Heritable genomes therefore belong to spread offspring, layered on top of the snapshot — not baked into the base every client downloads.</p>
+                </div>
+            </div>
+
+            <div class="note">
+                <strong>Status: design phase.</strong> None of this is in the game yet. The growth and
+                spread systems described on the <a href="./biology-growth.html">previous page</a> are
+                the foundation this builds on — the daily reproduction round, the analytic clock, the
+                placement test that already decides who survives. Evolution is the next layer, not a
+                rewrite.
+            </div>
+        </section>
+
+        <div class="wrap"><div class="divider"></div></div>
+
+        <!-- ===================== CTA ===================== -->
+        <section class="cta wrap">
+            <h2>The foundation is already running.</h2>
+            <p>
+                Heritable traits build directly on growth and spread. Read how the life cycle works
+                today, or head back to the field guide for the species and biomes this all grows from.
+            </p>
+            <a class="button button-primary" href="./biology-growth.html">Growth &amp; Life Cycle</a>
+            <a class="button button-secondary" href="./biology.html">Back to the Field Guide</a>
+        </section>
+
+        <footer class="wrap">
+            <div class="footer-inner">
+                <p>FloraForge — a procedural world-building engine built from scratch in Rust.</p>
+                <p><a href="./index.html">Home</a> · <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a></p>
+            </div>
+        </footer>
