@@ -414,43 +414,18 @@ impl MinimapPass {
             let cam_map_x = map_x + cam_u.clamp(0.0, 1.0) * MINIMAP_PX;
             let cam_map_y = map_y + cam_v.clamp(0.0, 1.0) * MINIMAP_PX;
 
-            // --- FOV cone ---
+            // --- FOV sector ---
+            // Drawn as a single quad bounding the sector's circle; the fragment
+            // shader carves an anti-aliased, true-arc circular sector out of it.
             let cone_len = MINIMAP_PX * 0.4;
             let half_fov = camera_fov / 2.0;
-
-            // World forward at yaw: (cos(yaw), 0, sin(yaw))
-            // On minimap: +Z → right (screen +X), +X → up (screen -Y)
-            // So screen_dx = sin(yaw), screen_dy = -cos(yaw)
-            let fwd_x = camera_yaw.sin();
-            let fwd_y = -camera_yaw.cos();
-
-            let left_angle = camera_yaw - half_fov;
-            let right_angle = camera_yaw + half_fov;
-
-            let left_x = cam_map_x + left_angle.sin() * cone_len;
-            let left_y = cam_map_y + (-left_angle.cos()) * cone_len;
-            let right_x = cam_map_x + right_angle.sin() * cone_len;
-            let right_y = cam_map_y + (-right_angle.cos()) * cone_len;
-
-            // Mid-point along forward for a second triangle to fill the cone
-            let mid_x = cam_map_x + fwd_x * cone_len;
-            let mid_y = cam_map_y + fwd_y * cone_len;
-
             let cone_color = [1.0, 1.0, 1.0, 0.30];
-
-            // Two triangles to fill the FOV cone
-            push_solid_tri(
+            push_sector(
                 &mut verts,
                 [cam_map_x, cam_map_y],
-                [left_x, left_y],
-                [mid_x, mid_y],
-                cone_color,
-            );
-            push_solid_tri(
-                &mut verts,
-                [cam_map_x, cam_map_y],
-                [mid_x, mid_y],
-                [right_x, right_y],
+                cone_len,
+                camera_yaw,
+                half_fov,
                 cone_color,
             );
 
@@ -602,32 +577,45 @@ fn push_textured_quad_uv(
     ]);
 }
 
-/// Push a solid-color triangle (3 vertices).
-fn push_solid_tri(
+/// Push a quad bounding a circular FOV sector. The shader resolves the actual
+/// anti-aliased sector from the per-vertex local coords + half-angle (`sdf`).
+///
+/// The quad is the axis-aligned screen square of half-side `radius` centred on
+/// the camera — it always contains the radius-`radius` disk, hence the sector,
+/// regardless of facing. Each corner's `uv` is its offset from the centre,
+/// rotated into the sector's local frame (forward → +Y) and normalized by
+/// `radius`, so the shader sees a unit sector bisected by +Y.
+fn push_sector(
     verts: &mut Vec<HudVertex>,
-    a: [f32; 2],
-    b: [f32; 2],
-    c: [f32; 2],
+    center: [f32; 2],
+    radius: f32,
+    yaw: f32,
+    half_fov: f32,
     color: [f32; 4],
 ) {
-    verts.extend_from_slice(&[
+    let (sin_y, cos_y) = yaw.sin_cos();
+    let sector_sdf = [1.0, half_fov];
+
+    // Build a corner: screen position + local-frame uv (forward = +Y, unit radius).
+    let corner = |ox: f32, oy: f32| -> HudVertex {
+        // Math frame (y up): screen y grows downward, so negate it.
+        let mx = ox;
+        let my = -oy;
+        // Rotate by -yaw so the camera's forward axis maps to +Y.
+        let lx = mx * cos_y - my * sin_y;
+        let ly = mx * sin_y + my * cos_y;
         HudVertex {
-            position: a,
-            uv: NO_UV,
+            position: [center[0] + ox, center[1] + oy],
+            uv: [lx / radius, ly / radius],
             color,
-            sdf: SDF_PLAIN,
-        },
-        HudVertex {
-            position: b,
-            uv: NO_UV,
-            color,
-            sdf: SDF_PLAIN,
-        },
-        HudVertex {
-            position: c,
-            uv: NO_UV,
-            color,
-            sdf: SDF_PLAIN,
-        },
-    ]);
+            sdf: sector_sdf,
+        }
+    };
+
+    let tl = corner(-radius, -radius);
+    let tr = corner(radius, -radius);
+    let bl = corner(-radius, radius);
+    let br = corner(radius, radius);
+
+    verts.extend_from_slice(&[tl, tr, bl, bl, tr, br]);
 }
