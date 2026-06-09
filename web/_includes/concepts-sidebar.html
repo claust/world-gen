@@ -5,7 +5,7 @@ slug) to highlight the active entry:
 Slugs must match the concept-<slug>.html file names.
 {%- endcomment -%}
 <nav class="concept-nav" aria-label="Technology concepts">
-    <a class="concept-nav-home{% if include.current == 'index' %} current{% endif %}" href="./concepts.html">All Concepts</a>
+    <a class="concept-nav-home{% if include.current == 'index' %} current{% endif %}" href="./concepts.html"{% if include.current == 'index' %} aria-current="page"{% endif %}>All Concepts</a>
 
     <div class="concept-nav-group">Rendering</div>
     <a href="./concept-shaders.html"{% if include.current == "shaders" %} class="current" aria-current="page"{% endif %}>Shaders &amp; WGSL</a>

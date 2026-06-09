@@ -230,7 +230,7 @@
             font-size: 0.98rem;
             margin: 0 0 1rem;
         }
-        .glossary-body p:last-child { margin-bottom: 0; }
+        .glossary-body p:last-of-type { margin-bottom: 0; }
         .glossary-more {
             display: inline-block;
             margin-top: 1.1rem;
