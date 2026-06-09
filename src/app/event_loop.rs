@@ -6,6 +6,19 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 
 use super::AppState;
 
+/// Map a number key (top row or numpad, 1–5) to a 0-based favorite slot index.
+/// Keys 6–9/0 are intentionally unmapped — there are only five slots.
+fn favorite_slot_for_key(code: KeyCode) -> Option<usize> {
+    match code {
+        KeyCode::Digit1 | KeyCode::Numpad1 => Some(0),
+        KeyCode::Digit2 | KeyCode::Numpad2 => Some(1),
+        KeyCode::Digit3 | KeyCode::Numpad3 => Some(2),
+        KeyCode::Digit4 | KeyCode::Numpad4 => Some(3),
+        KeyCode::Digit5 | KeyCode::Numpad5 => Some(4),
+        _ => None,
+    }
+}
+
 /// Normalize a mouse-wheel delta to "scroll lines" (one notch ≈ 1.0). Line and
 /// pixel deltas (trackpads report the latter) are mapped onto the same scale so
 /// editor zoom feels consistent across input devices.
@@ -111,6 +124,33 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             app.toggle_help();
                         }
                         return;
+                    }
+                }
+
+                // 1–5 recall a favorite position; double-tap saves the current
+                // one. Guarded like `M` so the digits stay free for egui text
+                // fields (menu seed input, config panel, editor, herbarium).
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    // `!repeat` so a held key isn't read as a double-tap (save).
+                    if key_event.state == ElementState::Pressed
+                        && !key_event.repeat
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && !app.show_help
+                    {
+                        if let PhysicalKey::Code(code) = key_event.physical_key {
+                            if let Some(slot) = favorite_slot_for_key(code) {
+                                app.on_favorite_key(slot);
+                                return;
+                            }
+                        }
                     }
                 }
 
@@ -476,6 +516,33 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             app.toggle_help();
                         }
                         return;
+                    }
+                }
+
+                // 1–5 recall a favorite position; double-tap saves the current
+                // one. Guarded like `M` so the digits stay free for egui text
+                // fields (menu seed input, config panel, editor, herbarium).
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    // `!repeat` so a held key isn't read as a double-tap (save).
+                    if key_event.state == ElementState::Pressed
+                        && !key_event.repeat
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && !app.show_help
+                    {
+                        if let PhysicalKey::Code(code) = key_event.physical_key {
+                            if let Some(slot) = favorite_slot_for_key(code) {
+                                app.on_favorite_key(slot);
+                                return;
+                            }
+                        }
                     }
                 }
 

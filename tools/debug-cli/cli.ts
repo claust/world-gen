@@ -37,6 +37,13 @@ function requireFloat(flags: Record<string, string>, name: string): number {
   return n;
 }
 
+function requireInt(flags: Record<string, string>, name: string): number {
+  const raw = requireFlag(flags, name);
+  const n = Number(raw);
+  if (!Number.isInteger(n)) die(`--${name} must be an integer, got "${raw}"`);
+  return n;
+}
+
 function optionalFloat(flags: Record<string, string>, name: string): number | undefined {
   const raw = flags[name];
   if (raw === undefined) return undefined;
@@ -161,6 +168,20 @@ async function cmdMapRightClick(apiBase: string, flags: Record<string, string>) 
   const v = requireFloat(flags, "v");
   if (u < 0 || u > 1 || v < 0 || v > 1) die(`--u and --v must be in range 0..1`);
   const result = await sendAndWait(apiBase, { type: "map_right_click", u, v });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdSaveFavorite(apiBase: string, flags: Record<string, string>) {
+  const slot = requireInt(flags, "slot");
+  if (slot < 1 || slot > 5) die(`--slot must be an integer in range 1..5`);
+  const result = await sendAndWait(apiBase, { type: "save_favorite", slot });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdRecallFavorite(apiBase: string, flags: Record<string, string>) {
+  const slot = requireInt(flags, "slot");
+  if (slot < 1 || slot > 5) die(`--slot must be an integer in range 1..5`);
+  const result = await sendAndWait(apiBase, { type: "recall_favorite", slot });
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -309,6 +330,8 @@ Commands:
   set_camera_position --x <n> --y <n> --z <n>  Teleport camera
   set_camera_look --yaw <n> --pitch <n>    Set camera orientation
   map_right_click --u <0..1> --v <0..1>    Right-click the open world map
+  save_favorite   --slot <1..5>            Save current viewpoint to a favorite slot
+  recall_favorite --slot <1..5>            Recall a saved favorite viewpoint
   find_nearest    --kind <house|tree|fern>   Find nearest object
   look_at         --id <object_id> [--distance <n>]  Look at object
   move            --key <w|a|s|d|up|down> [--duration <ms>]  Move camera
@@ -401,6 +424,12 @@ async function main() {
         break;
       case "map_right_click":
         await cmdMapRightClick(apiBase, flags);
+        break;
+      case "save_favorite":
+        await cmdSaveFavorite(apiBase, flags);
+        break;
+      case "recall_favorite":
+        await cmdRecallFavorite(apiBase, flags);
         break;
       case "find_nearest":
         await cmdFindNearest(apiBase, flags);
