@@ -863,11 +863,14 @@ mod tests {
                     let z = cz + sz as f32 * 0.5 * cell;
                     let raw = hm.sample_height(x, z);
                     let (h, wet, sheet) = field.sample(raw, x, z);
-                    // Visible water (above the draw threshold, sheet clearly
-                    // above ground) over ground the carve left untouched.
-                    let rendered = wet > RIVER_SURFACE_THRESHOLD && sheet > h + 0.05;
+                    // Visible water: above the draw threshold, with the sheet
+                    // standing clear of the ground by more than the clip margin
+                    // (so the test tracks the production tolerance, and the
+                    // sub-centimetre waterline sliver on the bank wall is not a
+                    // false positive). "Uncarved" allows the same tolerance.
+                    let rendered = wet > RIVER_SURFACE_THRESHOLD && sheet > h + SHEET_CLIP_BELOW;
                     assert!(
-                        !(rendered && raw - h < 0.05),
+                        !(rendered && raw - h < SHEET_CLIP_BELOW),
                         "water sheet floats over uncarved ground at ({x}, {z}): \
                          raw {raw}, carved {h}, sheet {sheet}, wet {wet}"
                     );
