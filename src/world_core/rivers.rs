@@ -240,14 +240,21 @@ impl RiverField {
             }
         }
         let diag = cell * std::f32::consts::SQRT_2;
-        while let Some(Reverse((_, ci))) = heap.pop() {
+        while let Some(Reverse((pk, ci))) = heap.pop() {
             let ci = ci as usize;
             let d0 = dist[ci];
+            // Skip stale heap entries: a cell can be pushed at one distance and
+            // later improved, leaving the older, larger entry behind. Its key no
+            // longer matches the cell's best distance, so there is nothing to do.
+            if pk != qkey(d0) {
+                continue;
+            }
             let cx = (ci % res) as i64;
             let cz = (ci / res) as i64;
-            for (k, (dx, dz)) in NB8.iter().enumerate() {
-                // NB8 lists the four orthogonal neighbours first, then diagonals.
-                let nd = d0 + if k < 4 { cell } else { diag };
+            for (dx, dz) in NB8 {
+                // Orthogonal steps cost one cell, diagonal steps √2 cells —
+                // derived from the offset so this doesn't rely on NB8's order.
+                let nd = d0 + if dx != 0 && dz != 0 { diag } else { cell };
                 if nd >= max_dist {
                     continue;
                 }
