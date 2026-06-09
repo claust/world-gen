@@ -84,8 +84,31 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             && !app.is_on_herbarium()
                             && !app.is_on_editor()
                             && !app.config_panel.is_visible()
+                            && !app.show_help
                         {
                             app.toggle_map_overlay();
+                        }
+                        return;
+                    }
+                }
+
+                // H toggles the keyboard-shortcuts help overlay (intercept before camera)
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::KeyH))
+                    {
+                        if !app.is_on_menu()
+                            && !app.is_loading()
+                            && !app.is_on_herbarium()
+                            && !app.is_on_editor()
+                            && !app.config_panel.is_visible()
+                            && !app.map_open
+                        {
+                            app.toggle_help();
                         }
                         return;
                     }
@@ -124,15 +147,16 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     || app.config_panel.is_visible()
                     || app.is_on_editor()
                     || app.map_open
+                    || app.show_help
                 {
                     app.egui_bridge.on_window_event(&event)
                 } else {
                     false
                 };
 
-                // Forward to camera only if egui didn't consume it and the map
-                // overlay isn't open (the map freezes camera movement).
-                if !egui_wants_event && !app.map_open {
+                // Forward to camera only if egui didn't consume it and no
+                // movement-freezing overlay (map or help) is open.
+                if !egui_wants_event && !app.map_open && !app.show_help {
                     app.process_window_event(&event);
                 }
 
@@ -145,7 +169,9 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
-                        if app.map_open {
+                        if app.show_help {
+                            app.toggle_help();
+                        } else if app.map_open {
                             app.toggle_map_overlay();
                         } else if !app.is_on_menu() && !app.is_loading() {
                             if app.is_on_editor() {
@@ -211,8 +237,9 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             || app.config_panel.is_visible()
                             || app.is_on_editor()
                             || app.map_open
+                            || app.show_help
                         {
-                            // Don't capture cursor on menu, loading, herbarium, config panel, plant editor, or map overlay
+                            // Don't capture cursor on menu, loading, herbarium, config panel, plant editor, map overlay, or help overlay
                         } else {
                             app.capture_cursor();
                         }
@@ -289,13 +316,14 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                 }
             }
             Event::DeviceEvent { event, .. } => {
-                // Block mouse delta when on start menu, loading, config panel, or plant editor
+                // Block mouse delta when on start menu, loading, config panel, plant editor, or an overlay
                 if app.is_on_menu()
                     || app.is_loading()
                     || app.is_on_herbarium()
                     || app.config_panel.is_visible()
                     || app.is_on_editor()
                     || app.map_open
+                    || app.show_help
                 {
                     // skip device events
                 } else {
@@ -421,6 +449,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             && !app.is_on_herbarium()
                             && !app.is_on_editor()
                             && !app.config_panel.is_visible()
+                            && !app.show_help
                         {
                             app.toggle_map_overlay();
                         }
@@ -428,21 +457,44 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                     }
                 }
 
+                // H toggles the keyboard-shortcuts help overlay
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::KeyH))
+                    {
+                        if !app.is_on_menu()
+                            && !app.is_loading()
+                            && !app.is_on_herbarium()
+                            && !app.is_on_editor()
+                            && !app.config_panel.is_visible()
+                            && !app.map_open
+                        {
+                            app.toggle_help();
+                        }
+                        return;
+                    }
+                }
+
                 // Feed events to egui when on start menu, loading, config panel,
-                // plant editor, or the map overlay
+                // plant editor, or an overlay
                 let egui_wants_event = if app.is_on_menu()
                     || app.is_loading()
                     || app.is_on_herbarium()
                     || app.config_panel.is_visible()
                     || app.is_on_editor()
                     || app.map_open
+                    || app.show_help
                 {
                     app.egui_bridge.on_window_event(&event)
                 } else {
                     false
                 };
 
-                if !egui_wants_event && !app.map_open {
+                if !egui_wants_event && !app.map_open && !app.show_help {
                     app.process_window_event(&event);
                 }
 
@@ -451,7 +503,9 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                         if event.state == ElementState::Pressed
                             && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                     {
-                        if app.map_open {
+                        if app.show_help {
+                            app.toggle_help();
+                        } else if app.map_open {
                             app.toggle_map_overlay();
                         } else if !app.is_on_menu() && !app.is_loading() {
                             if app.is_on_editor() {
@@ -495,8 +549,9 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             || app.config_panel.is_visible()
                             || app.is_on_editor()
                             || app.map_open
+                            || app.show_help
                         {
-                            // Don't capture cursor on menu, loading, herbarium, config panel, plant editor, or map overlay
+                            // Don't capture cursor on menu, loading, herbarium, config panel, plant editor, map overlay, or help overlay
                         } else {
                             app.capture_cursor();
                         }
@@ -554,6 +609,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                     || app.config_panel.is_visible()
                     || app.is_on_editor()
                     || app.map_open
+                    || app.show_help
                 {
                     // skip device events
                 } else {

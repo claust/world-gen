@@ -176,6 +176,8 @@ pub struct AppState {
     world_map_tex: Option<egui::TextureHandle>,
     /// Whether the full-world map overlay (toggled with `M`) is currently shown.
     map_open: bool,
+    /// Whether the keyboard-shortcuts help overlay (toggled with `H`) is shown.
+    show_help: bool,
     /// Handle to the background world-generation worker (native only). Polled each
     /// frame; dropped (detaching the thread) if the user leaves the loading screen.
     #[cfg(not(target_arch = "wasm32"))]
@@ -321,6 +323,7 @@ impl AppState {
             loading_map_done: 0,
             world_map_tex: None,
             map_open: false,
+            show_help: false,
             world_gen_job: None,
             thumbnail_renderer: None,
             blur_pass,
@@ -428,6 +431,7 @@ impl AppState {
             loading_map_done: 0,
             world_map_tex: None,
             map_open: false,
+            show_help: false,
             wasm_world_job: None,
             wasm_world_progress: None,
             wasm_base_prefetch,
@@ -499,16 +503,38 @@ impl AppState {
         matches!(self.screen, Screen::Herbarium)
     }
 
+    /// Whether plain gameplay currently wants the cursor captured: we're
+    /// `Playing` with nothing else (config panel, map, or help) claiming it. Both
+    /// overlay toggles consult this before recapturing on close so dismissing one
+    /// overlay never steals the cursor back while another is still open.
+    fn gameplay_wants_cursor(&self) -> bool {
+        matches!(self.screen, Screen::Playing)
+            && !self.config_panel.is_visible()
+            && !self.map_open
+            && !self.show_help
+    }
+
     /// Toggle the full-world map overlay (`M`). Releases the cursor while open and
-    /// recaptures it on close — but only when normal gameplay actually wants the
-    /// cursor captured (`Playing`, no config panel). The keyboard path already
-    /// gates on the screen, but the debug API can toggle this from any screen, so
-    /// guard the recapture here too rather than locking the cursor on a menu.
+    /// recaptures it on close — but only when gameplay actually wants the cursor
+    /// (see `gameplay_wants_cursor`). The keyboard path already gates on the
+    /// screen, but the debug API can toggle this from any state, so guard the
+    /// recapture here too rather than locking the cursor on a menu/other overlay.
     fn toggle_map_overlay(&mut self) {
         self.map_open = !self.map_open;
         if self.map_open {
             self.release_cursor();
-        } else if matches!(self.screen, Screen::Playing) && !self.config_panel.is_visible() {
+        } else if self.gameplay_wants_cursor() {
+            self.capture_cursor();
+        }
+    }
+
+    /// Toggle the keyboard-shortcuts help overlay. Like the map, it releases the
+    /// cursor while open and recaptures it on close only when gameplay wants it.
+    fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+        if self.show_help {
+            self.release_cursor();
+        } else if self.gameplay_wants_cursor() {
             self.capture_cursor();
         }
     }
@@ -1776,7 +1802,8 @@ impl AppState {
                 || is_herbarium
                 || self.config_panel.is_visible()
                 || is_editor
-                || self.map_open;
+                || self.map_open
+                || self.show_help;
             // The confirmation toast renders during plain gameplay, when egui
             // would otherwise be skipped, so keep the pass alive while it shows.
             #[cfg(not(target_arch = "wasm32"))]
@@ -1857,6 +1884,9 @@ impl AppState {
                                 ) {
                                     map_teleport_target = Some((x, z));
                                 }
+                            }
+                            if self.show_help {
+                                render_help_ui(ctx);
                             }
                         }
                         Screen::PlantEditor => {
@@ -2381,6 +2411,112 @@ fn render_map_ui(
         });
 
     teleport_target
+}
+
+/// Modal overlay listing the keyboard shortcuts, toggled with `H`. Mirrors the
+/// map overlay's dimmed full-screen frame so the two read as the same family of
+/// pause-style overlays.
+fn render_help_ui(ctx: &egui::Context) {
+    use egui::{Color32, FontId, Grid, RichText};
+
+    // (key, description) pairs grouped into titled sections. Kept in sync by hand
+    // with the shortcut handlers in `app/event_loop.rs` and `camera.rs`.
+    let sections: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Navigation",
+            &[
+                ("W / \u{2191}", "Move forward"),
+                ("S / \u{2193}", "Move backward"),
+                ("A / \u{2190}", "Move left"),
+                ("D / \u{2192}", "Move right"),
+                ("Space", "Move up"),
+                ("Shift", "Move down"),
+                ("Ctrl", "Hold to move faster"),
+                ("Mouse", "Look around"),
+            ],
+        ),
+        (
+            "World",
+            &[
+                ("M", "Toggle world map (right-click map to teleport)"),
+                ("F1", "Toggle config panel"),
+                ("P", "Screenshot to clipboard"),
+            ],
+        ),
+        (
+            "General",
+            &[
+                ("H", "Toggle this help screen"),
+                ("Esc", "Close overlay / return to menu"),
+            ],
+        ),
+    ];
+
+    let heading = Color32::from_rgb(232, 240, 247);
+    let key_color = Color32::from_rgb(255, 224, 130);
+    let desc_color = Color32::from_white_alpha(210);
+
+    // Full-screen dim behind the card, matching the map overlay's frame so the
+    // two overlays read as the same family.
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(Color32::from_black_alpha(190)))
+        .show(ctx, |_ui| {});
+
+    // The shortcuts sit in a centered, auto-sized card. A `Window` keeps the
+    // two-column grids tidy (left-aligned within the card) instead of letting
+    // them sprawl across the full viewport width.
+    egui::Window::new("Keyboard Shortcuts")
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .collapsible(false)
+        .resizable(false)
+        .movable(false)
+        .title_bar(false)
+        .frame(
+            egui::Frame::NONE
+                .fill(Color32::from_rgb(22, 28, 34))
+                .stroke(egui::Stroke::new(1.0, Color32::from_white_alpha(40)))
+                .corner_radius(egui::CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(28, 22)),
+        )
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("Keyboard Shortcuts")
+                        .size(26.0)
+                        .strong()
+                        .color(heading),
+                );
+            });
+            ui.add_space(16.0);
+
+            for (title, rows) in sections {
+                ui.label(RichText::new(*title).size(17.0).strong().color(heading));
+                ui.add_space(4.0);
+                Grid::new(*title)
+                    .num_columns(2)
+                    .spacing([24.0, 6.0])
+                    .show(ui, |ui| {
+                        for (key, desc) in *rows {
+                            ui.label(
+                                RichText::new(*key)
+                                    .font(FontId::monospace(15.0))
+                                    .color(key_color),
+                            );
+                            ui.label(RichText::new(*desc).size(15.0).color(desc_color));
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(14.0);
+            }
+
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("H / Esc to close")
+                        .font(FontId::monospace(13.0))
+                        .color(Color32::from_white_alpha(150)),
+                );
+            });
+        });
 }
 
 fn map_uv_to_world_position(u: f32, v: f32) -> (f32, f32) {
