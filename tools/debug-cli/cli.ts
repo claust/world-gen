@@ -37,6 +37,13 @@ function requireFloat(flags: Record<string, string>, name: string): number {
   return n;
 }
 
+function requireInt(flags: Record<string, string>, name: string): number {
+  const raw = requireFlag(flags, name);
+  const n = Number(raw);
+  if (!Number.isInteger(n)) die(`--${name} must be an integer, got "${raw}"`);
+  return n;
+}
+
 function optionalFloat(flags: Record<string, string>, name: string): number | undefined {
   const raw = flags[name];
   if (raw === undefined) return undefined;
@@ -165,15 +172,15 @@ async function cmdMapRightClick(apiBase: string, flags: Record<string, string>) 
 }
 
 async function cmdSaveFavorite(apiBase: string, flags: Record<string, string>) {
-  const slot = requireFloat(flags, "slot");
-  if (slot < 1 || slot > 5) die(`--slot must be in range 1..5`);
+  const slot = requireInt(flags, "slot");
+  if (slot < 1 || slot > 5) die(`--slot must be an integer in range 1..5`);
   const result = await sendAndWait(apiBase, { type: "save_favorite", slot });
   console.log(JSON.stringify(result, null, 2));
 }
 
 async function cmdRecallFavorite(apiBase: string, flags: Record<string, string>) {
-  const slot = requireFloat(flags, "slot");
-  if (slot < 1 || slot > 5) die(`--slot must be in range 1..5`);
+  const slot = requireInt(flags, "slot");
+  if (slot < 1 || slot > 5) die(`--slot must be an integer in range 1..5`);
   const result = await sendAndWait(apiBase, { type: "recall_favorite", slot });
   console.log(JSON.stringify(result, null, 2));
 }

@@ -613,7 +613,7 @@ impl AppState {
     }
 
     /// Store the current camera position and view direction into `slot`, then
-    /// persist so it survives a restart. Empty slots show on the world map.
+    /// persist so it survives a restart. Occupied slots show on the world map.
     fn save_favorite(&mut self, slot: usize) {
         if slot >= FAVORITE_SLOTS {
             return;
@@ -637,7 +637,13 @@ impl AppState {
     /// height is honoured but clamped above the current ground/water surface so a
     /// changed terrain (or a slot saved underwater) can't drop the camera under.
     fn recall_favorite(&mut self, slot: usize) {
-        let Some(fav) = self.favorites.get(slot).and_then(|f| *f) else {
+        if slot >= FAVORITE_SLOTS {
+            return;
+        }
+        // Empty slot: surface a toast so a single tap on an unused key isn't
+        // a silent no-op the player can't explain.
+        let Some(fav) = self.favorites[slot] else {
+            self.set_favorite_toast(format!("Position {} empty", slot + 1));
             return;
         };
         let [x, saved_y, z] = fav.position;
@@ -1322,6 +1328,13 @@ impl AppState {
 
         self.frame_time_ms = self.frame_time_ms * 0.94 + (dt * 1000.0) * 0.06;
         self.elapsed_seconds += dt;
+
+        // Cancel a pending favorite recall if we left gameplay (e.g. Esc to menu)
+        // before its double-tap window closed, so a delayed teleport can't fire
+        // out of context when play resumes. It's only resolved while Playing.
+        if !matches!(self.screen, Screen::Playing) {
+            self.pending_recall = None;
+        }
 
         // Ambient sound plays in the world and on the start menu (so volume
         // changes in Settings are audible while adjusting them); it stays paused
