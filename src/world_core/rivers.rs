@@ -282,12 +282,19 @@ impl RiverField {
         // the two off-diagonal corner cells sit a full cell away, dragging the
         // interpolation up — which pinches the carve to zero and chops the river
         // into one-cell-spaced pools. Seed those corner cells (a non-channel cell
-        // flanked by two channel cells that are diagonal to each other) at half a
-        // cell, so the interpolated distance along the diagonal centreline stays
-        // inside the channel half-width and the carve runs unbroken. The seed is
-        // larger than the half-width for any normal channel, so the corner cell
-        // itself stays outside the flat-bottom corridor and the channel's visible
-        // width is unchanged.
+        // flanked by two channel cells that are diagonal to each other) so the
+        // interpolated distance along the diagonal centreline stays inside the
+        // wall and the carve runs unbroken.
+        //
+        // The seed must satisfy two constraints, which is why it scales with the
+        // channel rather than being a fixed fraction of a cell: the segment
+        // midpoint interpolates to half the seed, which must land within the
+        // half-width so the carve there is full depth (`seed <= 2 * halfwidth`);
+        // and the corner cell itself must stay at/outside the wall so it does not
+        // widen the channel (`seed >= halfwidth + WALL_WIDTH`). Seeding at exactly
+        // `halfwidth + WALL_WIDTH` puts the corner on the zero-carve edge — no
+        // widening — while keeping the midpoint at `(halfwidth + WALL_WIDTH) / 2`,
+        // inside the flat bed for any channel wide enough to carve.
         let wet_at = |x: i64, z: i64| -> f32 {
             wet[(z.rem_euclid(n) as usize) * res + x.rem_euclid(n) as usize]
         };
@@ -299,7 +306,6 @@ impl RiverField {
             ((0, 1), (-1, 0)),  // S & W
             ((-1, 0), (0, -1)), // W & N
         ];
-        let bridge_seed = 0.5 * cell;
         for i in 0..n2 {
             if wet[i] > 0.0 {
                 continue;
@@ -314,6 +320,7 @@ impl RiverField {
                 }
             }
             if size > 0.0 {
+                let bridge_seed = HALFWIDTH_MIN + HALFWIDTH_SPAN * size + WALL_WIDTH;
                 dist[i] = bridge_seed;
                 chan_size[i] = size;
                 heap.push(Reverse((qkey(bridge_seed), i as u32)));
@@ -375,9 +382,10 @@ impl RiverField {
 
     /// Carved terrain height at world `(x, z)` (wrapping toroidally) given the
     /// natural height `raw`. Returns `(carved_height_m, wetness_0_1,
-    /// water_surface_elevation_m)`. The surface elevation is the smoothed routing
-    /// surface; the caller drops a freeboard off it to place the water sheet below
-    /// the surrounding banks — the same freeboard this uses to cap the bank wall.
+    /// routing_surface_elevation_m)`. The third value is the smoothed routing
+    /// surface *before* the freeboard, not the water sheet itself: the caller drops
+    /// [`RIVER_SURFACE_FREEBOARD`] off it to place the sheet below the banks — the
+    /// same freeboard this already applies internally to cap the bank wall.
     pub fn sample(&self, raw: f32, x: f32, z: f32) -> (f32, f32, f32) {
         if self.res <= 1 {
             return (raw, 0.0, 0.0);
@@ -723,15 +731,18 @@ mod tests {
         let field = RiverField::generate(42, &config);
         let hm = Heightmap::new(42, config.heightmap.clone());
 
-        // Start from the strongest channel cell on the world.
+        // Start from the strongest channel cell that actually has downstream flow,
+        // so the walk has somewhere to go: the wettest cell can be an outlet/ocean
+        // cell whose flow is `(0, 0)`, which would end the walk immediately.
         let res = field.res;
         let cell = WORLD_SIZE_METERS as f32 / res as f32;
         let (start, _) = field
             .wet
             .iter()
             .enumerate()
+            .filter(|(i, &w)| w > 0.0 && (field.flow_x[*i] != 0.0 || field.flow_z[*i] != 0.0))
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .unwrap();
+            .expect("default world has a flowing channel");
         let (mut wx, mut wz) = ((start % res) as f32 * cell, (start / res) as f32 * cell);
 
         // Follow the flow field downstream at terrain-vertex resolution and count
