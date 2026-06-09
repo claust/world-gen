@@ -417,16 +417,16 @@ impl MinimapPass {
             // --- FOV sector ---
             // Drawn as a single quad bounding the sector's circle; the fragment
             // shader carves an anti-aliased, true-arc circular sector out of it.
-            let cone_len = MINIMAP_PX * 0.4;
+            let sector_radius = MINIMAP_PX * 0.4;
             let half_fov = camera_fov / 2.0;
-            let cone_color = [1.0, 1.0, 1.0, 0.30];
+            let sector_color = [1.0, 1.0, 1.0, 0.30];
             push_sector(
                 &mut verts,
                 [cam_map_x, cam_map_y],
-                cone_len,
+                sector_radius,
                 camera_yaw,
                 half_fov,
-                cone_color,
+                sector_color,
             );
 
             // --- Camera dot ---
@@ -601,7 +601,7 @@ fn push_sector(
         // Math frame (y up): screen y grows downward, so negate it.
         let mx = ox;
         let my = -oy;
-        // Rotate by -yaw so the camera's forward axis maps to +Y.
+        // Rotate by +yaw so the camera's forward direction maps to +Y.
         let lx = mx * cos_y - my * sin_y;
         let ly = mx * sin_y + my * cos_y;
         HudVertex {
