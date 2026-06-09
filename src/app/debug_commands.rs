@@ -352,7 +352,10 @@ impl AppState {
                             }
                         }
                         PressableKey::Escape => {
-                            if self.map_open {
+                            if self.show_help {
+                                self.toggle_help();
+                                "help overlay closed".to_string()
+                            } else if self.map_open {
                                 self.toggle_map_overlay();
                                 "map overlay closed".to_string()
                             } else if self.config_panel.is_visible() {
@@ -383,6 +386,14 @@ impl AppState {
                                 self.screenshot_pending = Some(command.id);
                                 self.screenshot_to_clipboard = true;
                                 continue;
+                            }
+                        }
+                        PressableKey::H => {
+                            self.toggle_help();
+                            if self.show_help {
+                                "help overlay opened".to_string()
+                            } else {
+                                "help overlay closed".to_string()
                             }
                         }
                     };
