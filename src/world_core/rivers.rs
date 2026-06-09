@@ -76,8 +76,9 @@ const DEPTH_SPAN: f32 = 0.6;
 /// near-vertical cliff that dwarfs the ~5 m houses. Where the natural rim sits
 /// higher than `water + MAX_BRINK`, the sharp cut tops out here and the terrain
 /// above blends back to its natural height, so the defined bank stays a bounded,
-/// house-scale step instead of a cliff. Gentle valleys (rim below the cap) are
-/// untouched, so this never raises the water or widens a river.
+/// house-scale step instead of a cliff. Rims between the [`BRINK_MIN`] floor and
+/// this cap are untouched, and neither bound ever raises the water or widens a
+/// river.
 const MAX_BRINK: f32 = 2.5;
 /// Floor (metres) on the bank rim's height above the water sheet. Where the
 /// natural ground next to a channel lies *below* the sheet (floodplains, the
