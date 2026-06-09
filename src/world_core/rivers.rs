@@ -34,13 +34,68 @@ pub const MAX_PLANTABLE_WETNESS: f32 = 0.15;
 /// water. Their lower bound is [`MAX_PLANTABLE_WETNESS`], where land plants stop.
 pub const AQUATIC_MAX_WETNESS: f32 = 0.55;
 
+// ---------------------------------------------------------------------------
+// Bank-wall shaping.
+//
+// Carve depth is shaped from a baked *distance-to-nearest-channel* field, not
+// from wetness directly. Per terrain vertex the carve is
+//   `depth(size) * wall(dist, halfwidth(size))`
+// where `wall` holds full depth inside the channel half-width then ramps to
+// zero over a fixed few-metre band — a flat bed with steep sides. Distance (in
+// metres) interpolates near-linearly between the coarse hydrology cells, unlike
+// the thresholded wetness which steps from ~0 to channel-peak in one cell; so
+// evaluating the ramp per vertex yields a wall only `WALL_WIDTH` metres wide on
+// the 2 m terrain mesh, decoupled from the 32 m grid spacing. Half-width and
+// depth both scale with channel size (`size` = nearest channel's normalized
+// log-drainage `wet`, 0..1) so creeks stay shallow and narrow while trunk
+// rivers cut deep, wide beds.
+
+/// Width (metres) of the bank wall: the band over which carve ramps from full
+/// depth down to zero just outside the channel half-width. Smaller = sharper.
+const WALL_WIDTH: f32 = 5.0;
+/// Channel half-width (metres): the flat-bottomed corridor that carves to full
+/// depth. `HALFWIDTH_MIN` at the smallest carving creek, plus `HALFWIDTH_SPAN`
+/// more toward a full-size trunk.
+const HALFWIDTH_MIN: f32 = 4.0;
+const HALFWIDTH_SPAN: f32 = 14.0;
+/// Carve depth as a fraction of `max_carve_depth`: `DEPTH_FLOOR` for the
+/// smallest creek, plus `DEPTH_SPAN` more toward a full-size trunk.
+const DEPTH_FLOOR: f32 = 0.4;
+const DEPTH_SPAN: f32 = 0.6;
+
+/// Hermite smoothstep, clamped to `0..1` outside `[edge0, edge1]`.
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Cross-channel carve shape at `dist` metres from the nearest channel, given
+/// that channel's `size` (0..1). Returns metres to subtract from the terrain:
+/// full `depth` inside the half-width, ramping to 0 over [`WALL_WIDTH`] beyond.
+fn carve_profile(dist: f32, size: f32, max_carve_depth: f32) -> f32 {
+    let depth = max_carve_depth * (DEPTH_FLOOR + DEPTH_SPAN * size);
+    let halfwidth = HALFWIDTH_MIN + HALFWIDTH_SPAN * size;
+    depth * (1.0 - smoothstep(halfwidth, halfwidth + WALL_WIDTH, dist))
+}
+
 /// A baked global river field, sampled during terrain generation.
 pub struct RiverField {
     res: usize,
-    /// Per-cell carve depth in metres (subtracted from terrain height).
-    carve: Vec<f32>,
-    /// Per-cell wetness in `0..1` (riverbed tint strength).
+    /// Channel depth (metres) for the largest rivers; the per-vertex carve
+    /// scales this by [`carve_profile`].
+    max_carve_depth: f32,
+    /// Per-cell wetness in `0..1` (riverbed tint strength; also the channel-size
+    /// proxy propagated into [`chan_size`](Self::chan_size)).
     wet: Vec<f32>,
+    /// Per-cell distance (metres) to the nearest channel cell, capped to the
+    /// band the wall profile uses. Bilinearly sampled and fed to [`carve_profile`];
+    /// near-linear in metres, so it interpolates a sharp wall the coarse grid
+    /// could not represent directly.
+    dist: Vec<f32>,
+    /// Per-cell size (`0..1`) of the nearest channel — its `wet` — propagated
+    /// outward by the same distance transform. Drives the carve depth and
+    /// half-width so a bank inherits its channel's scale.
+    chan_size: Vec<f32>,
     /// Per-cell normalized downstream flow direction in world space, split into
     /// parallel x/z grids. `(0, 0)` away from rivers; elsewhere a unit vector
     /// pointing the way the water runs (toward the sea). Drives the streaming
@@ -60,8 +115,10 @@ impl RiverField {
     pub fn empty() -> Self {
         Self {
             res: 1,
-            carve: vec![0.0],
+            max_carve_depth: 0.0,
             wet: vec![0.0],
+            dist: vec![0.0],
+            chan_size: vec![0.0],
             flow_x: vec![0.0],
             flow_z: vec![0.0],
             surf: vec![0.0],
@@ -115,12 +172,13 @@ impl RiverField {
             filled: surf,
         } = compute_hydrology(&route, res, config.sea_level);
 
-        // 4. Bake carve depth + wetness from upstream drainage area.
+        // 4. Bake wetness + flow direction from upstream drainage area. Carve
+        //    itself is shaped per terrain vertex from the distance field below,
+        //    so only the channel-marking wetness is baked here.
         let cell_area = (cell as f64) * (cell as f64);
         let threshold = (rc.min_drainage_area_m2 as f64 / cell_area).max(1.0) as f32;
         let lo = threshold.ln();
         let hi = (threshold * 300.0).ln();
-        let mut carve = vec![0.0f32; n2];
         let mut wet = vec![0.0f32; n2];
         let mut flow_x = vec![0.0f32; n2];
         let mut flow_z = vec![0.0f32; n2];
@@ -144,7 +202,6 @@ impl RiverField {
             }
             let t = ((a.ln() - lo) / (hi - lo)).clamp(0.0, 1.0);
             wet[i] = t;
-            carve[i] = rc.max_carve_depth * (0.3 + 0.7 * t);
 
             // Downstream direction: from this cell toward its receiver. World x
             // grows with the column index and world z with the row index, so the
@@ -157,6 +214,57 @@ impl RiverField {
                 if len > 0.0 {
                     flow_x[i] = dx / len;
                     flow_z[i] = dz / len;
+                }
+            }
+        }
+
+        // 5. Distance-to-channel field. Multi-source Dijkstra from every channel
+        //    cell over the wrapping 8-neighbour grid, bounded to the band the
+        //    wall profile reaches (carve is 0 beyond it) so only cells near a
+        //    channel are touched. Each cell also inherits the size (`wet`) of the
+        //    channel it is nearest to, so banks know how deep/wide to cut. The
+        //    near-linear distance interpolates a sharp wall the 32 m grid cannot
+        //    hold; see [`carve_profile`].
+        let n = res as i64;
+        let max_dist = HALFWIDTH_MIN + HALFWIDTH_SPAN + WALL_WIDTH + cell;
+        let mut dist = vec![max_dist; n2];
+        let mut chan_size = vec![0.0f32; n2];
+        // Quantize the float distance for the heap ordering (centimetre keys).
+        let qkey = |d: f32| (d * 100.0) as i32;
+        let mut heap: BinaryHeap<Reverse<(i32, u32)>> = BinaryHeap::new();
+        for i in 0..n2 {
+            if wet[i] > 0.0 {
+                dist[i] = 0.0;
+                chan_size[i] = wet[i];
+                heap.push(Reverse((0, i as u32)));
+            }
+        }
+        let diag = cell * std::f32::consts::SQRT_2;
+        while let Some(Reverse((pk, ci))) = heap.pop() {
+            let ci = ci as usize;
+            let d0 = dist[ci];
+            // Skip stale heap entries: a cell can be pushed at one distance and
+            // later improved, leaving the older, larger entry behind. Its key no
+            // longer matches the cell's best distance, so there is nothing to do.
+            if pk != qkey(d0) {
+                continue;
+            }
+            let cx = (ci % res) as i64;
+            let cz = (ci / res) as i64;
+            for (dx, dz) in NB8 {
+                // Orthogonal steps cost one cell, diagonal steps √2 cells —
+                // derived from the offset so this doesn't rely on NB8's order.
+                let nd = d0 + if dx != 0 && dz != 0 { diag } else { cell };
+                if nd >= max_dist {
+                    continue;
+                }
+                let nx = (cx + dx).rem_euclid(n) as usize;
+                let nz = (cz + dz).rem_euclid(n) as usize;
+                let ni = nz * res + nx;
+                if nd < dist[ni] {
+                    dist[ni] = nd;
+                    chan_size[ni] = chan_size[ci];
+                    heap.push(Reverse((qkey(nd), ni as u32)));
                 }
             }
         }
@@ -175,8 +283,10 @@ impl RiverField {
 
         Self {
             res,
-            carve,
+            max_carve_depth: rc.max_carve_depth,
             wet,
+            dist,
+            chan_size,
             flow_x,
             flow_z,
             surf,
@@ -216,7 +326,16 @@ impl RiverField {
             let bot = c * (1.0 - tx) + d * tx;
             top * (1.0 - tz) + bot * tz
         };
-        (lerp(&self.carve), lerp(&self.wet), lerp(&self.surf))
+        // Carve is shaped here from the *interpolated* distance and channel size
+        // rather than baked as a depth and interpolated: the wall profile applied
+        // per vertex collapses the bank drop onto a few metres, so the channel
+        // reads as a walled cut instead of a wide bowl. See [`carve_profile`].
+        let carve = carve_profile(
+            lerp(&self.dist),
+            lerp(&self.chan_size),
+            self.max_carve_depth,
+        );
+        (carve, lerp(&self.wet), lerp(&self.surf))
     }
 
     /// Bilinearly sample the downstream flow direction at world `(x, z)`,
@@ -407,6 +526,32 @@ mod tests {
             assert!((w0 - w1).abs() < 1e-3, "wet not periodic at ({x},{z})");
             assert!((s0 - s1).abs() < 1e-3, "surf not periodic at ({x},{z})");
         }
+    }
+
+    #[test]
+    fn carve_profile_is_a_flat_bottomed_wall() {
+        let max = 20.0;
+        let size = 0.8;
+        let halfwidth = HALFWIDTH_MIN + HALFWIDTH_SPAN * size;
+        let depth = max * (DEPTH_FLOOR + DEPTH_SPAN * size);
+
+        // Flat full-depth floor across the whole half-width.
+        assert!((carve_profile(0.0, size, max) - depth).abs() < 1e-3);
+        assert!((carve_profile(halfwidth, size, max) - depth).abs() < 1e-3);
+        // Zero once past the wall, and the transition is confined to WALL_WIDTH.
+        assert_eq!(carve_profile(halfwidth + WALL_WIDTH, size, max), 0.0);
+        assert_eq!(carve_profile(halfwidth + WALL_WIDTH + 10.0, size, max), 0.0);
+        // The wall is steep: most of the drop happens over WALL_WIDTH metres, far
+        // sharper than the ~grid-cell-wide ramp a bilinearly-sampled depth gives.
+        let mid = carve_profile(halfwidth + 0.5 * WALL_WIDTH, size, max);
+        assert!(
+            (mid - 0.5 * depth).abs() < 0.05 * depth,
+            "wall midpoint {mid}"
+        );
+
+        // Depth and half-width both shrink with channel size: a creek cuts a
+        // shallower, narrower bed than a trunk.
+        assert!(carve_profile(0.0, 0.1, max) < carve_profile(0.0, 0.9, max));
     }
 
     #[test]

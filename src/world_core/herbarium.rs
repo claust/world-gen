@@ -239,7 +239,13 @@ impl<'a> BaseGenerationInputs<'a> {
             // field (mildly lossy bilinear vs the exact 4D noise), shifting baked
             // biome boundaries, so old snapshots must be rejected. See
             // `world_core::terrain_fields`.
-            version: 5,
+            // v6: river carve is reshaped from a distance-to-channel field into
+            // steep-walled, flat-bottomed channels (was a wetness-proportional
+            // bowl), so the carved terrain — and the plants seated on it —
+            // differ. See `world_core::rivers`. The carve-shape tunables live as
+            // constants there, not in `RiverConfig`, so changing them needs a
+            // further bump here.
+            version: 6,
             seed: config.world.seed,
             sea_level: config.sea_level,
             biome: &config.biome,
