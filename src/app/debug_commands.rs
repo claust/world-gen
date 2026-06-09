@@ -6,6 +6,7 @@ use crate::debug_api::{
     MoveKey, ObjectKind, PressableKey, RendererSnapshot, TelemetrySnapshot,
 };
 use crate::renderer_wgpu::camera::MoveDirection;
+use crate::world_core::save::FAVORITE_SLOTS;
 use crate::world_runtime::RuntimeStats;
 
 use super::AppState;
@@ -134,6 +135,55 @@ impl AppState {
                             self.frame_index,
                             format!(
                                 "map right-click teleported camera to ({:.1}, {:.1}, {:.1})",
+                                self.camera.position.x,
+                                self.camera.position.y,
+                                self.camera.position.z
+                            ),
+                        );
+                        evt.object_position = Some([
+                            self.camera.position.x,
+                            self.camera.position.y,
+                            self.camera.position.z,
+                        ]);
+                        evt
+                    }
+                }
+                CommandKind::SaveFavorite { slot } => {
+                    if !(1..=FAVORITE_SLOTS as u8).contains(&slot) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("save favorite failed: slot must be in 1..={FAVORITE_SLOTS}"),
+                        )
+                    } else {
+                        self.save_favorite((slot - 1) as usize);
+                        CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("saved favorite position {slot}"),
+                        )
+                    }
+                }
+                CommandKind::RecallFavorite { slot } => {
+                    if !(1..=FAVORITE_SLOTS as u8).contains(&slot) {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("recall favorite failed: slot must be in 1..={FAVORITE_SLOTS}"),
+                        )
+                    } else if self.favorites[(slot - 1) as usize].is_none() {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("recall favorite failed: slot {slot} is empty"),
+                        )
+                    } else {
+                        self.recall_favorite((slot - 1) as usize);
+                        let mut evt = CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!(
+                                "recalled favorite {slot} to ({:.1}, {:.1}, {:.1})",
                                 self.camera.position.x,
                                 self.camera.position.y,
                                 self.camera.position.z

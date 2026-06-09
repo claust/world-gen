@@ -18,7 +18,7 @@ use crate::ui::{
 };
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::Herbarium;
-use crate::world_core::save::{CameraSave, SaveData, WorldSave};
+use crate::world_core::save::{CameraSave, SaveData, WorldSave, FAVORITE_SLOTS};
 use crate::world_core::storage::{create_storage, Storage};
 use crate::world_runtime::WorldRuntime;
 #[cfg(not(target_arch = "wasm32"))]
@@ -176,6 +176,18 @@ pub struct AppState {
     world_map_tex: Option<egui::TextureHandle>,
     /// Whether the full-world map overlay (toggled with `M`) is currently shown.
     map_open: bool,
+    /// Player-saved favorite viewpoints, one per number key 1–5. Loaded from and
+    /// written back to `save.json`; mirrored into `SaveData` on every save.
+    favorites: [Option<CameraSave>; crate::world_core::save::FAVORITE_SLOTS],
+    /// A single-tap on a favorite key recalls; a double-tap saves. We can't tell
+    /// the two apart until the double-tap window closes, so a press arms a pending
+    /// recall here (slot, deadline in `elapsed_seconds`); a second press of the
+    /// same slot before the deadline cancels it and saves instead. Resolved in
+    /// `update`. See `on_favorite_key` / `resolve_pending_recall`.
+    pending_recall: Option<(usize, f32)>,
+    /// Brief on-screen text confirming a favorite was saved/recalled
+    /// (message, `elapsed_seconds` at creation). Drawn by `draw_favorite_toast`.
+    favorite_toast: Option<(String, f32)>,
     /// Handle to the background world-generation worker (native only). Polled each
     /// frame; dropped (detaching the thread) if the user leaves the loading screen.
     #[cfg(not(target_arch = "wasm32"))]
@@ -220,6 +232,7 @@ impl AppState {
             crate::world_core::storage::instance_root(instance.as_deref()).join("captures");
         let config = GameConfig::load(&*storage);
         let save = SaveData::load(&*storage);
+        let favorites = save.as_ref().map(|s| s.favorites).unwrap_or_default();
 
         let mut gpu = GpuContext::new(window).await?;
 
@@ -321,6 +334,9 @@ impl AppState {
             loading_map_done: 0,
             world_map_tex: None,
             map_open: false,
+            favorites,
+            pending_recall: None,
+            favorite_toast: None,
             world_gen_job: None,
             thumbnail_renderer: None,
             blur_pass,
@@ -341,6 +357,7 @@ impl AppState {
         let storage = create_storage(None);
         let config = GameConfig::load(&*storage);
         let save = SaveData::load(&*storage);
+        let favorites = save.as_ref().map(|s| s.favorites).unwrap_or_default();
 
         let gpu = GpuContext::new(window).await?;
 
@@ -428,6 +445,9 @@ impl AppState {
             loading_map_done: 0,
             world_map_tex: None,
             map_open: false,
+            favorites,
+            pending_recall: None,
+            favorite_toast: None,
             wasm_world_job: None,
             wasm_world_progress: None,
             wasm_base_prefetch,
@@ -524,6 +544,92 @@ impl AppState {
         let surface_y = ground_y.max(self.config.sea_level);
         self.camera.position = Vec3::new(x, surface_y + MIN_HEIGHT_ABOVE_GROUND, z);
         self.camera_controller.reset_inputs();
+    }
+
+    /// Handle a press of a favorite-position key (`slot` is 0-based; keys 1–5).
+    /// A single tap recalls the slot, a double tap saves the current viewpoint
+    /// into it. We can't distinguish the two until the double-tap window closes,
+    /// so the first press arms a pending recall (resolved in `update`) and a
+    /// second press of the same slot within the window cancels it and saves.
+    fn on_favorite_key(&mut self, slot: usize) {
+        if slot >= FAVORITE_SLOTS {
+            return;
+        }
+        match self.pending_recall {
+            Some((pending_slot, deadline))
+                if pending_slot == slot && self.elapsed_seconds <= deadline =>
+            {
+                // Second tap on the same slot, still inside the window → save.
+                self.pending_recall = None;
+                self.save_favorite(slot);
+            }
+            other => {
+                // A different slot was waiting: fire its recall now so a quick
+                // 1-then-2 doesn't swallow the first jump. Then arm this slot.
+                if let Some((pending_slot, _)) = other {
+                    self.recall_favorite(pending_slot);
+                }
+                self.pending_recall =
+                    Some((slot, self.elapsed_seconds + FAVORITE_DOUBLE_TAP_SECONDS));
+            }
+        }
+    }
+
+    /// Fire a pending single-tap recall once its double-tap window elapses with
+    /// no second press. Called each frame from `update` while playing.
+    fn resolve_pending_recall(&mut self) {
+        if let Some((slot, deadline)) = self.pending_recall {
+            if self.elapsed_seconds >= deadline {
+                self.pending_recall = None;
+                self.recall_favorite(slot);
+            }
+        }
+    }
+
+    /// Store the current camera position and view direction into `slot`, then
+    /// persist so it survives a restart. Empty slots show on the world map.
+    fn save_favorite(&mut self, slot: usize) {
+        if slot >= FAVORITE_SLOTS {
+            return;
+        }
+        self.favorites[slot] = Some(CameraSave {
+            position: [
+                self.camera.position.x,
+                self.camera.position.y,
+                self.camera.position.z,
+            ],
+            yaw: self.camera.yaw,
+            pitch: self.camera.pitch,
+        });
+        self.set_favorite_toast(format!("Saved position {}", slot + 1));
+        if let Err(e) = self.save_and_update() {
+            log::warn!("failed to persist favorite position: {e}");
+        }
+    }
+
+    /// Recall a saved viewpoint: restore position and look direction. The saved
+    /// height is honoured but clamped above the current ground/water surface so a
+    /// changed terrain (or a slot saved underwater) can't drop the camera under.
+    fn recall_favorite(&mut self, slot: usize) {
+        let Some(fav) = self.favorites.get(slot).and_then(|f| *f) else {
+            return;
+        };
+        let [x, saved_y, z] = fav.position;
+        let ground_y = self
+            .world
+            .as_ref()
+            .map(|world| world.sample_height(x, z))
+            .unwrap_or(saved_y - MIN_HEIGHT_ABOVE_GROUND);
+        let min_y = ground_y.max(self.config.sea_level) + MIN_HEIGHT_ABOVE_GROUND;
+        self.camera.position = Vec3::new(x, saved_y.max(min_y), z);
+        self.camera.yaw = fav.yaw;
+        self.camera.pitch = fav.pitch.clamp(-1.54, 1.54);
+        self.camera_controller.reset_inputs();
+        self.set_favorite_toast(format!("Position {}", slot + 1));
+    }
+
+    fn set_favorite_toast(&mut self, message: String) {
+        self.favorite_toast = Some((message, self.elapsed_seconds));
     }
 
     fn return_to_menu(&mut self) {
@@ -1221,6 +1327,9 @@ impl AppState {
             return;
         }
 
+        // Playing: fire a pending favorite recall once its double-tap window closes.
+        self.resolve_pending_recall();
+
         #[cfg(not(target_arch = "wasm32"))]
         self.apply_debug_commands();
 
@@ -1783,6 +1892,9 @@ impl AppState {
             {
                 show_egui = show_egui || self.screenshot_toast.is_some();
             }
+            // The favorite save/recall toast also shows during plain gameplay
+            // (both native and web), so keep the egui pass alive while it lingers.
+            show_egui = show_egui || self.favorite_toast.is_some();
             if show_egui {
                 // Refresh the biome map texture from the worker's live progress
                 // before egui runs (needs `ctx` + `&mut self`, which the run
@@ -1854,6 +1966,7 @@ impl AppState {
                                     self.camera.position.z,
                                     self.camera.yaw,
                                     self.world_map_tex.as_ref(),
+                                    &self.favorites,
                                 ) {
                                     map_teleport_target = Some((x, z));
                                 }
@@ -1875,6 +1988,9 @@ impl AppState {
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(toast) = &self.screenshot_toast {
                         draw_screenshot_toast(ctx, toast, self.elapsed_seconds);
+                    }
+                    if let Some((msg, created_at)) = &self.favorite_toast {
+                        draw_favorite_toast(ctx, msg, *created_at, self.elapsed_seconds);
                     }
                 });
 
@@ -1920,6 +2036,12 @@ impl AppState {
             }
         }
 
+        if let Some((_, created_at)) = &self.favorite_toast {
+            if self.elapsed_seconds - *created_at >= FAVORITE_TOAST_SECONDS {
+                self.favorite_toast = None;
+            }
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(command_id) = self.screenshot_pending.take() {
             self.handle_screenshot(command_id, &output.texture, encoder);
@@ -1957,7 +2079,7 @@ impl AppState {
 
     fn save_game(&self) {
         let Some(world) = &self.world else { return };
-        let save = Self::build_save_data(&self.camera, world);
+        let save = self.build_save_data(world);
         if let Err(e) = save.save(&*self.storage) {
             log::warn!("failed to save game state: {e}");
         }
@@ -1972,7 +2094,7 @@ impl AppState {
         let Some(world) = &self.world else {
             return Err(anyhow::anyhow!("no world loaded"));
         };
-        let save = Self::build_save_data(&self.camera, world);
+        let save = self.build_save_data(world);
         if let Err(e) = save.save(&*self.storage) {
             log::warn!("failed to save game state: {e}");
             return Err(e);
@@ -1992,12 +2114,16 @@ impl AppState {
         Ok(())
     }
 
-    fn build_save_data(camera: &FlyCamera, world: &WorldRuntime) -> SaveData {
+    fn build_save_data(&self, world: &WorldRuntime) -> SaveData {
         SaveData {
             camera: CameraSave {
-                position: [camera.position.x, camera.position.y, camera.position.z],
-                yaw: camera.yaw,
-                pitch: camera.pitch,
+                position: [
+                    self.camera.position.x,
+                    self.camera.position.y,
+                    self.camera.position.z,
+                ],
+                yaw: self.camera.yaw,
+                pitch: self.camera.pitch,
             },
             world: WorldSave {
                 seed: world.seed(),
@@ -2005,6 +2131,7 @@ impl AppState {
                 day_speed: world.day_speed(),
                 total_hours: world.total_hours(),
             },
+            favorites: self.favorites,
         }
     }
 }
@@ -2079,6 +2206,40 @@ fn draw_screenshot_toast(ctx: &egui::Context, toast: &ScreenshotToast, elapsed_s
         StrokeKind::Inside,
     );
     // Keep frames flowing so the animation runs even if nothing else is dirty.
+    ctx.request_repaint();
+}
+
+/// Draw the favorite-position confirmation: a small pill of text centered near
+/// the bottom of the screen that fades out over its final third of life.
+fn draw_favorite_toast(ctx: &egui::Context, message: &str, created_at: f32, elapsed_s: f32) {
+    use egui::{Align2, Color32, CornerRadius, FontId, Id, LayerId, Order};
+
+    let age = elapsed_s - created_at;
+    if !(0.0..FAVORITE_TOAST_SECONDS).contains(&age) {
+        return;
+    }
+    let fade = (1.0 - (age / FAVORITE_TOAST_SECONDS - 0.66) / 0.34).clamp(0.0, 1.0);
+    let a = |v: f32| (v * fade).clamp(0.0, 255.0) as u8;
+
+    let screen = ctx.content_rect();
+    let center = egui::pos2(screen.center().x, screen.bottom() - 96.0);
+    let font = FontId::proportional(20.0);
+    let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("favorite-toast")));
+    let galley = painter.layout_no_wrap(message.to_string(), font.clone(), Color32::WHITE);
+    let pad = egui::vec2(16.0, 8.0);
+    let bg = egui::Rect::from_center_size(center, galley.size() + pad * 2.0);
+    painter.rect_filled(
+        bg,
+        CornerRadius::same(8),
+        Color32::from_black_alpha(a(170.0)),
+    );
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        message,
+        font,
+        Color32::from_rgba_unmultiplied(255, 230, 150, a(255.0)),
+    );
     ctx.request_repaint();
 }
 
@@ -2231,6 +2392,7 @@ fn render_map_ui(
     cam_z: f32,
     cam_yaw: f32,
     map_tex: Option<&egui::TextureHandle>,
+    favorites: &[Option<CameraSave>; FAVORITE_SLOTS],
 ) -> Option<(f32, f32)> {
     use crate::world_core::chunk::{CHUNK_SIZE_METERS, WORLD_SIZE_CHUNKS};
     use egui::{
@@ -2318,6 +2480,34 @@ fn render_map_ui(
                         }
                     }
 
+                    // Saved favorite positions: numbered gold pins, drawn under the
+                    // player arrow and visually distinct from it. Same world→screen
+                    // mapping as the player marker. Display-only — recall is by key.
+                    for (i, fav) in favorites.iter().enumerate() {
+                        let Some(fav) = fav else { continue };
+                        let [fx, _, fz] = fav.position;
+                        let fu = fz.rem_euclid(world_size_m) / world_size_m;
+                        let fv = 1.0 - fx.rem_euclid(world_size_m) / world_size_m;
+                        let c = egui::pos2(
+                            rect.left() + fu * rect.width(),
+                            rect.top() + fv * rect.height(),
+                        );
+                        let r = (map_side * 0.016).clamp(7.0, 14.0);
+                        painter.circle(
+                            c,
+                            r,
+                            Color32::from_rgb(255, 205, 64),
+                            Stroke::new(2.0, Color32::from_black_alpha(220)),
+                        );
+                        painter.text(
+                            c,
+                            Align2::CENTER_CENTER,
+                            format!("{}", i + 1),
+                            FontId::proportional(r * 1.25),
+                            Color32::from_rgb(40, 30, 0),
+                        );
+                    }
+
                     // Player marker: an arrow at the wrapped world position pointing
                     // along the camera heading. Matching the compass/minimap, North
                     // (world +x) is up and East (world +z) is right: screen-right
@@ -2373,7 +2563,9 @@ fn render_map_ui(
 
                 ui.add_space(14.0);
                 ui.label(
-                    RichText::new("Right-click to teleport   •   M / Esc to close")
+                    RichText::new(
+                        "Right-click to teleport   •   1–5 recall, double-tap to save   •   M / Esc to close",
+                    )
                         .font(FontId::monospace(13.0))
                         .color(Color32::from_white_alpha(150)),
                 );
@@ -2408,6 +2600,13 @@ fn release_window_cursor(window: &Window) {
 }
 
 const MIN_HEIGHT_ABOVE_GROUND: f32 = 2.0;
+
+/// Max gap between two presses of the same favorite key to count as a double-tap
+/// (save). A single tap (recall) is delayed by this long before it fires.
+const FAVORITE_DOUBLE_TAP_SECONDS: f32 = 0.35;
+
+/// How long the "Saved position N" / "Position N" confirmation text lingers.
+const FAVORITE_TOAST_SECONDS: f32 = 1.6;
 
 /// Sim/wall-clock seconds between periodic autosaves while playing, so a crash
 /// or power loss between explicit saves loses at most this much progress. The
