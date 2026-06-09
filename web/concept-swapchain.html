@@ -1,0 +1,248 @@
+---
+layout: concept
+concept: swapchain
+title: "The Swapchain | FloraForge Concepts"
+description: "Why an engine never draws to the screen directly: double and triple buffering, the acquire–draw–present cycle, tearing, vsync and present modes — and how FloraForge turns the acquire stall into a GPU profiler."
+og_title: The Swapchain — FloraForge Concepts
+og_description: "How frames actually reach the screen: swapchain images, present modes, tearing — and how FloraForge measures GPU-boundedness from the swapchain-acquire wait."
+og_type: article
+og_url: https://floraforge.eu/concept-swapchain.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Rendering</p>
+                <h1>The Swapchain <span class="accent">&amp; Presenting</span></h1>
+                <p>
+                    A surprising fact about real-time graphics: the engine never draws to the
+                    screen. Every frame is painted into an off-screen image, and only when it is
+                    completely finished does it get shown — all at once. The small rotation of
+                    images that makes this work is called the swapchain, and the moment of
+                    waiting for one turns out to be FloraForge's most useful profiler.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>You never draw to the screen</h2>
+                <p>
+                    Your monitor is not a passive sheet of pixels. It is a consumer running on its
+                    own relentless clock: 60, 120, maybe 144 times a second it <em>scans out</em>
+                    whatever image it has been given, reading it line by line from top to bottom.
+                    It does not pause for you, and it does not care whether you are finished.
+                </p>
+                <p>
+                    If the engine drew straight into the image the display is reading, you would
+                    watch the work happen: the sky appearing first, then terrain stamped over it,
+                    then trees, all mid-scanout. So instead the engine renders into a
+                    <strong>back buffer</strong> — an off-screen image the display never sees —
+                    while the display reads a different, already-finished <strong>front
+                    buffer</strong>. When the new frame is done, the two are swapped. The display
+                    only ever sees complete pictures.
+                </p>
+
+                <h2>Why whole-image swaps matter: tearing</h2>
+                <p>
+                    The swap itself has a failure mode. Suppose the display is halfway through
+                    scanning out a frame when the engine swaps in a new one. The top half of the
+                    screen now shows the old frame and the bottom half the new one, joined at a
+                    visible seam. If the camera was turning, the two halves don't line up — a
+                    horizontal rip across the picture called <strong>tearing</strong>.
+                </p>
+                <p>
+                    The fix is to time the swap to the <strong>vertical blank</strong> — the short
+                    gap after the display finishes one scan and before it starts the next. Swap
+                    only in that gap and every scanout reads exactly one frame, never a mixture.
+                    That synchronisation is what "vsync" means. The price is that the engine may
+                    have to wait for the blank, which caps the frame rate at the display's refresh
+                    rate — a trade-off we'll come back to.
+                </p>
+                <p>
+                    In a modern API the front and back buffers generalise to a small pool of two
+                    or three images, owned by the system and handed back and forth: the
+                    <strong>swapchain</strong>. At any instant each image is playing a role,
+                    and the roles rotate every frame:
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 430" role="img" aria-label="Three swapchain images rotating roles: one on screen being scanned out, one being drawn by the GPU, one presented and queued for the next refresh. Present, vsync-flip and acquire arrows form the cycle, with the acquire wait highlighted.">
+                        <defs>
+                            <marker id="sw-green" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#7cff9f"/>
+                            </marker>
+                            <marker id="sw-orange" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#f6c591"/>
+                            </marker>
+                            <marker id="sw-sand" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#c7b99d"/>
+                            </marker>
+                        </defs>
+
+                        <!-- present arrow: B over the top to C -->
+                        <path d="M 535 86 C 535 36, 770 36, 770 86" fill="none" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#sw-green)"/>
+                        <text x="652" y="28" text-anchor="middle" fill="#7cff9f" font-size="13">present() — frame finished, joins the queue</text>
+
+                        <!-- image A: on screen -->
+                        <rect x="30" y="90" width="270" height="160" rx="16" fill="rgba(240,237,228,0.05)" stroke="rgba(240,237,228,0.35)" stroke-width="1.2"/>
+                        <text x="165" y="120" text-anchor="middle" fill="rgba(240,237,228,0.7)" font-size="12.5" font-family="JetBrains Mono, monospace">front buffer</text>
+                        <text x="165" y="150" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Image A — on screen</text>
+                        <text x="165" y="182" text-anchor="middle" fill="#c7b99d" font-size="12.5">the display is scanning this</text>
+                        <text x="165" y="200" text-anchor="middle" fill="#c7b99d" font-size="12.5">image out, line by line,</text>
+                        <text x="165" y="218" text-anchor="middle" fill="#c7b99d" font-size="12.5">on its own fixed clock</text>
+
+                        <!-- image B: being drawn -->
+                        <rect x="355" y="90" width="270" height="160" rx="16" fill="rgba(246,197,145,0.12)" stroke="#f6c591" stroke-width="1.4"/>
+                        <text x="490" y="120" text-anchor="middle" fill="#f6c591" font-size="12.5" font-family="JetBrains Mono, monospace">render target</text>
+                        <text x="490" y="150" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Image B — being drawn</text>
+                        <text x="490" y="182" text-anchor="middle" fill="#c7b99d" font-size="12.5">the GPU is writing this frame:</text>
+                        <text x="490" y="200" text-anchor="middle" fill="#c7b99d" font-size="12.5">sky → terrain → plants → water</text>
+                        <text x="490" y="218" text-anchor="middle" fill="#c7b99d" font-size="12.5">the display never sees it unfinished</text>
+
+                        <!-- image C: presented, queued -->
+                        <rect x="680" y="90" width="270" height="160" rx="16" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="815" y="120" text-anchor="middle" fill="#7cff9f" font-size="12.5" font-family="JetBrains Mono, monospace">queued</text>
+                        <text x="815" y="150" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Image C — presented</text>
+                        <text x="815" y="182" text-anchor="middle" fill="#c7b99d" font-size="12.5">complete and waiting for</text>
+                        <text x="815" y="200" text-anchor="middle" fill="#c7b99d" font-size="12.5">the display's next refresh</text>
+                        <text x="815" y="218" text-anchor="middle" fill="#c7b99d" font-size="12.5">(the vertical blank)</text>
+
+                        <!-- acquire arrow: A under to B (the highlighted wait) -->
+                        <path d="M 210 254 C 210 300, 445 300, 445 254" fill="none" stroke="#f6c591" stroke-width="2.6" marker-end="url(#sw-orange)"/>
+                        <text x="327" y="318" text-anchor="middle" fill="#f6c591" font-size="13">acquire — the engine blocks here if no image is free yet</text>
+                        <text x="327" y="336" text-anchor="middle" fill="#f6c591" font-size="12.5" font-family="JetBrains Mono, monospace">FloraForge times this stall: gpu_wait_ms</text>
+
+                        <!-- flip arrow: C sweeping under everything back to A -->
+                        <path d="M 815 254 C 815 400, 165 400, 165 254" fill="none" stroke="#c7b99d" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#sw-sand)"/>
+                        <text x="490" y="412" text-anchor="middle" fill="#c7b99d" font-size="13" letter-spacing="1">vsync flip — at the next refresh it becomes the on-screen image</text>
+                    </svg>
+                    <figcaption>
+                        One instant in a triple-buffered swapchain. Every frame the roles rotate
+                        one step: drawn → presented → on screen → recycled. The orange arrow is the
+                        only place the engine can be forced to wait — and that wait is information.
+                    </figcaption>
+                </figure>
+
+                <h2>Acquire → draw → present</h2>
+                <p>
+                    From the engine's side, every frame of the
+                    <a href="./concept-game-loop.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">game loop</a>
+                    runs the same three-step ritual against the swapchain. First it
+                    <strong>acquires</strong> the next free image — and this call can block,
+                    because an image the display is still reading cannot be handed out. Then it
+                    <strong>draws</strong>, recording every render pass (sky, terrain, plants,
+                    water, HUD — each one a pair of
+                    <a href="./concept-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">shaders</a>)
+                    into a command buffer targeting that image. Finally it <strong>presents</strong>:
+                    the image is handed back, marked finished, and queued for the display. In
+                    FloraForge's renderer the whole cycle is visible in a dozen lines:
+                </p>
+
+                <div class="code-title">src/app/mod.rs — one frame against the swapchain (trimmed)</div>
+                <pre class="code-block"><code><span class="kw">fn</span> <span class="fn">render</span>(&amp;<span class="kw">mut</span> <span class="kw">self</span>) -&gt; <span class="ty">Result</span>&lt;(), <span class="ty">SurfaceError</span>&gt; {
+    <span class="cm">// Benchmark timing: the acquire call blocks while the GPU catches up, so</span>
+    <span class="cm">// its duration is the per-frame GPU-bound wait; the span from here to</span>
+    <span class="cm">// submit is the render-thread CPU cost.</span>
+    <span class="kw">let</span> t_acquire = <span class="ty">Instant</span>::<span class="fn">now</span>();
+    <span class="kw">let</span> output = <span class="kw">self</span>.gpu.surface.<span class="fn">get_current_texture</span>()?;
+    <span class="kw">let</span> gpu_wait_ms = t_acquire.<span class="fn">elapsed</span>().<span class="fn">as_secs_f32</span>() * <span class="num">1000.0</span>;
+
+    <span class="cm">// …encode every render pass into a command buffer…</span>
+
+    <span class="kw">self</span>.gpu.queue.<span class="fn">submit</span>(<span class="ty">Some</span>(encoder.<span class="fn">finish</span>()));
+    output.<span class="fn">present</span>();
+    <span class="ty">Ok</span>(())
+}</code></pre>
+
+                <p>
+                    Note what <code>present()</code> does <em>not</em> do: it does not wait for the
+                    GPU to finish drawing. The commands were merely submitted; the GPU may still be
+                    working on this frame — and the previous one — while the CPU starts the next
+                    lap of the loop. FloraForge configures the surface with
+                    <code>desired_maximum_frame_latency: 2</code>, allowing up to two frames to be
+                    in flight at once. That pipelining is where the throughput comes from, and the
+                    acquire call is the valve that keeps it from running away: when the GPU falls
+                    behind, acquire simply has no free image to return, and the CPU stalls until
+                    one comes back.
+                </p>
+
+                <h2>Present modes: vsync or raw throughput</h2>
+                <p>
+                    How strictly the swapchain ties itself to the display's refresh is a
+                    configurable policy called the <strong>present mode</strong>, and
+                    <a href="./concept-webgpu.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">WebGPU</a>
+                    offers three flavours:
+                </p>
+                <ul>
+                    <li><strong>Fifo</strong> — classic vsync. Finished frames join a queue and the
+                        display takes one per refresh; if the queue is full, acquire blocks. No
+                        tearing ever, frame rate capped at the refresh rate. It is the only mode
+                        every platform guarantees.</li>
+                    <li><strong>Mailbox</strong> — triple-buffered, uncapped. The engine renders as
+                        fast as it can into a "mailbox" slot, and each refresh the display takes
+                        whatever the newest finished frame is, discarding stale ones. No tearing,
+                        no cap — at the cost of drawing frames nobody sees.</li>
+                    <li><strong>Immediate</strong> — no synchronisation at all. New frames replace
+                        the on-screen image the moment they finish, mid-scanout if need be. Maximum
+                        throughput, tearing allowed.</li>
+                </ul>
+                <p>
+                    FloraForge plays in Fifo — smooth, tear-free, and frugal. But its FPS benchmark
+                    has the opposite need: measuring <em>true</em> render throughput. Under vsync a
+                    machine that could draw 400 fps reports a flat 60 or 120, hiding any
+                    regression. So at the start of a benchmark run the engine reconfigures the
+                    surface to the best uncapped mode available:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/gpu_context.rs — choosing the present modes</div>
+                <pre class="code-block"><code><span class="kw">let</span> present_mode = <span class="kw">if</span> capabilities.present_modes.<span class="fn">contains</span>(&amp;<span class="ty">wgpu::PresentMode</span>::Fifo) {
+    <span class="ty">wgpu::PresentMode</span>::Fifo
+} <span class="kw">else</span> {
+    capabilities.present_modes[<span class="num">0</span>]
+};
+
+<span class="cm">// Prefer an uncapped present mode for benchmarking. Immediate has no</span>
+<span class="cm">// sync at all; Mailbox is the next best (triple-buffered, uncapped).</span>
+<span class="kw">let</span> no_vsync_present_mode = <span class="kw">if</span> capabilities.present_modes.<span class="fn">contains</span>(&amp;<span class="ty">wgpu::PresentMode</span>::Immediate) {
+    <span class="ty">wgpu::PresentMode</span>::Immediate
+} <span class="kw">else if</span> capabilities.present_modes.<span class="fn">contains</span>(&amp;<span class="ty">wgpu::PresentMode</span>::Mailbox) {
+    <span class="ty">wgpu::PresentMode</span>::Mailbox
+} <span class="kw">else</span> {
+    present_mode
+};</code></pre>
+
+                <h2>The acquire stall is a profiler</h2>
+                <p>
+                    Look again at the timing in <code>render()</code>. When the GPU is the
+                    bottleneck, the CPU finishes its work early and then sits inside
+                    <code>get_current_texture()</code> waiting for the GPU to release an image —
+                    so the length of that stall closely tracks the GPU's per-frame cost. When the
+                    CPU is the bottleneck, the GPU is always done first and acquire returns
+                    instantly. One cheap CPU-side timer therefore answers the most important
+                    question in optimisation: <strong>which processor should you make faster?</strong>
+                </p>
+                <p>
+                    FloraForge records both numbers every benchmark frame — <code>gpu_wait_ms</code>
+                    (the acquire stall) and <code>cpu_ms</code> (simulation plus command encoding)
+                    — and reports their ratio as <code>gpu_bound_ratio</code>. The trick matters
+                    because the obvious alternative, GPU timestamp queries, is unreliable on
+                    Apple Silicon: on a tile-based deferred GPU the pass-boundary timestamps
+                    bracket only the tiling phase, not the fragment work that dominates the frame.
+                    The acquire stall works on every backend.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    In normal play FloraForge runs <strong>Fifo (vsync)</strong>; benchmark mode
+                    calls <code>enable_no_vsync()</code> to switch the surface to Immediate or
+                    Mailbox and measure uncapped throughput. The resulting report
+                    (<code>benchmarks/latest.json</code>) shows a <code>gpu_bound_ratio</code> of
+                    roughly <strong>0.95–0.99 on Apple Silicon</strong> — the renderer spends
+                    almost the whole frame waiting on the GPU, which is why optimisation effort
+                    (like <a href="./concept-frustum-culling.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">frustum culling</a>)
+                    targets GPU work rather than CPU work.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-frustum-culling.html"><small>Back</small>Frustum Culling</a>
+                    <a class="next" href="./concept-game-loop.html"><small>Next</small>The Game Loop →</a>
+                </div>
+            </section>

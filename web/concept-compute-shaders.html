@@ -1,0 +1,251 @@
+---
+layout: concept
+concept: compute-shaders
+title: "Compute Shaders | FloraForge Concepts"
+description: "What a compute shader is — the GPU's general-purpose stage — and how FloraForge uses one to build every terrain mesh directly on the graphics card, with the real WGSL from the engine."
+og_title: Compute Shaders — FloraForge Concepts
+og_description: "Workgroups, dispatches and global invocation IDs: how GPUs run general-purpose code, and how FloraForge's terrain generator assembles 16,641 vertices per chunk without touching the CPU."
+og_type: article
+og_url: https://floraforge.eu/concept-compute-shaders.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Rendering</p>
+                <h1>Compute <span class="accent">Shaders</span></h1>
+                <p>
+                    Most shaders draw. A compute shader doesn't — it's the GPU's
+                    general-purpose mode, where you hand the card a grid of identical little
+                    tasks and it chews through thousands of them at once. FloraForge uses one
+                    to manufacture its terrain: every hill you fly over was assembled, vertex
+                    by vertex, by the compute shader on this page.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>A shader without a picture</h2>
+                <p>
+                    The <a href="./concept-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">previous page</a>
+                    described the render pipeline: vertex shader, rasterizer, fragment shader, a
+                    conveyor belt whose whole purpose is to end in pixels. A compute shader steps
+                    off that belt entirely. There are no vertices, no triangles, no rasterizer,
+                    and no framebuffer — just <strong>a function, a grid of indices to run it
+                    over, and memory to read and write</strong>. It is the GPU admitting what it
+                    has secretly been all along: a massively parallel computer that happens to be
+                    good at graphics.
+                </p>
+                <p>
+                    Because there's no pipeline to define the shape of the work, you define it
+                    yourself. A compute shader declares the size of its <em>workgroup</em> — a
+                    small block of threads that execute together, such as a 16×16 tile — and the
+                    engine then <em>dispatches</em> some number of those workgroups. Each thread
+                    wakes up knowing exactly one thing: its coordinates in the overall grid,
+                    delivered as the built-in <code>global_invocation_id</code>. From that single
+                    number it works out which piece of the problem is its, does the work, writes
+                    the result, and ends. Two attributes wire all of this up in WGSL:
+                    <code>@compute</code> marks the entry point and
+                    <code>@workgroup_size(16,&nbsp;16)</code> sets the tile shape.
+                </p>
+
+                <h2>Why the GPU wins at this</h2>
+                <p>
+                    A CPU core is a scholar: deep, clever, expensive, and there are perhaps a
+                    dozen of them. A GPU is a stadium of clerks — thousands of simple arithmetic
+                    units that all want to execute <em>the same instruction</em> on different
+                    data. Work that decomposes into many independent, identical tasks maps onto
+                    that hardware almost perfectly, and while one batch of threads waits on a
+                    memory read, the scheduler simply runs another batch, hiding the latency that
+                    would stall a CPU. The catch is the shape of the problem: threads can't
+                    coordinate freely or branch off on long individual adventures. <strong>Give
+                    the GPU ten thousand small identical jobs and it is unbeatable; give it one
+                    big tangled job and it is helpless.</strong>
+                </p>
+                <p>
+                    Building a terrain mesh is the textbook good case. Every vertex of the ground
+                    is computed by the same recipe from its own little patch of input data, and
+                    no vertex needs to know what any other vertex decided.
+                </p>
+
+                <h2>FloraForge's terrain factory</h2>
+                <p>
+                    The world is streamed in <a href="./concept-chunk-streaming.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">chunks</a> —
+                    256-metre squares, each sampled on a <strong>129×129 grid</strong> (16,641
+                    points). The CPU side, deep in the
+                    <a href="./concept-procedural-generation.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">procedural generator</a>,
+                    produces three flat arrays per chunk: a height, a moisture value, and a river
+                    wetness value for every grid point. Turning those raw numbers into a
+                    renderable mesh — world positions, surface normals, biome colours — is the
+                    compute shader's job, and it happens entirely on the GPU:
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 430" role="img" aria-label="A chunk's 129 by 129 input grid is dispatched as a 9 by 9 grid of 16 by 16 workgroups, which write finished vertices into a GPU vertex buffer.">
+                        <defs>
+                            <marker id="carrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#7cff9f"/>
+                            </marker>
+                        </defs>
+
+                        <!-- panel 1: input chunk -->
+                        <rect x="20" y="60" width="255" height="240" rx="16" fill="rgba(240,237,228,0.05)" stroke="rgba(240,237,228,0.3)" stroke-width="1.2"/>
+                        <text x="147" y="92" text-anchor="middle" fill="#f0ede4" font-size="16" font-weight="600">Input: one chunk</text>
+                        <rect x="97" y="110" width="100" height="100" fill="none" stroke="#c7b99d" stroke-width="1.3"/>
+                        <path d="M97 130 H197 M97 150 H197 M97 170 H197 M97 190 H197 M117 110 V210 M137 110 V210 M157 110 V210 M177 110 V210" stroke="rgba(199,185,157,0.45)" stroke-width="1" fill="none"/>
+                        <text x="147" y="234" text-anchor="middle" fill="#c7b99d" font-size="12.5">256 m × 256 m · 129 × 129 samples</text>
+                        <text x="147" y="256" text-anchor="middle" fill="#c7b99d" font-size="12.5">heights · moisture · river</text>
+                        <text x="147" y="278" text-anchor="middle" fill="rgba(240,237,228,0.5)" font-size="12">three read-only storage buffers</text>
+
+                        <!-- panel 2: dispatch -->
+                        <rect x="335" y="35" width="300" height="305" rx="16" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="485" y="65" text-anchor="middle" fill="#7cff9f" font-size="12.5" font-family="JetBrains Mono, monospace">@compute @workgroup_size(16, 16)</text>
+                        <text x="485" y="92" text-anchor="middle" fill="#f0ede4" font-size="16" font-weight="600">Dispatch: 9 × 9 workgroups</text>
+                        <rect x="395" y="108" width="180" height="180" fill="rgba(5,13,7,0.4)" stroke="#3ecf6e" stroke-width="1.2"/>
+                        <path d="M415 108 V288 M435 108 V288 M455 108 V288 M475 108 V288 M495 108 V288 M515 108 V288 M535 108 V288 M555 108 V288 M395 128 H575 M395 148 H575 M395 168 H575 M395 188 H575 M395 208 H575 M395 228 H575 M395 248 H575 M395 268 H575" stroke="rgba(62,207,110,0.4)" stroke-width="1" fill="none"/>
+                        <rect x="435" y="148" width="20" height="20" fill="#3ecf6e"/>
+                        <text x="485" y="314" text-anchor="middle" fill="#c7b99d" font-size="12.5">each cell = one workgroup = 16 × 16 threads</text>
+
+                        <!-- panel 3: output -->
+                        <rect x="695" y="60" width="265" height="240" rx="16" fill="rgba(246,197,145,0.12)" stroke="#f6c591" stroke-width="1.4"/>
+                        <text x="827" y="92" text-anchor="middle" fill="#f0ede4" font-size="16" font-weight="600">Output: vertex buffer</text>
+                        <g font-family="JetBrains Mono, monospace" font-size="11" fill="#f6c591">
+                            <rect x="717" y="108" width="220" height="24" rx="5" fill="rgba(246,197,145,0.1)" stroke="rgba(246,197,145,0.4)" stroke-width="1"/>
+                            <text x="827" y="124" text-anchor="middle">x y z · nx ny nz · biome · wet</text>
+                            <rect x="717" y="138" width="220" height="24" rx="5" fill="rgba(246,197,145,0.1)" stroke="rgba(246,197,145,0.4)" stroke-width="1"/>
+                            <text x="827" y="154" text-anchor="middle">x y z · nx ny nz · biome · wet</text>
+                            <rect x="717" y="168" width="220" height="24" rx="5" fill="rgba(246,197,145,0.1)" stroke="rgba(246,197,145,0.4)" stroke-width="1"/>
+                            <text x="827" y="184" text-anchor="middle">x y z · nx ny nz · biome · wet</text>
+                            <text x="827" y="210" text-anchor="middle" fill="rgba(246,197,145,0.6)">⋮</text>
+                        </g>
+                        <text x="827" y="240" text-anchor="middle" fill="#c7b99d" font-size="12.5">16,641 vertices × 10 floats</text>
+                        <text x="827" y="262" text-anchor="middle" fill="#c7b99d" font-size="12.5">stays in GPU memory —</text>
+                        <text x="827" y="280" text-anchor="middle" fill="#c7b99d" font-size="12.5">bound directly as the mesh</text>
+
+                        <!-- arrows -->
+                        <line x1="280" y1="180" x2="330" y2="180" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#carrow)"/>
+                        <line x1="640" y1="180" x2="690" y2="180" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#carrow)"/>
+
+                        <!-- bottom annotation -->
+                        <text x="490" y="380" text-anchor="middle" fill="rgba(240,237,228,0.5)" font-size="12.5">9 × 9 workgroups × 256 threads = 20,736 invocations for 16,641 grid points</text>
+                        <text x="490" y="404" text-anchor="middle" fill="#c7b99d" font-size="13" letter-spacing="1.5">threads past the 129-sample edge simply return early</text>
+                    </svg>
+                    <figcaption>
+                        One chunk, one dispatch. The 129×129 sample grid doesn't divide evenly
+                        into 16×16 tiles, so the engine rounds up to 9×9 workgroups and the
+                        shader's first act is a bounds check.
+                    </figcaption>
+                </figure>
+
+                <p>
+                    The shader's interface declares the whole arrangement. Compute shaders lean
+                    on <strong>storage buffers</strong> — big, raw arrays the shader can index
+                    freely, unlike the small fixed-size uniforms drawing shaders prefer. Three
+                    are read-only inputs; the fourth, marked <code>read_write</code>, is the
+                    vertex buffer being built:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/shaders/terrain_gen.wgsl — the shader's inputs and output</div>
+                <pre class="code-block"><code><span class="kw">struct</span> <span class="ty">ChunkParams</span> {
+    origin_x: <span class="ty">f32</span>,
+    origin_z: <span class="ty">f32</span>,
+    cell_size: <span class="ty">f32</span>,
+    side: <span class="ty">u32</span>,
+};
+
+<span class="at">@group(0)</span> <span class="at">@binding(0)</span> <span class="kw">var</span>&lt;<span class="kw">uniform</span>&gt; params: <span class="ty">ChunkParams</span>;
+<span class="at">@group(0)</span> <span class="at">@binding(1)</span> <span class="kw">var</span>&lt;<span class="kw">storage</span>, read&gt; heights: <span class="ty">array&lt;f32&gt;</span>;
+<span class="at">@group(0)</span> <span class="at">@binding(2)</span> <span class="kw">var</span>&lt;<span class="kw">storage</span>, read&gt; moisture: <span class="ty">array&lt;f32&gt;</span>;
+<span class="at">@group(0)</span> <span class="at">@binding(3)</span> <span class="kw">var</span>&lt;<span class="kw">storage</span>, read_write&gt; output: <span class="ty">array&lt;f32&gt;</span>;
+<span class="at">@group(0)</span> <span class="at">@binding(4)</span> <span class="kw">var</span>&lt;<span class="kw">storage</span>, read&gt; river: <span class="ty">array&lt;f32&gt;</span>;</code></pre>
+
+                <p>
+                    And here is the entry point itself — the function the GPU calls 20,736 times
+                    per chunk. Each thread converts its grid coordinates into a world position,
+                    estimates the surface normal from its four neighbours' heights, asks a helper
+                    called <code>biome_blend</code> which two biomes this point sits between (so
+                    grass can fade smoothly into desert, rock into snow), and writes its ten
+                    floats into the output array:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/shaders/terrain_gen.wgsl — one thread, one vertex</div>
+                <pre class="code-block"><code><span class="at">@compute</span> <span class="at">@workgroup_size(16, 16)</span>
+<span class="kw">fn</span> <span class="fn">main</span>(<span class="at">@builtin(global_invocation_id)</span> id: <span class="ty">vec3&lt;u32&gt;</span>) {
+    <span class="kw">let</span> x = id.x;
+    <span class="kw">let</span> z = id.y;
+    <span class="kw">let</span> side = params.side;
+
+    <span class="kw">if</span> (x &gt;= side || z &gt;= side) {
+        <span class="kw">return</span>;  <span class="cm">// padding thread past the grid edge</span>
+    }
+
+    <span class="kw">let</span> idx = z * side + x;
+    <span class="kw">let</span> h = heights[idx];
+    <span class="kw">let</span> m = moisture[idx];
+
+    <span class="kw">let</span> world_x = params.origin_x + <span class="ty">f32</span>(x) * params.cell_size;
+    <span class="kw">let</span> world_z = params.origin_z + <span class="ty">f32</span>(z) * params.cell_size;
+
+    <span class="cm">// …read the 4 neighbouring heights (clamped at chunk edges)…</span>
+    <span class="kw">let</span> normal = normalize(<span class="ty">vec3&lt;f32&gt;</span>(h_l - h_r, params.cell_size * <span class="num">2.0</span>, h_d - h_u));
+
+    <span class="kw">let</span> biome = <span class="fn">biome_blend</span>(h, m);
+
+    <span class="cm">// Write 10 floats per vertex (position, normal, biome_data, river wetness)</span>
+    <span class="kw">let</span> base = idx * <span class="num">10u</span>;
+    output[base + <span class="num">0u</span>] = world_x;
+    output[base + <span class="num">1u</span>] = h;
+    output[base + <span class="num">2u</span>] = world_z;
+    <span class="cm">// …normal.xyz, biome.xyz, river[idx]…</span>
+}</code></pre>
+
+                <p>
+                    Notice what's <em>missing</em>: no loop over the grid. The loop is the
+                    dispatch. On the Rust side, the engine works out how many 16-thread tiles
+                    cover the 129-sample side — <code>div_ceil</code> rounds 129 ÷ 16 up to 9 —
+                    and issues a single command:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/terrain_compute.rs — the dispatch (trimmed)</div>
+                <pre class="code-block"><code><span class="kw">let mut</span> pass = encoder.<span class="fn">begin_compute_pass</span>(&amp;<span class="ty">wgpu::ComputePassDescriptor</span> {
+    label: <span class="ty">Some</span>(<span class="str">"terrain-gen-pass"</span>),
+    timestamp_writes: <span class="ty">None</span>,
+});
+pass.<span class="fn">set_pipeline</span>(&amp;self.pipeline);
+pass.<span class="fn">set_bind_group</span>(<span class="num">0</span>, &amp;bind_group, &amp;[]);
+<span class="kw">let</span> wg = (side <span class="kw">as</span> <span class="ty">u32</span>).<span class="fn">div_ceil</span>(<span class="num">16</span>);  <span class="cm">// 129 → 9</span>
+pass.<span class="fn">dispatch_workgroups</span>(wg, wg, <span class="num">1</span>);</code></pre>
+
+                <h2>Born where it lives</h2>
+                <p>
+                    The speed of 16,641 parallel vertex computations is only half the win. The
+                    deeper one is <strong>location</strong>. The output buffer is created with
+                    both <code>STORAGE</code> and <code>VERTEX</code> usage flags — the very
+                    same allocation the compute shader writes is later bound, untouched, as the
+                    vertex buffer the render pipeline draws from. The finished mesh never crosses
+                    the bus to main memory and back; it is born in GPU memory, metres from where
+                    it will be consumed, every frame, for as long as the chunk is loaded.
+                </p>
+                <p>
+                    One more economy hides in plain sight: the shader writes only vertices, never
+                    triangles. Because every chunk has the identical 129×129 topology, the list
+                    of indices that stitches the grid into triangles is the same for all of them
+                    — so the engine builds <strong>one shared index buffer</strong> (98,304
+                    indices) at startup, and every chunk in the world draws with it. Per chunk,
+                    the GPU stores only what's actually unique: the vertices.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    The compute pass is recorded into the <em>same command encoder</em> as the
+                    frame's render passes, so generating a newly streamed chunk and drawing the
+                    world are one submission — <strong>no synchronisation dance, no readback,
+                    no copy</strong>. WebGPU guarantees the compute writes finish before the
+                    render pass reads the buffer. The whole mechanism lives in
+                    <code>src/renderer_wgpu/terrain_compute.rs</code> and weighs in at about 230
+                    lines.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-shaders.html"><small>Back</small>Shaders &amp; WGSL</a>
+                    <a class="next" href="./concept-bind-groups.html"><small>Next</small>Bind Groups →</a>
+                </div>
+            </section>

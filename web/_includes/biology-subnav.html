@@ -1,0 +1,11 @@
+{%- comment -%}
+Sub-navigation for the biology section. Pass `current`:
+  {% include biology-subnav.html current="guide" %}     (biology.html)
+  {% include biology-subnav.html current="growth" %}    (biology-growth.html)
+  {% include biology-subnav.html current="evolution" %} (biology-evolution.html)
+{%- endcomment -%}
+<nav class="subnav" aria-label="Biology pages">
+    <a href="./biology.html"{% if include.current == "guide" %} class="current" aria-current="page"{% endif %}>Field Guide</a>
+    <a href="./biology-growth.html"{% if include.current == "growth" %} class="current" aria-current="page"{% endif %}>Growth &amp; Life Cycle</a>
+    <a href="./biology-evolution.html"{% if include.current == "evolution" %} class="current" aria-current="page"{% endif %}>Evolution Roadmap</a>
+</nav>
