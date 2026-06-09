@@ -1,0 +1,290 @@
+---
+layout: concept
+concept: instanced-rendering
+title: "Instanced Rendering | FloraForge Concepts"
+description: "How a GPU draws a forest in a handful of commands: the draw-call problem, per-instance records, and how FloraForge stamps thousands of procedural trees from one mesh per species."
+og_title: Instanced Rendering — FloraForge Concepts
+og_description: "One mesh, thousands of copies: how instanced rendering lets FloraForge draw whole forests with a few draw calls, with real Rust and WGSL from the engine."
+og_type: article
+og_url: https://floraforge.eu/concept-instanced-rendering.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Rendering</p>
+                <h1>Instanced <span class="accent">Rendering</span></h1>
+                <p>
+                    A FloraForge forest can hold thousands of trees, and every one of them is
+                    a detailed procedural mesh. Drawn naively — one command per tree — that
+                    forest would bury the CPU in overhead before the GPU broke a sweat.
+                    Instancing is the technique that collapses it all: describe the tree once,
+                    hand the GPU a list of <em>where</em> and <em>how big</em>, and let it
+                    stamp out the whole forest in a single command.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>The draw-call problem</h2>
+                <p>
+                    Every draw command an engine submits carries a fixed cost that has nothing
+                    to do with how much it draws. The CPU has to validate the call, record it
+                    into a command buffer, and the GPU's front end has to set up state before
+                    the first triangle moves. For one big mesh that overhead is noise. For ten
+                    thousand tiny meshes it <em>is</em> the workload: the CPU spends the frame
+                    dictating commands while the GPU finishes each little tree instantly and
+                    waits for the next order.
+                </p>
+                <p>
+                    The waste is especially galling because the trees are nearly identical.
+                    Two oaks differ only in position, a turn around their trunk, and a bit of
+                    size — yet the naive approach re-submits the full mesh-drawing ceremony
+                    for each. What you want to send is the <strong>shape once</strong> and the
+                    <strong>differences many times</strong>.
+                </p>
+
+                <h2>One mesh, a list of differences</h2>
+                <p>
+                    That is exactly what instanced rendering does. The mesh — vertices,
+                    normals, colours — is uploaded to GPU memory a single time, as a
+                    <em>prototype</em>. Alongside it goes an <strong>instance buffer</strong>:
+                    a tightly packed array with one small record per copy, holding only what
+                    makes that copy unique. One draw call then says "draw this mesh
+                    <em>n</em> times", and the GPU walks the record list itself, re-running
+                    the mesh through the <a href="./concept-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">vertex shader</a>
+                    once per record.
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 400" role="img" aria-label="Instanced rendering: one prototype tree mesh plus a buffer of small per-instance records become a whole forest through a single draw call.">
+                        <defs>
+                            <marker id="iarrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#7cff9f"/>
+                            </marker>
+                            <g id="iTree">
+                                <rect x="-3.5" y="-30" width="7" height="30" rx="1.5" fill="#8a6b48"/>
+                                <path d="M0,-78 L32,-22 L-32,-22 Z" fill="#3ecf6e"/>
+                                <path d="M0,-104 L24,-44 L-24,-44 Z" fill="#7cff9f"/>
+                            </g>
+                        </defs>
+
+                        <!-- left: prototype mesh -->
+                        <rect x="20" y="60" width="230" height="270" rx="16" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="135" y="92" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Prototype mesh</text>
+                        <text x="135" y="113" text-anchor="middle" fill="#c7b99d" font-size="12">one vertex buffer, uploaded once</text>
+                        <use href="#iTree" transform="translate(135,295) scale(1.55)"/>
+                        <text x="135" y="318" text-anchor="middle" fill="#c7b99d" font-size="12">thousands of vertices</text>
+
+                        <text x="263" y="208" text-anchor="middle" fill="#c7b99d" font-size="30">+</text>
+
+                        <!-- middle: instance buffer -->
+                        <rect x="278" y="60" width="320" height="270" rx="16" fill="rgba(246,197,145,0.1)" stroke="#f6c591" stroke-width="1.4"/>
+                        <text x="438" y="92" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Instance buffer</text>
+                        <text x="438" y="113" text-anchor="middle" fill="#f6c591" font-size="11.5" font-family="JetBrains Mono, monospace">VertexStepMode::Instance</text>
+
+                        <g font-family="JetBrains Mono, monospace" font-size="12">
+                            <text x="372" y="146" text-anchor="middle" fill="#f6c591">position (x, y, z)</text>
+                            <text x="486" y="146" text-anchor="middle" fill="#f6c591">rot</text>
+                            <text x="534" y="146" text-anchor="middle" fill="#f6c591">scale</text>
+                            <text x="574" y="146" text-anchor="middle" fill="#f6c591">tint</text>
+
+                            <text x="372" y="172" text-anchor="middle" fill="#c7b99d">( 41.2, 12.0,  18.9)</text>
+                            <text x="486" y="172" text-anchor="middle" fill="#c7b99d">4.71</text>
+                            <text x="534" y="172" text-anchor="middle" fill="#c7b99d">0.92</text>
+                            <circle cx="574" cy="168" r="5" fill="#3ecf6e"/>
+
+                            <text x="372" y="196" text-anchor="middle" fill="#c7b99d">(102.7, 14.8,  63.4)</text>
+                            <text x="486" y="196" text-anchor="middle" fill="#c7b99d">0.58</text>
+                            <text x="534" y="196" text-anchor="middle" fill="#c7b99d">1.10</text>
+                            <circle cx="574" cy="192" r="5" fill="#7cff9f"/>
+
+                            <text x="372" y="220" text-anchor="middle" fill="#c7b99d">(150.1,  9.3, 201.8)</text>
+                            <text x="486" y="220" text-anchor="middle" fill="#c7b99d">2.93</text>
+                            <text x="534" y="220" text-anchor="middle" fill="#c7b99d">0.75</text>
+                            <circle cx="574" cy="216" r="5" fill="#2fa85a"/>
+
+                            <text x="372" y="244" text-anchor="middle" fill="#c7b99d">( 88.0, 11.5, 144.6)</text>
+                            <text x="486" y="244" text-anchor="middle" fill="#c7b99d">5.40</text>
+                            <text x="534" y="244" text-anchor="middle" fill="#c7b99d">1.31</text>
+                            <circle cx="574" cy="240" r="5" fill="#6fe08c"/>
+
+                            <text x="438" y="270" text-anchor="middle" fill="rgba(240,237,228,0.5)">… 213 more records</text>
+                        </g>
+                        <text x="438" y="306" text-anchor="middle" fill="#f6c591" font-size="12.5">48 bytes per copy</text>
+
+                        <!-- arrow -->
+                        <text x="625" y="180" text-anchor="middle" fill="#7cff9f" font-size="12.5">one draw call</text>
+                        <line x1="602" y1="198" x2="646" y2="198" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#iarrow)"/>
+
+                        <!-- right: the forest -->
+                        <rect x="652" y="60" width="308" height="270" rx="16" fill="rgba(62,207,110,0.06)" stroke="rgba(124,255,159,0.5)" stroke-width="1.2"/>
+                        <text x="806" y="92" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">217 trees on screen</text>
+                        <text x="806" y="113" text-anchor="middle" fill="#c7b99d" font-size="12">stamped by the GPU, one per record</text>
+
+                        <use href="#iTree" transform="translate(690,195) scale(0.45)"/>
+                        <use href="#iTree" transform="translate(732,190) scale(0.4)"/>
+                        <use href="#iTree" transform="translate(776,196) scale(0.48)"/>
+                        <use href="#iTree" transform="translate(822,189) scale(0.42)"/>
+                        <use href="#iTree" transform="translate(868,195) scale(0.46)"/>
+                        <use href="#iTree" transform="translate(913,191) scale(0.4)"/>
+                        <use href="#iTree" transform="translate(706,243) scale(0.62)"/>
+                        <use href="#iTree" transform="translate(762,248) scale(0.7)"/>
+                        <use href="#iTree" transform="translate(832,244) scale(0.6)"/>
+                        <use href="#iTree" transform="translate(896,249) scale(0.68)"/>
+                        <use href="#iTree" transform="translate(684,308) scale(0.85)"/>
+                        <use href="#iTree" transform="translate(750,312) scale(0.95)"/>
+                        <use href="#iTree" transform="translate(818,309) scale(0.8)"/>
+                        <use href="#iTree" transform="translate(892,313) scale(0.92)"/>
+
+                        <text x="490" y="375" text-anchor="middle" fill="#c7b99d" font-size="13" letter-spacing="1.5">the mesh crosses the bus once — only the 48-byte records are per-tree</text>
+                    </svg>
+                    <figcaption>
+                        The instancing bargain: a detailed prototype mesh is uploaded once,
+                        and each copy on screen costs only a small record in the instance
+                        buffer. One <code>draw_indexed</code> call replays the mesh once per
+                        record.
+                    </figcaption>
+                </figure>
+
+                <h2>What an instance record holds</h2>
+                <p>
+                    FloraForge's record is deliberately tiny. Here it is, verbatim — the
+                    struct that every tree, shrub, house and road sign in the world is
+                    positioned by:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/instancing.rs — one record per copy</div>
+                <pre class="code-block"><code><span class="at">#[repr(C)]</span>
+<span class="at">#[derive(Clone, Copy, Debug, Zeroable, Pod)]</span>
+<span class="kw">pub struct</span> <span class="ty">InstanceData</span> {
+    <span class="kw">pub</span> position: [<span class="ty">f32</span>; <span class="num">3</span>],
+    <span class="kw">pub</span> rotation_y: <span class="ty">f32</span>,
+    <span class="kw">pub</span> scale: [<span class="ty">f32</span>; <span class="num">3</span>],
+    <span class="kw">pub</span> _pad: <span class="ty">f32</span>,
+    <span class="kw">pub</span> color: [<span class="ty">f32</span>; <span class="num">4</span>],
+}</code></pre>
+
+                <p>
+                    A position in the world, a single rotation around the vertical axis (trees
+                    don't lean), a scale, and an RGBA tint — <strong>48 bytes per copy</strong>.
+                    The <code>_pad</code> field rounds the layout out so the colour starts on a
+                    16-byte boundary, and <code>#[repr(C)]</code> plus the <code>Pod</code>
+                    derive guarantee the struct's bytes can be copied straight into a GPU
+                    buffer with no translation. The tint is how a shrub billboard gets its
+                    species' leaf colour, and the scale is where a plant's growth stage shows
+                    up: seedlings are stamped at 15% size, young plants at 50%, from the same
+                    mature mesh.
+                </p>
+
+                <h2>Two streams into one shader</h2>
+                <p>
+                    The GPU is told about both buffers through <em>vertex buffer layouts</em>
+                    with different step modes: slot 0 (the mesh) advances <strong>per
+                    vertex</strong>, slot 1 (the records) advances <strong>per
+                    instance</strong>. From the shader's point of view they simply merge into
+                    one input struct — the <code>@location</code> numbers carry on from the
+                    mesh attributes into the instance attributes:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/shaders/instanced.wgsl — the merged vertex input</div>
+                <pre class="code-block"><code><span class="kw">struct</span> <span class="ty">VertexInput</span> {
+    <span class="cm">// Per-vertex (slot 0)</span>
+    <span class="at">@location(0)</span> position: <span class="ty">vec3&lt;f32&gt;</span>,
+    <span class="at">@location(1)</span> normal: <span class="ty">vec3&lt;f32&gt;</span>,
+    <span class="at">@location(2)</span> vert_color: <span class="ty">vec3&lt;f32&gt;</span>,
+
+    <span class="cm">// Per-instance (slot 1)</span>
+    <span class="at">@location(3)</span> inst_position: <span class="ty">vec3&lt;f32&gt;</span>,
+    <span class="at">@location(4)</span> inst_rotation_y: <span class="ty">f32</span>,
+    <span class="at">@location(5)</span> inst_scale: <span class="ty">vec3&lt;f32&gt;</span>,
+    <span class="at">@location(6)</span> inst_color: <span class="ty">vec4&lt;f32&gt;</span>,
+};</code></pre>
+
+                <p>
+                    When the GPU invokes the vertex shader for vertex 412 of copy 87, it has
+                    already paired the right mesh vertex with the right instance record. The
+                    shader's only job is to apply the record — scale, then spin around Y, then
+                    move into place:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/shaders/instanced.wgsl — placing one copy</div>
+                <pre class="code-block"><code><span class="kw">let</span> c = cos(input.inst_rotation_y);
+<span class="kw">let</span> s = sin(input.inst_rotation_y);
+
+<span class="cm">// Scale, then rotate around Y, then translate</span>
+<span class="kw">let</span> scaled = input.position * input.inst_scale;
+<span class="kw">let</span> rotated = <span class="ty">vec3&lt;f32&gt;</span>(
+    scaled.x * c - scaled.z * s,
+    scaled.y,
+    scaled.x * s + scaled.z * c,
+);
+<span class="kw">let</span> world_pos = rotated + input.inst_position;
+
+out.clip_position =
+    frame.view_proj_no_translation * <span class="ty">vec4&lt;f32&gt;</span>(world_pos - frame.camera_position.xyz, <span class="num">1.0</span>);</code></pre>
+
+                <p>
+                    That last line hides a subtlety worth noticing: the position is made
+                    <em>camera-relative</em> before projection. FloraForge's world is huge,
+                    and 32-bit floats lose precision far from the origin — subtracting the
+                    camera first keeps distant trees from jittering. The camera matrix itself
+                    arrives via the per-frame uniform described in
+                    <a href="./concept-bind-groups.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">Bind Groups</a>.
+                </p>
+
+                <h2>One draw per species per chunk</h2>
+                <p>
+                    FloraForge has eight plant species — oak, birch, spruce, willow, acacia,
+                    palm, cattail, shrub — and each gets its own prototype mesh, built by the
+                    engine's <a href="./concept-procedural-generation.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">procedural</a>
+                    plant generator rather than loaded from an art file (houses are the
+                    exception: a single GLB model). Instance records are grouped <strong>per
+                    species, per <a href="./concept-chunk-streaming.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">chunk</a></strong>,
+                    so when a chunk streams out, its vegetation's instance buffer is simply
+                    dropped with it. The render loop is then almost embarrassingly short:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/instanced_pass.rs — the whole forest, drawn</div>
+                <pre class="code-block"><code><span class="cm">// Draw each species, batching by LOD level to minimise state changes</span>
+<span class="kw">for</span> (i, key) <span class="kw">in</span> <span class="kw">self</span>.species_names.<span class="fn">iter</span>().<span class="fn">enumerate</span>() {
+    <span class="cm">// …partition this species' visible chunks into near and far…</span>
+
+    <span class="cm">// Draw near chunks with hi-res mesh</span>
+    <span class="kw">if let</span> <span class="ty">Some</span>(mesh) = <span class="kw">self</span>.models.<span class="fn">get</span>(key) {
+        pass.<span class="fn">set_vertex_buffer</span>(<span class="num">0</span>, mesh.vertex_buffer.<span class="fn">slice</span>(..));
+        pass.<span class="fn">set_index_buffer</span>(mesh.index_buffer.<span class="fn">slice</span>(..), <span class="ty">wgpu::IndexFormat</span>::Uint32);
+        <span class="kw">for</span> inst <span class="kw">in</span> &amp;near {
+            pass.<span class="fn">set_vertex_buffer</span>(<span class="num">1</span>, inst.instance_buffer.<span class="fn">slice</span>(..));
+            pass.<span class="fn">draw_indexed</span>(<span class="num">0</span>..mesh.index_count, <span class="num">0</span>, <span class="num">0</span>..inst.instance_count);
+        }
+    }
+
+    <span class="cm">// …far chunks repeat the loop with a low-detail LOD mesh…</span>
+}</code></pre>
+
+                <p>
+                    Each <code>draw_indexed</code> call's final argument is the instance range
+                    — "this mesh, <code>instance_count</code> times". A chunk with two hundred
+                    oaks costs one call. The loop also folds in two classic companions of
+                    instancing: chunks more than 512 metres away swap to a cheaper
+                    <strong>LOD mesh</strong> of the same species, and chunks outside the
+                    camera's view are skipped entirely by
+                    <a href="./concept-frustum-culling.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">frustum culling</a> —
+                    the subject of the next page.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    Shrubs take the idea to its extreme. The detailed procedural shrub mesh
+                    has 3,500–5,300 vertices, but shrubs are small and numerous — so in the
+                    world they're drawn as a <strong>12-vertex crossed-quad billboard</strong>
+                    whose foliage is painted procedurally in the fragment shader, with the
+                    species' leaf colour delivered through the instance record's
+                    <code>color</code> field. Same instancing pipeline, roughly 300–400×
+                    fewer vertices per copy.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-bind-groups.html"><small>Back</small>Bind Groups</a>
+                    <a class="next" href="./concept-frustum-culling.html"><small>Next</small>Frustum Culling →</a>
+                </div>
+            </section>

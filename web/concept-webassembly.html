@@ -1,0 +1,256 @@
+---
+layout: concept
+concept: webassembly
+title: "WebAssembly | FloraForge Concepts"
+description: "What WebAssembly is, how Rust compiles to it, and how FloraForge's entire engine runs in a browser tab — with the real launch script and wasm entry point."
+og_title: WebAssembly — FloraForge Concepts
+og_description: "A full explanation of WebAssembly: the compile target, the sandbox, the JS glue — and how the same Rust engine that runs on the desktop runs in your browser."
+og_type: article
+og_url: https://floraforge.eu/concept-webassembly.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Platform</p>
+                <h1>WebAssembly <span class="accent">&amp; the Browser Build</span></h1>
+                <p>
+                    When you press "Launch" on this site, a full 3D engine — streaming terrain,
+                    procedural forests, a day/night cycle — starts running inside your browser
+                    tab, with no plugin and no server doing the work. The technology that makes
+                    that possible is WebAssembly. This page explains what it is, how Rust code
+                    becomes it, and how FloraForge's browser build actually boots.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>A compile target, not a language</h2>
+                <p>
+                    <strong>WebAssembly</strong> — usually shortened to <em>wasm</em> — is a
+                    compact binary instruction format that browsers can execute at close to
+                    native speed. The crucial thing to understand is that nobody <em>writes</em>
+                    WebAssembly the way people write JavaScript. It is a <strong>compile
+                    target</strong>: you write a program in Rust, C++, Go, or another compiled
+                    language, and the compiler emits a <code>.wasm</code> file instead of a
+                    Windows or macOS executable. The browser then validates that file and
+                    compiles it down to real machine code for whatever CPU it's running on —
+                    which is why wasm performance lands so close to a native binary's.
+                </p>
+                <p>
+                    That design solves a problem JavaScript never could. JavaScript is a
+                    dynamically-typed language that the browser must parse, interpret, and
+                    optimise on the fly; an engine doing millions of floating-point operations
+                    per frame fights that model constantly. A wasm module arrives already
+                    compiled and statically typed, so the heavy numeric work — noise functions,
+                    mesh building, physics — runs at essentially the speed the CPU allows.
+                </p>
+
+                <h2>The sandbox: linear memory</h2>
+                <p>
+                    A wasm module is also radically contained. All of its data lives in one
+                    <strong>linear memory</strong> — a single contiguous, growable array of
+                    bytes that the module reads and writes with plain offsets. It cannot reach
+                    outside that array: no pointers into the browser's memory, no system calls,
+                    no file system, no network. Anything the module wants from the outside world
+                    must come through functions the host page explicitly hands it.
+                </p>
+                <p>
+                    Those hand-offs are where <strong>JS glue</strong> comes in. For Rust, the
+                    standard tool is <code>wasm-bindgen</code>: it scans the Rust code for
+                    exported functions, then generates a small JavaScript module that loads the
+                    <code>.wasm</code> file, wires up the imports it needs (DOM access, fetch,
+                    the WebGPU API), and exposes the Rust functions as ordinary JavaScript
+                    functions — marshalling strings and objects across the boundary in both
+                    directions. The page calls the glue; the glue calls the wasm.
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 430" role="img" aria-label="Pipeline diagram: Rust source code is compiled by cargo and wasm-bindgen into a .wasm binary plus a JavaScript glue module, which a browser tab loads to run the engine on a canvas via WebGPU, fetching the prebuilt world_base.bin alongside.">
+                        <defs>
+                            <marker id="aarrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#7cff9f"/>
+                            </marker>
+                        </defs>
+
+                        <!-- stage 1: rust source -->
+                        <rect x="20" y="70" width="200" height="160" rx="16" fill="rgba(240,237,228,0.05)" stroke="rgba(240,237,228,0.3)" stroke-width="1.2"/>
+                        <text x="120" y="106" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Rust source</text>
+                        <text x="120" y="134" text-anchor="middle" fill="#c7b99d" font-size="12.5">the whole engine</text>
+                        <text x="120" y="166" text-anchor="middle" fill="#c7b99d" font-size="12" font-family="JetBrains Mono, monospace">world_core · app</text>
+                        <text x="120" y="186" text-anchor="middle" fill="#c7b99d" font-size="12" font-family="JetBrains Mono, monospace">world_runtime</text>
+                        <text x="120" y="206" text-anchor="middle" fill="#c7b99d" font-size="12" font-family="JetBrains Mono, monospace">renderer_wgpu</text>
+
+                        <!-- stage 2: compile -->
+                        <rect x="275" y="70" width="225" height="160" rx="16" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="387" y="106" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Compile</text>
+                        <text x="387" y="136" text-anchor="middle" fill="#7cff9f" font-size="12" font-family="JetBrains Mono, monospace">cargo build --target</text>
+                        <text x="387" y="154" text-anchor="middle" fill="#7cff9f" font-size="12" font-family="JetBrains Mono, monospace">wasm32-unknown-unknown</text>
+                        <text x="387" y="186" text-anchor="middle" fill="#c7b99d" font-size="12.5">then wasm-bindgen</text>
+                        <text x="387" y="204" text-anchor="middle" fill="#c7b99d" font-size="12.5">generates the JS glue</text>
+
+                        <!-- stage 3: bundle -->
+                        <rect x="555" y="70" width="190" height="160" rx="16" fill="rgba(246,197,145,0.12)" stroke="#f6c591" stroke-width="1.4"/>
+                        <text x="650" y="100" text-anchor="middle" fill="#f6c591" font-size="12" font-family="JetBrains Mono, monospace">web/pkg/</text>
+                        <rect x="575" y="116" width="150" height="40" rx="8" fill="rgba(5,13,7,0.6)" stroke="rgba(246,197,145,0.5)" stroke-width="1"/>
+                        <text x="650" y="136" text-anchor="middle" fill="#f0ede4" font-size="12" font-family="JetBrains Mono, monospace">world_gen_bg.wasm</text>
+                        <text x="650" y="150" text-anchor="middle" fill="#c7b99d" font-size="11">the compiled engine</text>
+                        <rect x="575" y="166" width="150" height="40" rx="8" fill="rgba(5,13,7,0.6)" stroke="rgba(246,197,145,0.5)" stroke-width="1"/>
+                        <text x="650" y="186" text-anchor="middle" fill="#f0ede4" font-size="12" font-family="JetBrains Mono, monospace">world_gen.js</text>
+                        <text x="650" y="200" text-anchor="middle" fill="#c7b99d" font-size="11">the JS glue</text>
+
+                        <!-- stage 4: browser tab -->
+                        <rect x="780" y="40" width="180" height="240" rx="16" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <rect x="780" y="40" width="180" height="30" rx="16" fill="rgba(124,255,159,0.14)"/>
+                        <circle cx="798" cy="55" r="4" fill="#c7b99d"/>
+                        <circle cx="812" cy="55" r="4" fill="#c7b99d"/>
+                        <text x="884" y="60" text-anchor="middle" fill="#f0ede4" font-size="12">floraforge.eu</text>
+                        <text x="870" y="98" text-anchor="middle" fill="#f0ede4" font-size="15" font-weight="600">Browser tab</text>
+                        <rect x="800" y="114" width="140" height="86" rx="8" fill="rgba(5,13,7,0.6)" stroke="#7cff9f" stroke-width="1"/>
+                        <text x="870" y="152" text-anchor="middle" fill="#7cff9f" font-size="12" font-family="JetBrains Mono, monospace">&lt;canvas&gt;</text>
+                        <text x="870" y="172" text-anchor="middle" fill="#c7b99d" font-size="11">drawn via WebGPU</text>
+                        <text x="870" y="226" text-anchor="middle" fill="#c7b99d" font-size="12">wasm runs the engine,</text>
+                        <text x="870" y="244" text-anchor="middle" fill="#c7b99d" font-size="12">JS glue bridges to the</text>
+                        <text x="870" y="262" text-anchor="middle" fill="#c7b99d" font-size="12">page and the GPU</text>
+
+                        <!-- arrows -->
+                        <line x1="222" y1="150" x2="271" y2="150" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#aarrow)"/>
+                        <line x1="502" y1="150" x2="551" y2="150" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#aarrow)"/>
+                        <line x1="747" y1="150" x2="776" y2="150" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#aarrow)"/>
+
+                        <!-- base world side-load -->
+                        <rect x="545" y="300" width="210" height="44" rx="22" fill="rgba(240,237,228,0.05)" stroke="#c7b99d" stroke-width="1.2"/>
+                        <text x="650" y="319" text-anchor="middle" fill="#f0ede4" font-size="12" font-family="JetBrains Mono, monospace">world_base.bin</text>
+                        <text x="650" y="335" text-anchor="middle" fill="#c7b99d" font-size="11">prebuilt world, ~31 MB</text>
+                        <path d="M758 318 C 810 318, 850 310, 862 286" fill="none" stroke="#7cff9f" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#aarrow)"/>
+                        <text x="640" y="378" text-anchor="middle" fill="rgba(240,237,228,0.5)" font-size="12.5">fetched alongside the bundle, so the tab never regenerates the world from scratch</text>
+
+                        <!-- phase annotations -->
+                        <text x="260" y="262" text-anchor="middle" fill="rgba(240,237,228,0.5)" font-size="12.5">happens once per release, in CI</text>
+                        <text x="870" y="316" text-anchor="middle" fill="rgba(240,237,228,0.5)" font-size="12.5">happens in your browser,</text>
+                        <text x="870" y="334" text-anchor="middle" fill="rgba(240,237,228,0.5)" font-size="12.5">every visit</text>
+                    </svg>
+                    <figcaption>
+                        From Rust source to a running tab. The compile step happens once per
+                        release; the browser downloads the resulting bundle, instantiates the
+                        wasm, and the engine takes over a canvas — fetching the prebuilt base
+                        world alongside.
+                    </figcaption>
+                </figure>
+
+                <h2>How FloraForge boots in a tab</h2>
+                <p>
+                    FloraForge's release pipeline compiles the entire engine — the same crates
+                    that make the desktop binary — with
+                    <code>cargo build --release --target wasm32-unknown-unknown</code>, then
+                    runs <code>wasm-bindgen</code> over the result to produce
+                    <code>web/pkg/world_gen.js</code> and the wasm binary beside it. The landing
+                    page's launch script is then disarmingly small:
+                </p>
+
+                <div class="code-title">web/index.html — the launch script (condensed)</div>
+                <pre class="code-block"><code><span class="kw">const</span> wasmEntryUrl = <span class="kw">new</span> <span class="ty">URL</span>(<span class="str">"./pkg/world_gen.js"</span>, window.location.href);
+
+<span class="kw">async function</span> <span class="fn">ensureWasmModule</span>() {
+    <span class="kw">if</span> (wasmModule) <span class="kw">return</span> wasmModule;
+    <span class="kw">const</span> module = <span class="kw">await</span> <span class="fn">import</span>(wasmEntryUrl.href);
+    <span class="kw">await</span> module.<span class="fn">default</span>();   <span class="cm">// download + instantiate the .wasm</span>
+    wasmModule = module;
+    <span class="kw">return</span> module;
+}
+
+<span class="kw">async function</span> <span class="fn">launchGame</span>() {
+    <span class="kw">const</span> module = <span class="kw">await</span> <span class="fn">ensureWasmModule</span>();
+    <span class="kw">await</span> module.<span class="fn">start_web_app</span>();   <span class="cm">// hand control to the Rust engine</span>
+}</code></pre>
+
+                <p>
+                    Two lines do all the work. <code>module.default()</code> is the
+                    wasm-bindgen initialiser: it fetches the wasm bytes, has the browser
+                    compile them, and wires up the imports. <code>start_web_app()</code> is not
+                    a JavaScript function at all — it's a Rust function, exported across the
+                    boundary by the <code>#[wasm_bindgen]</code> attribute. Here is its real
+                    body, from the engine's crate root:
+                </p>
+
+                <div class="code-title">src/lib.rs — the wasm entry point (trimmed)</div>
+                <pre class="code-block"><code><span class="at">#[wasm_bindgen]</span>
+<span class="kw">pub fn</span> <span class="fn">start_web_app</span>() -&gt; <span class="ty">Result</span>&lt;(), <span class="ty">JsValue</span>&gt; {
+    <span class="kw">let</span> canvas = <span class="ty">web_sys</span>::<span class="fn">window</span>()
+        .<span class="fn">and_then</span>(|w| w.<span class="fn">document</span>())
+        .<span class="fn">and_then</span>(|d| d.<span class="fn">get_element_by_id</span>(<span class="str">"world-gen-canvas"</span>))
+        .<span class="fn">ok_or_else</span>(|| <span class="ty">JsValue</span>::<span class="fn">from_str</span>(<span class="str">"canvas element not found"</span>))?;
+
+    <span class="kw">let</span> event_loop = <span class="ty">winit</span>::event_loop::<span class="ty">EventLoop</span>::<span class="fn">new</span>()?;
+    <span class="kw">let</span> window = <span class="ty">WindowBuilder</span>::<span class="fn">new</span>()
+        .<span class="fn">with_canvas</span>(<span class="kw">Some</span>(canvas.<span class="fn">unchecked_into</span>()))
+        .<span class="fn">build</span>(&amp;event_loop)?;
+
+    app::<span class="fn">run_event_loop_web</span>(window, event_loop);
+    <span class="kw">Ok</span>(())
+}</code></pre>
+
+                <p>
+                    The hand-off is the <code>&lt;canvas&gt;</code> element: the page finds it
+                    in the DOM, the Rust side wraps it as its "window", and from that point the
+                    engine's normal
+                    <a href="./concept-game-loop.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">game loop</a>
+                    runs inside the tab, drawing through
+                    <a href="./concept-webgpu.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">WebGPU</a>
+                    exactly as it would on the desktop.
+                </p>
+
+                <h2>Loading a world without freezing the tab</h2>
+                <p>
+                    One desktop luxury does not survive the trip: threads. FloraForge's browser
+                    build is single-threaded, and a wasm module shares the page's main thread —
+                    if the engine computes for three seconds straight, the tab is frozen for
+                    three seconds. Building a world from scratch is minutes of work, so the web
+                    build sidesteps it twice over.
+                </p>
+                <p>
+                    First, it mostly doesn't generate the world at all. The release pipeline
+                    runs the <a href="./concept-procedural-generation.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">procedural generator</a>
+                    once in CI and deploys the result, <code>world_base.bin</code> (~31&nbsp;MB),
+                    right next to the wasm bundle. The app starts downloading it the moment the
+                    page loads, before you even press Launch, and the request carries the
+                    world's generation key as a query string so a stale cached snapshot is never
+                    matched against a newer engine. Second, what work remains — decoding that
+                    snapshot and rebuilding tens of thousands of plants from it — is
+                    <strong>cooperative</strong>: it's split into small bounded steps, and the
+                    engine yields back to the browser between every step so the loading screen
+                    keeps animating. The driving type is a tiny state machine:
+                </p>
+
+                <div class="code-title">src/world_runtime/runtime.rs — one unit of cooperative world-building</div>
+                <pre class="code-block"><code><span class="kw">pub enum</span> <span class="ty">BuildStep</span> {
+    <span class="cm">/// Still working; `0.0..=1.0` is the fraction of the build completed.</span>
+    <span class="fn">Working</span>(<span class="ty">f32</span>),
+    <span class="cm">/// The runtime is ready.</span>
+    <span class="fn">Done</span>(<span class="ty">Box</span>&lt;<span class="ty">WorldRuntime</span>&gt;),
+}</code></pre>
+
+                <p>
+                    An async task calls <code>WebWorldBuilder::step()</code> in a loop: each
+                    <code>Working</code> result updates the progress bar and yields; the
+                    <code>Done</code> result is the finished world. Once it arrives, the normal
+                    <a href="./concept-chunk-streaming.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">chunk streaming</a>
+                    takes over — itself adapted for the single thread: where the desktop build
+                    generates chunks on a worker pool, the web build's loader generates at most
+                    two chunks per frame on the main thread, spreading the cost the same
+                    cooperative way.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    The browser build is <strong>the same Rust code as the desktop build</strong> —
+                    not a port. A handful of <code>cfg(target_arch = "wasm32")</code> switches
+                    swap the edges: the windowing target becomes a canvas, file storage becomes
+                    browser storage, threads become cooperative steps, and the graphics backend
+                    becomes the browser's own WebGPU. Everything in between — terrain, biomes,
+                    rivers, plant growth, the renderer — is one codebase compiled twice.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-webgpu.html"><small>Back</small>WebGPU &amp; wgpu</a>
+                    <a class="next" href="./concepts.html"><small>Index</small>All Concepts →</a>
+                </div>
+            </section>

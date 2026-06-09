@@ -239,7 +239,25 @@ impl<'a> BaseGenerationInputs<'a> {
             // field (mildly lossy bilinear vs the exact 4D noise), shifting baked
             // biome boundaries, so old snapshots must be rejected. See
             // `world_core::terrain_fields`.
-            version: 5,
+            // v6: river carve is reshaped from a distance-to-channel field into
+            // steep-walled, flat-bottomed channels (was a wetness-proportional
+            // bowl), so the carved terrain — and the plants seated on it —
+            // differ. See `world_core::rivers`. The carve-shape tunables live as
+            // constants there, not in `RiverConfig`, so changing them needs a
+            // further bump here.
+            // v7: the distance-to-channel field now bridges diagonal channel
+            // steps (it bilinearly bulged at segment midpoints, pinching the
+            // carve to zero and breaking rivers into pools), so the carved
+            // terrain along diagonal river runs differs. See `world_core::rivers`.
+            // v8: the carved bank wall is capped to a bounded height above the
+            // water (`MAX_BRINK`) so steep valleys read as a house-scale step
+            // rather than a tall cliff; this changes terrain height/slope on steep
+            // riverbanks, and thus the flora seated there. See `world_core::rivers`.
+            // v9: low riverbanks are raised into a minimum levee (`BRINK_MIN`) and
+            // land flora additionally rejects ground below the water sheet, so
+            // bank terrain and the plants seated near channels both differ. See
+            // `world_core::rivers` and `world_core::content::flora`.
+            version: 9,
             seed: config.world.seed,
             sea_level: config.sea_level,
             biome: &config.biome,

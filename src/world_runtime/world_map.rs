@@ -129,7 +129,7 @@ fn river_intensity_grid(rivers: &RiverField, res: usize, step: f32) -> Vec<f32> 
                     let wz = z0 + (sz as f32 + 0.5) * sub;
                     for sx in 0..os {
                         let wx = x0 + (sx as f32 + 0.5) * sub;
-                        let (_, wet) = rivers.sample(wx, wz);
+                        let wet = rivers.wetness(wx, wz);
                         if wet > m {
                             m = wet;
                         }

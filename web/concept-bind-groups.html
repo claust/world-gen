@@ -1,0 +1,249 @@
+---
+layout: concept
+concept: bind-groups
+title: "Bind Groups | FloraForge Concepts"
+description: "How shaders receive their data: uniform buffers, storage buffers, textures and samplers, bundled into bind groups — and why FloraForge sorts them by how often they change."
+og_title: Bind Groups — FloraForge Concepts
+og_description: "Uniforms, storage buffers, textures, samplers — and the frequency-based bind group split that lets FloraForge change the camera once and the material rarely, with real engine code."
+og_type: article
+og_url: https://floraforge.eu/concept-bind-groups.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Rendering</p>
+                <h1>Bind <span class="accent">Groups</span></h1>
+                <p>
+                    A shader is a program marooned on another processor — it cannot see a single
+                    variable of the engine that launched it. Bind groups are how data reaches it:
+                    bundles of buffers and textures, plugged into numbered slots before each
+                    draw. How you carve those bundles up turns out to be one of the quiet
+                    performance decisions at the heart of every renderer, FloraForge included.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>The two-processor problem</h2>
+                <p>
+                    When the engine wants to draw a chunk of terrain, the
+                    <a href="./concept-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">shader</a>
+                    doing the drawing needs to know things only the engine knows: where the
+                    camera is, what time of day it is, which way the sun points, what colour the
+                    fog should be. None of that can be passed as ordinary function arguments,
+                    because nobody calls the shader directly — the GPU does, thousands of times,
+                    on its own schedule, in its own memory. Everything the shader needs must be
+                    <strong>placed in GPU-visible resources ahead of time and wired to named
+                    slots in the shader's interface</strong>. WebGPU makes that wiring fully
+                    explicit, and the unit of wiring is the bind group.
+                </p>
+
+                <h2>Three kinds of resources</h2>
+                <p>
+                    The things you can plug in come in a few flavours, each tuned for a
+                    different access pattern:
+                </p>
+                <ul>
+                    <li><strong>Uniform buffers</strong> — small, fixed-size structs of
+                        constants, read-only and broadcast identically to every thread. The
+                        camera matrix and the clock live here. The GPU caches them
+                        aggressively precisely because they cannot change mid-draw.</li>
+                    <li><strong>Storage buffers</strong> — big raw arrays the shader can index
+                        freely and, if declared <code>read_write</code>, write back to. This is
+                        what the <a href="./concept-compute-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">terrain compute shader</a>
+                        uses for its height inputs and vertex output.</li>
+                    <li><strong>Textures and samplers</strong> — images plus the recipe for
+                        reading them (filtering, wrapping, comparison). They travel as a pair:
+                        FloraForge's terrain binds its biome colour atlas with an ordinary
+                        sampler, and its shadow map with a special <em>comparison</em> sampler
+                        that does depth tests in hardware.</li>
+                </ul>
+
+                <h2>Bundles, and the contracts behind them</h2>
+                <p>
+                    You don't bind these resources one at a time. WebGPU asks you to define a
+                    <strong>bind group layout</strong> first — a contract that says "slot 0 is a
+                    uniform buffer visible to the vertex and fragment stages, slot 1 is a
+                    texture…" — and then create <strong>bind groups</strong>: immutable bundles
+                    of actual resources that satisfy that contract. The split looks bureaucratic
+                    but is the source of the speed: because the layout is known when the pipeline
+                    is built, and the group is validated once when it's created, <em>binding</em>
+                    a group at draw time is nearly free — the expensive checking already
+                    happened. Here is FloraForge creating its per-frame group, layout first,
+                    bundle second:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/material.rs — layout (the contract), then the bundle (trimmed)</div>
+                <pre class="code-block"><code><span class="kw">let</span> layout = device.<span class="fn">create_bind_group_layout</span>(&amp;<span class="ty">wgpu::BindGroupLayoutDescriptor</span> {
+    label: <span class="ty">Some</span>(<span class="str">"frame-bind-group-layout"</span>),
+    entries: &amp;[<span class="ty">wgpu::BindGroupLayoutEntry</span> {
+        binding: <span class="num">0</span>,
+        visibility: <span class="ty">wgpu::ShaderStages</span>::VERTEX_FRAGMENT,
+        ty: <span class="ty">wgpu::BindingType</span>::Buffer {
+            ty: <span class="ty">wgpu::BufferBindingType</span>::Uniform,
+            <span class="cm">// …</span>
+        },
+        count: <span class="ty">None</span>,
+    }],
+});
+
+<span class="cm">// …create the uniform buffer holding a FrameUniform…</span>
+
+<span class="kw">let</span> bind_group = device.<span class="fn">create_bind_group</span>(&amp;<span class="ty">wgpu::BindGroupDescriptor</span> {
+    label: <span class="ty">Some</span>(<span class="str">"frame-bind-group"</span>),
+    layout: &amp;layout,
+    entries: &amp;[<span class="ty">wgpu::BindGroupEntry</span> {
+        binding: <span class="num">0</span>,
+        resource: buffer.<span class="fn">as_entire_binding</span>(),
+    }],
+});</code></pre>
+
+                <h2>The cost model: sort by how often it changes</h2>
+                <p>
+                    A frame is a long sequence of draws, and between draws the engine swaps bind
+                    groups in and out of four numbered slots (WebGPU guarantees at least four).
+                    Each swap is cheap, but it isn't free, and the swaps add up across hundreds
+                    of draw calls. The classic answer is to <strong>sort your data by how often
+                    it changes</strong> and give each rate its own group. Things that are true
+                    for the whole frame — the camera, the clock — go in group 0, bound once and
+                    then left alone. Things that change per material — lighting and fog colours
+                    — go in group 1. Per-object textures sit higher still. The common case,
+                    "same camera, fifty different surfaces," then touches only the cheap, small,
+                    frequently-swapped groups while the stable ones stay plugged in.
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 470" role="img" aria-label="Four bind groups plug into numbered slots on the terrain shader: group 0 per-frame uniforms, group 1 per-material uniforms, group 2 the biome atlas texture, group 3 the shadow map.">
+                        <defs>
+                            <marker id="barrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#7cff9f"/>
+                            </marker>
+                        </defs>
+
+                        <!-- shader chip -->
+                        <rect x="640" y="55" width="320" height="370" rx="18" fill="rgba(62,207,110,0.08)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="800" y="88" text-anchor="middle" fill="#f0ede4" font-size="17" font-weight="600">Terrain shader</text>
+                        <text x="800" y="110" text-anchor="middle" fill="#c7b99d" font-size="12.5" font-family="JetBrains Mono, monospace">terrain.wgsl — vertex + fragment</text>
+
+                        <!-- sockets -->
+                        <g>
+                            <rect x="626" y="136" width="30" height="28" rx="6" fill="rgba(5,13,7,0.7)" stroke="#7cff9f" stroke-width="1.3"/>
+                            <text x="676" y="155" fill="#c79bff" font-size="12.5" font-family="JetBrains Mono, monospace">@group(0) frame</text>
+                            <rect x="626" y="211" width="30" height="28" rx="6" fill="rgba(5,13,7,0.7)" stroke="#7cff9f" stroke-width="1.3"/>
+                            <text x="676" y="230" fill="#c79bff" font-size="12.5" font-family="JetBrains Mono, monospace">@group(1) material</text>
+                            <rect x="626" y="286" width="30" height="28" rx="6" fill="rgba(5,13,7,0.7)" stroke="#7cff9f" stroke-width="1.3"/>
+                            <text x="676" y="305" fill="#c79bff" font-size="12.5" font-family="JetBrains Mono, monospace">@group(2) atlas</text>
+                            <rect x="626" y="361" width="30" height="28" rx="6" fill="rgba(5,13,7,0.7)" stroke="#7cff9f" stroke-width="1.3"/>
+                            <text x="676" y="380" fill="#c79bff" font-size="12.5" font-family="JetBrains Mono, monospace">@group(3) shadow</text>
+                        </g>
+
+                        <!-- cartridges -->
+                        <rect x="25" y="120" width="430" height="60" rx="12" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.3"/>
+                        <text x="45" y="145" fill="#f0ede4" font-size="14.5" font-weight="600">group 0 · FrameUniform</text>
+                        <text x="45" y="166" fill="#c7b99d" font-size="12.5">view-proj matrices · camera position · time · shadow params</text>
+
+                        <rect x="25" y="195" width="430" height="60" rx="12" fill="rgba(240,237,228,0.05)" stroke="#c7b99d" stroke-width="1.3"/>
+                        <text x="45" y="220" fill="#f0ede4" font-size="14.5" font-weight="600">group 1 · MaterialUniform</text>
+                        <text x="45" y="241" fill="#c7b99d" font-size="12.5">light direction · ambient · fog · sun &amp; sky colours</text>
+
+                        <rect x="25" y="270" width="430" height="60" rx="12" fill="rgba(246,197,145,0.12)" stroke="#f6c591" stroke-width="1.3"/>
+                        <text x="45" y="295" fill="#f0ede4" font-size="14.5" font-weight="600">group 2 · biome atlas</text>
+                        <text x="45" y="316" fill="#c7b99d" font-size="12.5">texture_2d + sampler — the ground's colour palette</text>
+
+                        <rect x="25" y="345" width="430" height="60" rx="12" fill="rgba(246,197,145,0.12)" stroke="#f6c591" stroke-width="1.3"/>
+                        <text x="45" y="370" fill="#f0ede4" font-size="14.5" font-weight="600">group 3 · shadow map</text>
+                        <text x="45" y="391" fill="#c7b99d" font-size="12.5">texture_depth_2d + comparison sampler — sun's-eye depth</text>
+
+                        <!-- arrows + frequency labels -->
+                        <line x1="460" y1="150" x2="620" y2="150" stroke="#7cff9f" stroke-width="2" marker-end="url(#barrow)"/>
+                        <text x="540" y="141" text-anchor="middle" fill="rgba(240,237,228,0.55)" font-size="11.5">rewritten every frame</text>
+                        <line x1="460" y1="225" x2="620" y2="225" stroke="#7cff9f" stroke-width="2" marker-end="url(#barrow)"/>
+                        <text x="540" y="216" text-anchor="middle" fill="rgba(240,237,228,0.55)" font-size="11.5">updated as the sun moves</text>
+                        <line x1="460" y1="300" x2="620" y2="300" stroke="#7cff9f" stroke-width="2" marker-end="url(#barrow)"/>
+                        <text x="540" y="291" text-anchor="middle" fill="rgba(240,237,228,0.55)" font-size="11.5">bound once, never changes</text>
+                        <line x1="460" y1="375" x2="620" y2="375" stroke="#7cff9f" stroke-width="2" marker-end="url(#barrow)"/>
+                        <text x="540" y="366" text-anchor="middle" fill="rgba(240,237,228,0.55)" font-size="11.5">re-rendered, same binding</text>
+
+                        <!-- bottom annotation -->
+                        <text x="490" y="452" text-anchor="middle" fill="#c7b99d" font-size="13" letter-spacing="1.5">slow-changing data in low slots, stable bundles left plugged in</text>
+                    </svg>
+                    <figcaption>
+                        The terrain shader's four bind group slots. The bundles themselves are
+                        created once; what varies is how often the engine writes new contents
+                        into the buffers behind them.
+                    </figcaption>
+                </figure>
+
+                <h2>FloraForge's split</h2>
+                <p>
+                    Every material in the engine follows the same two-group convention.
+                    <strong>Group 0 is per-frame</strong>: a single <code>FrameUniform</code>
+                    struct holding the camera's view-projection matrices, the camera position,
+                    a packed <code>time</code> vector (elapsed seconds, hour of day, underwater
+                    factor) and the shadow parameters. <strong>Group 1 is per-material</strong>:
+                    a <code>MaterialUniform</code> with the light direction, ambient level, fog
+                    settings and the sun and sky colours that the day/night cycle recomputes as
+                    it goes. On the shader side the declarations read like a mirror of that
+                    design:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/shaders/terrain.wgsl — the shader's view of its bind groups</div>
+                <pre class="code-block"><code><span class="kw">struct</span> <span class="ty">FrameUniform</span> {
+    view_proj: <span class="ty">mat4x4&lt;f32&gt;</span>,
+    inv_view_proj_no_translation: <span class="ty">mat4x4&lt;f32&gt;</span>,
+    light_view_proj: <span class="ty">mat4x4&lt;f32&gt;</span>,
+    camera_position: <span class="ty">vec4&lt;f32&gt;</span>,
+    time: <span class="ty">vec4&lt;f32&gt;</span>,
+    shadow_params: <span class="ty">vec4&lt;f32&gt;</span>,
+    view_proj_no_translation: <span class="ty">mat4x4&lt;f32&gt;</span>,
+};
+
+<span class="kw">struct</span> <span class="ty">MaterialUniform</span> {
+    light_direction: <span class="ty">vec4&lt;f32&gt;</span>,
+    ambient: <span class="ty">vec4&lt;f32&gt;</span>,
+    fog_color: <span class="ty">vec4&lt;f32&gt;</span>,
+    fog_params: <span class="ty">vec4&lt;f32&gt;</span>,
+    sun_color: <span class="ty">vec4&lt;f32&gt;</span>,
+    sky_zenith: <span class="ty">vec4&lt;f32&gt;</span>,
+    sky_horizon: <span class="ty">vec4&lt;f32&gt;</span>,
+};
+
+<span class="at">@group(0)</span> <span class="at">@binding(0)</span> <span class="kw">var</span>&lt;<span class="kw">uniform</span>&gt; frame: <span class="ty">FrameUniform</span>;
+<span class="at">@group(1)</span> <span class="at">@binding(0)</span> <span class="kw">var</span>&lt;<span class="kw">uniform</span>&gt; material: <span class="ty">MaterialUniform</span>;
+<span class="at">@group(2)</span> <span class="at">@binding(0)</span> <span class="kw">var</span> terrain_atlas: <span class="ty">texture_2d&lt;f32&gt;</span>;
+<span class="at">@group(2)</span> <span class="at">@binding(1)</span> <span class="kw">var</span> terrain_sampler: <span class="ty">sampler</span>;
+<span class="at">@group(3)</span> <span class="at">@binding(0)</span> <span class="kw">var</span> shadow_map: <span class="ty">texture_depth_2d</span>;
+<span class="at">@group(3)</span> <span class="at">@binding(1)</span> <span class="kw">var</span> shadow_sampler: <span class="ty">sampler_comparison</span>;</code></pre>
+
+                <p>
+                    Those <code>vec4</code> fields where a single float would do aren't waste —
+                    they're <strong>alignment</strong>. Uniform buffers follow strict layout
+                    rules (vectors land on 16-byte boundaries), and the engine's matching Rust
+                    structs in <code>src/renderer_wgpu/material.rs</code> use the same padded
+                    shapes so the bytes copied across line up exactly with what the shader
+                    expects. The spare lanes get used, too: <code>time</code> packs three
+                    different clocks into one slot.
+                </p>
+                <p>
+                    The render loop in <code>src/renderer_wgpu/world.rs</code> then plays the
+                    frequency game exactly as advertised. At the top of the frame the engine
+                    writes a fresh <code>FrameUniform</code> into group 0's buffer; each pass
+                    binds <code>frame_bg</code> at slot 0 and the relevant material at slot 1,
+                    and the terrain, water and river passes all share the same material bundle —
+                    one <code>set_bind_group</code> apiece, and on to the draw calls.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    FloraForge never rebuilds a bind group at runtime. The frame and material
+                    bundles are created once at startup, and from then on the engine only
+                    <strong>rewrites the bytes inside the buffers they point at</strong> — one
+                    <code>queue.write_buffer</code> of 304 bytes refreshes the camera, clock and
+                    shadows for every shader in the engine at once, because they all share the
+                    same group 0 bundle.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-compute-shaders.html"><small>Back</small>Compute Shaders</a>
+                    <a class="next" href="./concept-instanced-rendering.html"><small>Next</small>Instanced Rendering →</a>
+                </div>
+            </section>

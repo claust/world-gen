@@ -1,0 +1,244 @@
+---
+layout: concept
+concept: webgpu
+title: "WebGPU & wgpu | FloraForge Concepts"
+description: "What WebGPU is, why it replaced WebGL, and how the wgpu library lets FloraForge run one Rust renderer on Metal, Vulkan, Direct3D 12, and in the browser."
+og_title: WebGPU & wgpu — FloraForge Concepts
+og_description: "A full explanation of WebGPU — the modern GPU API — and wgpu, the Rust implementation FloraForge builds on, with the engine's real GPU setup code."
+og_type: article
+og_url: https://floraforge.eu/concept-webgpu.html
+css: ./assets/concepts.css
+fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap"
+---
+            <section class="hero">
+                <p class="eyebrow">Concept · Platform</p>
+                <h1>WebGPU <span class="accent">&amp; wgpu</span></h1>
+                <p>
+                    Every triangle FloraForge draws — on a Mac, on a Linux box, or inside a
+                    browser tab — goes through a single graphics API: WebGPU. This page explains
+                    what WebGPU is, why it exists, and how the <code>wgpu</code> library turns
+                    one Rust renderer into a program that runs natively on every desktop GPU
+                    stack <em>and</em> on the web.
+                </p>
+            </section>
+
+            <section class="block prose">
+                <h2>Why WebGL needed a successor</h2>
+                <p>
+                    For over a decade, 3D graphics on the web meant <strong>WebGL</strong> — a
+                    JavaScript binding of OpenGL ES, an API whose design dates back to the
+                    1990s. It worked, but it carried OpenGL's baggage: a hidden global state
+                    machine the driver has to second-guess, validation work repeated on every
+                    draw call, and no support at all for general-purpose GPU computation.
+                    Meanwhile the native world had moved on to a new generation of
+                    <em>explicit</em> APIs — Apple's Metal, Khronos's Vulkan, Microsoft's
+                    Direct3D 12 — where the application states its intentions up front and the
+                    driver stops guessing.
+                </p>
+                <p>
+                    <strong>WebGPU</strong> is the web's version of that generation, designed
+                    from scratch by the browser vendors themselves — Apple, Google, Mozilla, and
+                    Microsoft working jointly in the W3C's "GPU for the Web" group — so that one
+                    standard could be implemented efficiently on top of all three native APIs.
+                    Three design choices define it:
+                </p>
+                <ul>
+                    <li><strong>Everything is declared up front.</strong> Pipelines, resource
+                        layouts, and render passes are built once as immutable objects, so the
+                        expensive validation happens at creation time, not on every draw. (The
+                        resource-layout half of that story has its own page:
+                        <a href="./concept-bind-groups.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">Bind Groups</a>.)</li>
+                    <li><strong>Compute is a first-class citizen.</strong> WebGL could only
+                        draw; WebGPU exposes the GPU as a general parallel processor.
+                        FloraForge leans on this hard — its terrain meshes are built by a
+                        <a href="./concept-compute-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">compute shader</a>,
+                        not by the CPU.</li>
+                    <li><strong>It has its own shading language.</strong> WGSL was standardised
+                        alongside the API, so the same shader source is valid everywhere WebGPU
+                        runs — see
+                        <a href="./concept-shaders.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">Shaders &amp; WGSL</a>.</li>
+                </ul>
+                <p>
+                    Despite the "Web" in the name, WebGPU is not only a browser API. Because it
+                    was specified as a clean, portable layer over Metal, Vulkan, and D3D12, it
+                    turned out to be an excellent way to write <em>native</em> graphics code
+                    too. That is exactly how FloraForge uses it.
+                </p>
+
+                <h2>The stack: one renderer, four destinations</h2>
+                <p>
+                    FloraForge's renderer never talks to Metal or Vulkan directly. It talks to
+                    <strong>wgpu</strong>, a Rust library that implements the WebGPU API and
+                    translates it to whatever the machine underneath actually speaks. (wgpu is
+                    no toy shim — it is the same engine that powers WebGPU inside Firefox.)
+                </p>
+
+                <figure class="concept-figure">
+                    <svg viewBox="0 0 980 590" role="img" aria-label="Layered stack diagram: the FloraForge renderer sits on top, calls into the wgpu library, which fans out to Metal on macOS, Vulkan on Linux and Android, Direct3D 12 on Windows, or the browser's own WebGPU implementation.">
+                        <defs>
+                            <marker id="warrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#7cff9f"/>
+                            </marker>
+                        </defs>
+
+                        <!-- layer 1: FloraForge -->
+                        <rect x="270" y="24" width="440" height="116" rx="16" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="490" y="62" text-anchor="middle" fill="#f0ede4" font-size="18" font-weight="600">FloraForge renderer</text>
+                        <text x="490" y="90" text-anchor="middle" fill="#c7b99d" font-size="12.5">src/renderer_wgpu/ — passes, materials, WGSL shaders</text>
+                        <text x="490" y="112" text-anchor="middle" fill="#c7b99d" font-size="12.5">one Rust codebase, written once</text>
+
+                        <!-- arrow down -->
+                        <line x1="490" y1="142" x2="490" y2="192" stroke="#7cff9f" stroke-width="2.2" marker-end="url(#warrow)"/>
+                        <text x="510" y="172" fill="rgba(240,237,228,0.5)" font-size="12.5">calls the WebGPU API</text>
+
+                        <!-- layer 2: wgpu -->
+                        <rect x="270" y="198" width="440" height="110" rx="16" fill="rgba(246,197,145,0.12)" stroke="#f6c591" stroke-width="1.4"/>
+                        <text x="490" y="234" text-anchor="middle" fill="#f0ede4" font-size="18" font-weight="600">wgpu <tspan fill="#f6c591" font-size="13" font-family="JetBrains Mono, monospace">v27</tspan></text>
+                        <text x="490" y="262" text-anchor="middle" fill="#c7b99d" font-size="12.5">Rust implementation of the WebGPU standard</text>
+                        <text x="490" y="282" text-anchor="middle" fill="#c7b99d" font-size="12.5">translates every command and shader per platform</text>
+
+                        <!-- fan-out arrows -->
+                        <line x1="360" y1="310" x2="135" y2="394" stroke="#7cff9f" stroke-width="2" marker-end="url(#warrow)"/>
+                        <line x1="445" y1="310" x2="375" y2="394" stroke="#7cff9f" stroke-width="2" marker-end="url(#warrow)"/>
+                        <line x1="535" y1="310" x2="605" y2="394" stroke="#7cff9f" stroke-width="2" marker-end="url(#warrow)"/>
+                        <line x1="620" y1="310" x2="845" y2="394" stroke="#7cff9f" stroke-width="2" marker-end="url(#warrow)"/>
+
+                        <!-- layer 3: backends -->
+                        <rect x="20" y="400" width="210" height="104" rx="14" fill="rgba(240,237,228,0.05)" stroke="#c7b99d" stroke-width="1.2"/>
+                        <text x="125" y="438" text-anchor="middle" fill="#f0ede4" font-size="16" font-weight="600">Metal</text>
+                        <text x="125" y="464" text-anchor="middle" fill="#c7b99d" font-size="12">macOS · iOS</text>
+
+                        <rect x="265" y="400" width="210" height="104" rx="14" fill="rgba(240,237,228,0.05)" stroke="#c7b99d" stroke-width="1.2"/>
+                        <text x="370" y="438" text-anchor="middle" fill="#f0ede4" font-size="16" font-weight="600">Vulkan</text>
+                        <text x="370" y="464" text-anchor="middle" fill="#c7b99d" font-size="12">Linux · Android</text>
+
+                        <rect x="510" y="400" width="210" height="104" rx="14" fill="rgba(240,237,228,0.05)" stroke="#c7b99d" stroke-width="1.2"/>
+                        <text x="615" y="438" text-anchor="middle" fill="#f0ede4" font-size="16" font-weight="600">Direct3D 12</text>
+                        <text x="615" y="464" text-anchor="middle" fill="#c7b99d" font-size="12">Windows</text>
+
+                        <rect x="755" y="400" width="210" height="104" rx="14" fill="rgba(62,207,110,0.12)" stroke="#3ecf6e" stroke-width="1.4"/>
+                        <text x="860" y="438" text-anchor="middle" fill="#7cff9f" font-size="16" font-weight="600">Browser WebGPU</text>
+                        <text x="860" y="464" text-anchor="middle" fill="#c7b99d" font-size="12">Chrome · Firefox · Safari</text>
+
+                        <!-- build brackets -->
+                        <path d="M20 524 L20 532 L720 532 L720 524" fill="none" stroke="#f6c591" stroke-width="1.4"/>
+                        <text x="370" y="558" text-anchor="middle" fill="#f6c591" font-size="13" letter-spacing="1">desktop build — cargo run --release</text>
+                        <path d="M755 524 L755 532 L965 532 L965 524" fill="none" stroke="#7cff9f" stroke-width="1.4"/>
+                        <text x="860" y="558" text-anchor="middle" fill="#7cff9f" font-size="13" letter-spacing="1">browser build — wasm</text>
+                    </svg>
+                    <figcaption>
+                        The portability stack. The renderer calls WebGPU through wgpu; wgpu
+                        translates to the native API of whatever machine it finds itself on —
+                        or, in the browser build, passes calls straight through to the
+                        browser's own WebGPU implementation.
+                    </figcaption>
+                </figure>
+
+                <p>
+                    The whole arrangement hangs on one line in the project manifest:
+                </p>
+
+                <div class="code-title">Cargo.toml — the dependency that is the renderer's whole platform layer</div>
+                <pre class="code-block"><code><span class="fn">wgpu</span> = <span class="str">"27"</span>
+<span class="fn">winit</span> = <span class="str">"0.29"</span>   <span class="cm"># windowing — gives wgpu a surface to draw into</span></code></pre>
+
+                <p>
+                    On desktop, wgpu picks the best native backend at runtime — Metal on a Mac,
+                    Vulkan on Linux, Direct3D 12 on Windows — and translates both the API calls
+                    and the WGSL shaders into that backend's dialect. In the browser build, the
+                    same Rust code compiles to
+                    <a href="./concept-webassembly.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">WebAssembly</a>
+                    and wgpu becomes a thin wrapper over the browser's own
+                    <code>navigator.gpu</code>: no translation at all, because the browser
+                    speaks WebGPU natively. And that is no longer an experimental claim — as of
+                    2026, <strong>every major browser ships WebGPU on by default</strong>:
+                    Chrome and Edge have since 2023, Safari 26 brought it to macOS, iOS, and
+                    iPadOS in 2025, and Firefox shipped it the same year (with Linux support
+                    still rolling out).
+                </p>
+
+                <h2>Talking to the GPU: instance, adapter, device</h2>
+                <p>
+                    WebGPU's explicitness shows in how a program starts up. Nothing is implicit;
+                    you walk down a ladder of objects, each more concrete than the last. This is
+                    FloraForge's actual startup sequence, from
+                    <code>src/renderer_wgpu/gpu_context.rs</code>:
+                </p>
+
+                <div class="code-title">src/renderer_wgpu/gpu_context.rs — acquiring the GPU (error handling trimmed)</div>
+                <pre class="code-block"><code><span class="cm">// 1. The instance: the entry point. The browser build may only use</span>
+<span class="cm">//    the browser's WebGPU; native may use any backend wgpu supports.</span>
+<span class="kw">let</span> backends = <span class="kw">if</span> <span class="fn">cfg!</span>(target_arch = <span class="str">"wasm32"</span>) {
+    <span class="ty">wgpu::Backends</span>::BROWSER_WEBGPU
+} <span class="kw">else</span> {
+    <span class="ty">wgpu::Backends</span>::<span class="fn">all</span>()
+};
+<span class="kw">let</span> instance = <span class="ty">wgpu::Instance</span>::<span class="fn">new</span>(&amp;<span class="ty">wgpu::InstanceDescriptor</span> { backends, ..<span class="ty">Default</span>::<span class="fn">default</span>() });
+<span class="kw">let</span> surface = instance.<span class="fn">create_surface</span>(window)?;
+
+<span class="cm">// 2. The adapter: a specific physical GPU, asked for by preference.</span>
+<span class="kw">let</span> adapter = instance
+    .<span class="fn">request_adapter</span>(&amp;<span class="ty">wgpu::RequestAdapterOptions</span> {
+        power_preference: <span class="ty">wgpu::PowerPreference</span>::HighPerformance,
+        compatible_surface: <span class="kw">Some</span>(&amp;surface),
+        force_fallback_adapter: <span class="kw">false</span>,
+    })
+    .<span class="kw">await</span>?;
+
+<span class="cm">// 3. Limits: on the web, take what the browser grants; on native,</span>
+<span class="cm">//    the conservative defaults are plenty for this engine.</span>
+<span class="kw">let</span> required_limits = <span class="kw">if</span> <span class="fn">cfg!</span>(target_arch = <span class="str">"wasm32"</span>) {
+    adapter.<span class="fn">limits</span>()
+} <span class="kw">else</span> {
+    <span class="ty">wgpu::Limits</span>::<span class="fn">default</span>()
+};
+
+<span class="cm">// 4. The device and queue: the logical connection the renderer keeps.</span>
+<span class="kw">let</span> (device, queue) = adapter
+    .<span class="fn">request_device</span>(&amp;<span class="ty">wgpu::DeviceDescriptor</span> {
+        label: <span class="kw">Some</span>(<span class="str">"world-gen-device"</span>),
+        required_features: <span class="ty">wgpu::Features</span>::<span class="fn">empty</span>(),
+        required_limits,
+        ..<span class="ty">Default</span>::<span class="fn">default</span>()
+    })
+    .<span class="kw">await</span>?;</code></pre>
+
+                <p>
+                    Each rung has a job. The <strong>instance</strong> is the library itself —
+                    the set of backends you're willing to use. The <strong>adapter</strong> is
+                    one physical GPU; asking for <code>HighPerformance</code> matters on laptops
+                    with both an integrated and a discrete chip. The <strong>device</strong> is
+                    the logical connection the rest of the renderer holds, created with an
+                    explicit contract of <em>features</em> and <em>limits</em> — maximum texture
+                    sizes, buffer sizes, bind-group counts. FloraForge requests no optional
+                    features at all, which is part of why it runs everywhere. Finally the
+                    <strong>queue</strong> is where finished command buffers are submitted each
+                    frame, and the <strong>surface</strong> is the window (or canvas) being
+                    drawn into — whose image-swapping machinery is its own story, told in
+                    <a href="./concept-swapchain.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">The Swapchain</a>.
+                </p>
+                <p>
+                    One subtlety in the snippet rewards a second look: on the web, the engine
+                    asks for <code>adapter.limits()</code> — whatever the browser is willing to
+                    grant — while on native it takes WebGPU's defaults. Browsers deliberately
+                    quantise the limits they report so that pages can't fingerprint the exact
+                    GPU model; negotiating limits explicitly at startup is the price of an API
+                    that is safe to expose to any web page.
+                </p>
+
+                <div class="in-engine">
+                    <div class="in-engine-label">In the engine</div>
+                    The payoff of this stack is that <strong>FloraForge has exactly one
+                    renderer</strong>. <code>src/renderer_wgpu/</code> contains no
+                    platform-specific drawing code at all — the only platform branch in the GPU
+                    setup is the <code>Backends::BROWSER_WEBGPU</code> selection shown above.
+                    The terrain compute pass, the instanced vegetation, the sky and water
+                    shaders: all of it is written once against wgpu 27 and runs unchanged on
+                    Metal, Vulkan, Direct3D 12, and in a browser tab.
+                </div>
+
+                <div class="concept-pager">
+                    <a href="./concept-chunk-streaming.html"><small>Back</small>Chunk Streaming</a>
+                    <a class="next" href="./concept-webassembly.html"><small>Next</small>WebAssembly →</a>
+                </div>
+            </section>

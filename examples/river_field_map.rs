@@ -40,7 +40,7 @@ fn main() {
             let wx = x as f32 * cell;
             let wz = z as f32 * cell;
             h[z * N + x] = hm.sample_height(wx, wz);
-            wet[z * N + x] = field.sample(wx, wz).1;
+            wet[z * N + x] = field.wetness(wx, wz);
         }
     }
 

@@ -37,6 +37,13 @@ function requireFloat(flags: Record<string, string>, name: string): number {
   return n;
 }
 
+function requireInt(flags: Record<string, string>, name: string): number {
+  const raw = requireFlag(flags, name);
+  const n = Number(raw);
+  if (!Number.isInteger(n)) die(`--${name} must be an integer, got "${raw}"`);
+  return n;
+}
+
 function optionalFloat(flags: Record<string, string>, name: string): number | undefined {
   const raw = flags[name];
   if (raw === undefined) return undefined;
@@ -164,6 +171,20 @@ async function cmdMapRightClick(apiBase: string, flags: Record<string, string>) 
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdSaveFavorite(apiBase: string, flags: Record<string, string>) {
+  const slot = requireInt(flags, "slot");
+  if (slot < 1 || slot > 5) die(`--slot must be an integer in range 1..5`);
+  const result = await sendAndWait(apiBase, { type: "save_favorite", slot });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdRecallFavorite(apiBase: string, flags: Record<string, string>) {
+  const slot = requireInt(flags, "slot");
+  if (slot < 1 || slot > 5) die(`--slot must be an integer in range 1..5`);
+  const result = await sendAndWait(apiBase, { type: "recall_favorite", slot });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdFindNearest(apiBase: string, flags: Record<string, string>) {
   const kind = requireFlag(flags, "kind");
   if (kind !== "house" && kind !== "tree" && kind !== "fern") die(`--kind must be "house", "tree", or "fern"`);
@@ -274,7 +295,7 @@ async function cmdUiSetValue(apiBase: string, flags: Record<string, string>) {
 
 async function cmdPressKey(apiBase: string, flags: Record<string, string>) {
   const key = requireFlag(flags, "key");
-  const valid = ["f1", "escape", "m", "p"];
+  const valid = ["f1", "escape", "m", "p", "h"];
   if (!valid.includes(key)) die(`--key must be one of: ${valid.join(", ")}`);
   const result = await sendAndWait(apiBase, { type: "press_key", key });
   console.log(JSON.stringify(result, null, 2));
@@ -309,10 +330,12 @@ Commands:
   set_camera_position --x <n> --y <n> --z <n>  Teleport camera
   set_camera_look --yaw <n> --pitch <n>    Set camera orientation
   map_right_click --u <0..1> --v <0..1>    Right-click the open world map
+  save_favorite   --slot <1..5>            Save current viewpoint to a favorite slot
+  recall_favorite --slot <1..5>            Recall a saved favorite viewpoint
   find_nearest    --kind <house|tree|fern>   Find nearest object
   look_at         --id <object_id> [--distance <n>]  Look at object
   move            --key <w|a|s|d|up|down> [--duration <ms>]  Move camera
-  press_key       --key <f1|escape|m|p>  Press a key (toggle config panel, map, screenshot→clipboard, etc.)
+  press_key       --key <f1|escape|m|p|h>  Press a key (toggle config panel, map, screenshot→clipboard, help, etc.)
   ui_snapshot                              Get all interactive UI elements
   ui_click        --element <id>           Click a button or toggle checkbox
   ui_set_value    --element <id> --value <v>  Set slider/combo/checkbox value
@@ -401,6 +424,12 @@ async function main() {
         break;
       case "map_right_click":
         await cmdMapRightClick(apiBase, flags);
+        break;
+      case "save_favorite":
+        await cmdSaveFavorite(apiBase, flags);
+        break;
+      case "recall_favorite":
+        await cmdRecallFavorite(apiBase, flags);
         break;
       case "find_nearest":
         await cmdFindNearest(apiBase, flags);

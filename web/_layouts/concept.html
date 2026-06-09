@@ -1,0 +1,23 @@
+---
+layout: base
+---
+<div class="content">
+    <header class="wrap">
+        {% include nav.html current="concepts" %}
+    </header>
+    <div class="wrap concept-shell">
+        <aside class="concept-sidebar">
+            {% include concepts-sidebar.html current=page.concept %}
+        </aside>
+        <main class="concept-main">
+{{ content }}
+        </main>
+    </div>
+    <footer class="wrap">
+        <div class="footer-inner">
+            <p>FloraForge — a procedural world-building engine built from scratch in Rust.</p>
+            <p><a href="./index.html">Home</a> · <a href="./concepts.html">Concepts</a> · <a href="https://github.com/claust/world-gen" target="_blank" rel="noreferrer">GitHub</a></p>
+        </div>
+    </footer>
+</div>
+<script src="./glossary.js" defer></script>

@@ -56,6 +56,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         let mut heights = Vec::with_capacity(total);
         let mut river = Vec::with_capacity(total);
         let mut river_flow = Vec::with_capacity(total);
+        let mut river_surface = Vec::with_capacity(total);
         let mut min_height = f32::MAX;
         let mut max_height = f32::MIN;
         let mut has_river = false;
@@ -64,10 +65,14 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
             let z = idx / side;
             let world_x = origin_x + x as f32 * cell_size;
             let world_z = origin_z + z as f32 * cell_size;
-            let (carve, wet) = self.rivers.sample(world_x, world_z);
-            let h = raw - carve;
+            let (h, wet, sheet) = self.rivers.sample(raw, world_x, world_z);
             heights.push(h);
             river.push(wet);
+            // Flat water sheet, already contained to the carve corridor by the
+            // river field. Stored for every vertex; the renderer only draws it
+            // where wetness marks a channel and the sheet rises above the carved
+            // bed (`river_surface > heights`).
+            river_surface.push(sheet);
             // Flow direction only matters where there is actually a river surface
             // to animate; skip the second lookup for dry vertices.
             if wet > RIVER_SURFACE_THRESHOLD {
@@ -86,6 +91,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
             moisture,
             river,
             river_flow,
+            river_surface,
             has_water: min_height < self.sea_level,
             has_river,
             min_height,

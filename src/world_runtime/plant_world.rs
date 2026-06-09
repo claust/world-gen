@@ -1056,7 +1056,7 @@ fn land_chunk_candidates(
         }
         // Reject seedlings that land in a river channel — mirrors the base-flora
         // guard so spread can't slowly recolonise the water the base pass kept clear.
-        if ctx.rivers.sample(candidate.world_x, candidate.world_z).1 > MAX_PLANTABLE_WETNESS {
+        if ctx.rivers.wetness(candidate.world_x, candidate.world_z) > MAX_PLANTABLE_WETNESS {
             continue;
         }
         let moisture = ctx
@@ -2132,6 +2132,7 @@ mod tests {
             moisture: vec![0.5; total],
             river: vec![0.0; total],
             river_flow: vec![[0.0, 0.0]; total],
+            river_surface: vec![88.0; total],
             min_height: 88.0,
             max_height: 88.0,
             has_water: false,
@@ -2161,6 +2162,7 @@ mod tests {
             moisture: vec![0.5; total],
             river: vec![0.0; total],
             river_flow: vec![[0.0, 0.0]; total],
+            river_surface: vec![50.0; total],
             min_height: 50.0,
             max_height: 50.0,
             has_water: false,
