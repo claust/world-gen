@@ -3,8 +3,7 @@ use std::sync::Arc;
 use glam::IVec2;
 
 use crate::world_core::chunk::{
-    ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, RIVER_SURFACE_FREEBOARD,
-    RIVER_SURFACE_THRESHOLD,
+    ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, RIVER_SURFACE_THRESHOLD,
 };
 use crate::world_core::config::HeightmapConfig;
 use crate::world_core::heightmap::Heightmap;
@@ -66,14 +65,14 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
             let z = idx / side;
             let world_x = origin_x + x as f32 * cell_size;
             let world_z = origin_z + z as f32 * cell_size;
-            let (h, wet, surf) = self.rivers.sample(raw, world_x, world_z);
+            let (h, wet, sheet) = self.rivers.sample(raw, world_x, world_z);
             heights.push(h);
             river.push(wet);
-            // Flat water sheet: the smoothed routing surface dropped by a freeboard
-            // so it sits below the banks. Stored for every vertex; the renderer
-            // only draws it where wetness marks a channel and the sheet rises above
-            // the carved bed (`river_surface > heights`).
-            river_surface.push(surf - RIVER_SURFACE_FREEBOARD);
+            // Flat water sheet, already contained to the carve corridor by the
+            // river field. Stored for every vertex; the renderer only draws it
+            // where wetness marks a channel and the sheet rises above the carved
+            // bed (`river_surface > heights`).
+            river_surface.push(sheet);
             // Flow direction only matters where there is actually a river surface
             // to animate; skip the second lookup for dry vertices.
             if wet > RIVER_SURFACE_THRESHOLD {

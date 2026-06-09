@@ -253,7 +253,11 @@ impl<'a> BaseGenerationInputs<'a> {
             // water (`MAX_BRINK`) so steep valleys read as a house-scale step
             // rather than a tall cliff; this changes terrain height/slope on steep
             // riverbanks, and thus the flora seated there. See `world_core::rivers`.
-            version: 8,
+            // v9: low riverbanks are raised into a minimum levee (`BRINK_MIN`) and
+            // land flora additionally rejects ground below the water sheet, so
+            // bank terrain and the plants seated near channels both differ. See
+            // `world_core::rivers` and `world_core::content::flora`.
+            version: 9,
             seed: config.world.seed,
             sea_level: config.sea_level,
             biome: &config.biome,
