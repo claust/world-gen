@@ -159,20 +159,22 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
     <span class="kw">pub</span> position: [<span class="ty">f32</span>; <span class="num">3</span>],
     <span class="kw">pub</span> rotation_y: <span class="ty">f32</span>,
     <span class="kw">pub</span> scale: [<span class="ty">f32</span>; <span class="num">3</span>],
-    <span class="kw">pub</span> _pad: <span class="ty">f32</span>,
+    <span class="kw">pub</span> tilt: <span class="ty">f32</span>,
     <span class="kw">pub</span> color: [<span class="ty">f32</span>; <span class="num">4</span>],
 }</code></pre>
 
                 <p>
-                    A position in the world, a single rotation around the vertical axis (trees
-                    don't lean), a scale, and an RGBA tint — <strong>48 bytes per copy</strong>.
-                    The <code>_pad</code> field rounds the layout out so the colour starts on a
-                    16-byte boundary, and <code>#[repr(C)]</code> plus the <code>Pod</code>
+                    A position in the world, a rotation around the vertical axis, a scale, a
+                    lean angle, and an RGBA tint — <strong>48 bytes per copy</strong>. The
+                    <code>tilt</code> field (which doubles as padding so the colour starts on
+                    a 16-byte boundary) leans dead snags a few degrees off vertical; living
+                    plants leave it at zero. <code>#[repr(C)]</code> plus the <code>Pod</code>
                     derive guarantee the struct's bytes can be copied straight into a GPU
                     buffer with no translation. The tint is how a shrub billboard gets its
-                    species' leaf colour, and the scale is where a plant's growth stage shows
-                    up: seedlings are stamped at 15% size, young plants at 50%, from the same
-                    mature mesh.
+                    species' leaf colour — and how a dead plant gets its weathered grey-brown —
+                    while the scale is where the growth stage shows up: seedlings are stamped
+                    at 15% size, young plants at 50%, dead snags at 85% and shrinking, from
+                    meshes of the same species.
                 </p>
 
                 <h2>Two streams into one shader</h2>
@@ -266,8 +268,9 @@ out.clip_position =
                     — "this mesh, <code>instance_count</code> times". A chunk with two hundred
                     oaks costs one call. The loop also folds in two classic companions of
                     instancing: chunks more than 512 metres away swap to a cheaper
-                    <strong>LOD mesh</strong> of the same species, and chunks outside the
-                    camera's view are skipped entirely by
+                    <strong>LOD mesh</strong> of the same species (dead plants get a third
+                    bucket — a bark-only snag mesh cheap enough to serve every distance), and
+                    chunks outside the camera's view are skipped entirely by
                     <a href="./concept-frustum-culling.html" style="color: var(--green-bright); border-bottom: 1px solid rgba(124,255,159,0.4);">frustum culling</a> —
                     the subject of the next page.
                 </p>

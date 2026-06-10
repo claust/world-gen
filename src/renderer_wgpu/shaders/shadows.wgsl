@@ -21,21 +21,30 @@ fn vs_terrain(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> 
 }
 
 // Instanced geometry: per-vertex position (slot 0) plus the per-instance
-// position / rotation / scale (slots 3..5), matching instanced.wgsl's layout.
+// position / rotation / scale / snag tilt (slots 3..5, 7), matching
+// instanced.wgsl's layout so leaning snags cast matching shadows.
 @vertex
 fn vs_instanced(
     @location(0) position: vec3<f32>,
     @location(3) inst_position: vec3<f32>,
     @location(4) inst_rotation_y: f32,
     @location(5) inst_scale: vec3<f32>,
+    @location(7) inst_tilt: f32,
 ) -> @builtin(position) vec4<f32> {
     let c = cos(inst_rotation_y);
     let s = sin(inst_rotation_y);
+    let ct = cos(inst_tilt);
+    let st = sin(inst_tilt);
     let scaled = position * inst_scale;
+    let tilted = vec3<f32>(
+        scaled.x,
+        scaled.y * ct - scaled.z * st,
+        scaled.y * st + scaled.z * ct,
+    );
     let rotated = vec3<f32>(
-        scaled.x * c - scaled.z * s,
-        scaled.y,
-        scaled.x * s + scaled.z * c,
+        tilted.x * c - tilted.z * s,
+        tilted.y,
+        tilted.x * s + tilted.z * c,
     );
     let world_pos = rotated + inst_position;
     return frame.light_view_proj * vec4<f32>(world_pos, 1.0);

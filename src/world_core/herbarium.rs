@@ -19,6 +19,13 @@ pub struct PlacementConfig {
     pub spread_chance: f32,
     pub seedling_hours: f32,
     pub young_hours: f32,
+    /// Sim-hours a plant stays `Mature` before dying (with ±25% per-plant
+    /// jitter). `<= 0` means immortal — used by species that cannot respawn
+    /// through the spread pass (cattails are base-only) and would otherwise go
+    /// extinct.
+    pub lifespan_hours: f32,
+    /// Sim-hours the dead snag stands before despawning and freeing its ground.
+    pub snag_hours: f32,
     /// Aquatic species (cattails) spawn *in* the river/lake margin that land
     /// plants avoid: the base-flora pass seats them in the wet band above
     /// `MAX_PLANTABLE_WETNESS` and allows them below sea level, the mirror image
@@ -52,6 +59,8 @@ mod tests {
         assert_eq!(config.spread_chance, 0.3);
         assert_eq!(config.seedling_hours, 48.0);
         assert_eq!(config.young_hours, 96.0);
+        assert_eq!(config.lifespan_hours, 720.0);
+        assert_eq!(config.snag_hours, 120.0);
     }
 
     #[test]
@@ -68,9 +77,19 @@ mod tests {
             if entry.placement.aquatic {
                 assert_eq!(entry.placement.spread_radius, 0.0);
                 assert_eq!(entry.placement.spread_chance, 0.0);
+                // Base-only species can't respawn, so they must be immortal or
+                // every reed bed would eventually empty for good.
+                assert!(entry.placement.lifespan_hours <= 0.0);
             } else {
                 assert_eq!(entry.placement.spread_radius, 25.0);
                 assert_eq!(entry.placement.spread_chance, 0.3);
+                if entry.species.body_plan.kind == "shrub" {
+                    assert_eq!(entry.placement.lifespan_hours, 360.0);
+                    assert_eq!(entry.placement.snag_hours, 48.0);
+                } else {
+                    assert_eq!(entry.placement.lifespan_hours, 720.0);
+                    assert_eq!(entry.placement.snag_hours, 120.0);
+                }
             }
         }
     }
@@ -153,10 +172,23 @@ impl Default for PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: TREE_LIFESPAN_HOURS,
+            snag_hours: TREE_SNAG_HOURS,
             aquatic: false,
         }
     }
 }
+
+/// Default death timing per species class. Trees outlive shrubs; both spend
+/// ~80% of their life mature so every lineage gets dozens of daily spread
+/// rolls before the parent dies.
+const TREE_LIFESPAN_HOURS: f32 = 720.0;
+const TREE_SNAG_HOURS: f32 = 120.0;
+const SHRUB_LIFESPAN_HOURS: f32 = 360.0;
+const SHRUB_SNAG_HOURS: f32 = 48.0;
+/// Immortal sentinel (`lifespan_hours <= 0`): cattails are base-only (no
+/// spread), so letting them die would empty every reed bed for good.
+const IMMORTAL: f32 = 0.0;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HerbariumEntry {
@@ -371,6 +403,8 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: TREE_LIFESPAN_HOURS,
+            snag_hours: TREE_SNAG_HOURS,
             aquatic: false,
         },
         "Birch" => PlacementConfig {
@@ -386,6 +420,8 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: TREE_LIFESPAN_HOURS,
+            snag_hours: TREE_SNAG_HOURS,
             aquatic: false,
         },
         "Acacia" => PlacementConfig {
@@ -401,6 +437,8 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: TREE_LIFESPAN_HOURS,
+            snag_hours: TREE_SNAG_HOURS,
             aquatic: false,
         },
         "Palm" => PlacementConfig {
@@ -416,6 +454,8 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: TREE_LIFESPAN_HOURS,
+            snag_hours: TREE_SNAG_HOURS,
             aquatic: false,
         },
         "Shrub" => PlacementConfig {
@@ -431,6 +471,8 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: SHRUB_LIFESPAN_HOURS,
+            snag_hours: SHRUB_SNAG_HOURS,
             aquatic: false,
         },
         "Spruce" => PlacementConfig {
@@ -446,6 +488,8 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: TREE_LIFESPAN_HOURS,
+            snag_hours: TREE_SNAG_HOURS,
             aquatic: false,
         },
         "Willow" => PlacementConfig {
@@ -461,6 +505,8 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.3,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: TREE_LIFESPAN_HOURS,
+            snag_hours: TREE_SNAG_HOURS,
             aquatic: false,
         },
         "Cattail" => PlacementConfig {
@@ -482,6 +528,8 @@ fn default_placement(name: &str) -> PlacementConfig {
             spread_chance: 0.0,
             seedling_hours: 48.0,
             young_hours: 96.0,
+            lifespan_hours: IMMORTAL,
+            snag_hours: 0.0,
             aquatic: true,
         },
         _ => PlacementConfig::default(),

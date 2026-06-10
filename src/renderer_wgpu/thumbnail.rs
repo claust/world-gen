@@ -404,7 +404,7 @@ fn prepare_plant(
         position: [0.0, 0.0, 0.0],
         rotation_y: 0.0,
         scale: [1.0, 1.0, 1.0],
-        _pad: 0.0,
+        tilt: 0.0,
         color: [1.0, 1.0, 1.0, 1.0],
     };
     let instance = upload_instances(device, &[instance_data], "thumb-inst")?.instance_buffer;
