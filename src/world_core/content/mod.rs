@@ -6,6 +6,8 @@ pub(crate) mod sampling;
 use self::flora::{FloraInput, FloraLayer};
 use self::houses::{HousesInput, HousesLayer};
 
+pub(crate) use self::houses::place_houses;
+
 use std::sync::Arc;
 
 use crate::world_core::biome_map::BiomeMap;

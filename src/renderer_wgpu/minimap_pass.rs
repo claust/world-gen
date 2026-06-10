@@ -7,7 +7,9 @@ use wgpu::util::DeviceExt;
 use super::hud_font::{HudVertex, SDF_PLAIN};
 use super::minimap_colors::biome_color_rgba;
 use super::pipeline::DEPTH_FORMAT;
-use crate::world_core::chunk::{ChunkData, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS};
+use crate::world_core::chunk::{
+    ChunkData, ChunkTerrain, CHUNK_GRID_RESOLUTION, CHUNK_SIZE_METERS, RIVER_SURFACE_THRESHOLD,
+};
 
 const MAP_TEX_SIZE: u32 = 256;
 const MINIMAP_PX: f32 = 200.0;
@@ -268,6 +270,13 @@ impl MinimapPass {
         let side = CHUNK_GRID_RESOLUTION;
         let mut pixels = vec![0u8; (MAP_TEX_SIZE * MAP_TEX_SIZE * 4) as usize];
 
+        // Rivers are usually narrower than a minimap pixel, so nearest-vertex
+        // sampling would draw them as broken dashes. Instead scan the pixel's
+        // whole footprint in the vertex grid for surfaced river water.
+        let cell = CHUNK_SIZE_METERS / (side - 1) as f32;
+        let px_meters = (self.tex_extent[0].max(self.tex_extent[1])) / MAP_TEX_SIZE as f32;
+        let river_radius = ((px_meters / cell * 0.5).ceil() as usize).clamp(1, 8);
+
         for py in 0..MAP_TEX_SIZE {
             for px in 0..MAP_TEX_SIZE {
                 // Map pixel to world position
@@ -299,7 +308,9 @@ impl MinimapPass {
 
                     let h = chunk.terrain.heights[idx];
                     let m = chunk.terrain.moisture[idx];
-                    biome_color_rgba(h, m)
+                    let river = chunk.terrain.has_river
+                        && has_river_water(&chunk.terrain, xi, zi, river_radius);
+                    biome_color_rgba(h, m, river)
                 } else {
                     [20, 20, 30, 255] // unloaded = dark
                 };
@@ -618,4 +629,26 @@ fn push_sector(
     let br = corner(radius, radius);
 
     verts.extend_from_slice(&[tl, tr, bl, bl, tr, br]);
+}
+
+/// True when any vertex within `radius` grid steps of (`xi`, `zi`) carries
+/// surfaced river water — wet enough to count as a channel and with the water
+/// sheet above the carved bed, matching where the 3D river surface is drawn.
+fn has_river_water(terrain: &ChunkTerrain, xi: usize, zi: usize, radius: usize) -> bool {
+    let side = CHUNK_GRID_RESOLUTION;
+    let x0 = xi.saturating_sub(radius);
+    let z0 = zi.saturating_sub(radius);
+    let x1 = (xi + radius).min(side - 1);
+    let z1 = (zi + radius).min(side - 1);
+    for z in z0..=z1 {
+        for x in x0..=x1 {
+            let idx = z * side + x;
+            if terrain.river[idx] > RIVER_SURFACE_THRESHOLD
+                && terrain.river_surface[idx] > terrain.heights[idx]
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
