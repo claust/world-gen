@@ -89,6 +89,40 @@ impl TerrainTexture {
     }
 }
 
+/// CPU-side sample of the procedural biome atlas at a world position, in
+/// *linear* color space. Mirrors what the terrain fragment shader sees: the
+/// same per-tile color function evaluated at `fract(world * TEXTURE_SCALE)`,
+/// then sRGB-decoded because the atlas is stored as `Rgba8UnormSrgb` (the GPU
+/// linearizes on sample). Used to tint grass-blade roots so they match the
+/// ground they stand on. `tile` follows the atlas order:
+/// 0=grass, 1=desert, 2=forest, 3=rock, 4=snow.
+pub fn ground_albedo_linear(tile: u32, world_x: f32, world_z: f32) -> [f32; 3] {
+    // Matches TEXTURE_SCALE in terrain.wgsl's sample_biome().
+    const TEXTURE_SCALE: f32 = 0.1;
+    let nx = (world_x * TEXTURE_SCALE).rem_euclid(1.0);
+    let ny = (world_z * TEXTURE_SCALE).rem_euclid(1.0);
+    let (r, g, b) = match tile {
+        0 => generate_grass(nx, ny),
+        1 => generate_desert(nx, ny),
+        2 => generate_forest(nx, ny),
+        3 => generate_rock(nx, ny),
+        _ => generate_snow(nx, ny),
+    };
+    [
+        srgb_to_linear(r.clamp(0.0, 1.0)),
+        srgb_to_linear(g.clamp(0.0, 1.0)),
+        srgb_to_linear(b.clamp(0.0, 1.0)),
+    ]
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 /// Simple hash-based value noise for texture generation.
 fn hash(x: i32, y: i32) -> f32 {
     let n = (x.wrapping_mul(374761393)).wrapping_add(y.wrapping_mul(668265263));

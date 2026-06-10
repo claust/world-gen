@@ -1,4 +1,5 @@
 mod flora;
+pub mod grass;
 mod houses;
 pub(crate) mod sampling;
 
