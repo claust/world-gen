@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use glam::{IVec2, Mat4, Vec3};
 
 use super::frustum::Frustum;
+use super::grass_pass::{GrassPass, GrassStats};
 use super::hud_pass::HudPass;
 use super::instanced_pass::{InstancedPass, InstancedStats};
 use super::instancing::{GpuInstanceChunk, PrototypeMesh};
@@ -17,6 +18,7 @@ use super::terrain_texture::TerrainTexture;
 use super::water_pass::WaterPass;
 use crate::renderer_wgpu::pipeline::{DepthTexture, ShadowMap};
 use crate::world_core::chunk::ChunkData;
+use crate::world_core::config::BiomeConfig;
 use crate::world_core::herbarium::PlantRegistry;
 
 pub struct WorldRenderer {
@@ -30,6 +32,7 @@ pub struct WorldRenderer {
     water: WaterPass,
     river: RiverPass,
     instanced: InstancedPass,
+    grass: GrassPass,
     sign_text: SignTextPass,
     hud: HudPass,
     minimap: MinimapPass,
@@ -54,9 +57,12 @@ pub struct RendererStats {
     pub buffered_lod_plants: usize,
     pub buffered_dead_plants: usize,
     pub buffered_house_instances: usize,
+    pub grass_tiles: usize,
+    pub buffered_grass_tufts: usize,
 }
 
 impl WorldRenderer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -65,6 +71,8 @@ impl WorldRenderer {
         sea_level: f32,
         load_radius: i32,
         registry: PlantRegistry,
+        seed: u32,
+        biome_config: BiomeConfig,
     ) -> Self {
         let frame_bg = FrameBindGroup::new(device);
         let terrain_material = MaterialBindGroup::new_terrain(device);
@@ -112,6 +120,16 @@ impl WorldRenderer {
             &shadow_map.layout,
             &registry,
         );
+        let grass = GrassPass::new(
+            device,
+            render_format,
+            &frame_bg.layout,
+            &terrain_material.layout,
+            &shadow_map.layout,
+            seed,
+            biome_config,
+            sea_level,
+        );
         let sign_text = SignTextPass::new(device, queue, render_format, &frame_bg.layout);
         let hud = HudPass::new(device, queue, render_format);
         let minimap = MinimapPass::new(device, queue, render_format);
@@ -132,6 +150,7 @@ impl WorldRenderer {
             water,
             river,
             instanced,
+            grass,
             sign_text,
             hud,
             minimap,
@@ -352,6 +371,9 @@ impl WorldRenderer {
         self.sync_water(device, chunks);
         self.sync_river(device, chunks);
         self.sync_instances(device, chunks);
+        // Uses the camera position from the previous update_frame; grass tiles
+        // carry tens of metres of margin, so one frame of lag is harmless.
+        self.grass.sync(device, chunks, self.camera_position);
         self.sync_minimap(queue, chunks);
     }
 
@@ -437,6 +459,14 @@ impl WorldRenderer {
             self.camera_position,
             &self.shadow_map.bind_group,
         );
+        // Grass after terrain and instanced geometry: it is opaque and depth-
+        // tested, so most hidden fill is depth-rejected by what's already drawn.
+        self.grass.render(
+            pass,
+            &frustum,
+            self.camera_position,
+            &self.shadow_map.bind_group,
+        );
         // River surfaces sit in the carved channels; draw them before the sea
         // plane. Both are translucent and share group 0/1 bound above.
         self.river
@@ -469,12 +499,18 @@ impl WorldRenderer {
             buffered_dead_plants,
             buffered_house_instances,
         } = self.instanced.stats();
+        let GrassStats {
+            tiles: grass_tiles,
+            buffered_tufts: buffered_grass_tufts,
+        } = self.grass.stats();
 
         RendererStats {
             buffered_mature_plants,
             buffered_lod_plants,
             buffered_dead_plants,
             buffered_house_instances,
+            grass_tiles,
+            buffered_grass_tufts,
         }
     }
 }

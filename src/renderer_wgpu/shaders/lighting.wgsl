@@ -27,6 +27,44 @@ fn hemisphere_ambient(normal: vec3<f32>) -> vec3<f32> {
     return material.ambient.x * mix(ground, sky, up);
 }
 
+// Cheap 2D hash / value noise shared by the ground macro-variation below and
+// the grass wind gust field. Pure functions, no bindings. The hash fracts its
+// input before mixing, so it stays well-behaved at large world coordinates
+// (unlike the classic sin-dot hash, which loses precision far from origin).
+fn hash2(p: vec2<f32>) -> f32 {
+    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+    p3 = p3 + dot(p3, p3.yzx + vec3<f32>(33.33));
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+fn value_noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<f32>(1.0, 0.0));
+    let c = hash2(i + vec2<f32>(0.0, 1.0));
+    let d = hash2(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Large-scale ground color variation: patchy ±10% brightness with a subtle
+// dry-yellow hue shift in the darker patches, breaking the uniform green
+// carpet at distance. Returned as an albedo multiplier. The terrain fragment
+// and the grass blades apply the *same* multiplier at the same world position,
+// so near-field blades and far-field ground shift hue together and the grass
+// horizon stays invisible.
+fn ground_macro_variation(world_xz: vec2<f32>) -> vec3<f32> {
+    let v = value_noise2(world_xz * 0.013) * 0.7 + value_noise2(world_xz * 0.047) * 0.3;
+    let bright = 0.90 + v * 0.20;
+    let dry = 1.0 - v;
+    return vec3<f32>(
+        bright * (1.0 + dry * 0.10),
+        bright,
+        bright * (1.0 - dry * 0.12),
+    );
+}
+
 // Distance fog shared by terrain, water, and instanced/billboard fragments.
 //
 // Like the hemisphere helpers above this reads the `material` uniform, and it

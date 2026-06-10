@@ -249,6 +249,8 @@ impl AppState {
             config.sea_level,
             config.world.load_radius,
             registry,
+            config.world.seed,
+            config.biome.clone(),
         );
 
         // Menu camera — fixed position looking at the sky
@@ -375,6 +377,8 @@ impl AppState {
             config.sea_level,
             config.world.load_radius,
             registry,
+            config.world.seed,
+            config.biome.clone(),
         );
 
         // Menu camera — fixed position looking at the sky

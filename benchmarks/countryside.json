@@ -1,0 +1,13 @@
+{
+  "name": "countryside-flythrough",
+  "fixed_dt": 0.0166667,
+  "warmup_frames": 90,
+  "start": { "x": 28234.0, "y": 60.0, "z": 27201.0, "yaw": 0.86, "pitch": -0.15 },
+  "segments": [
+    { "keys": ["w"], "frames": 600 },
+    { "keys": ["w"], "yaw_rate": 0.5, "frames": 180 },
+    { "keys": ["w"], "frames": 240 },
+    { "keys": ["s"], "frames": 120 },
+    { "keys": [], "frames": 60 }
+  ]
+}
