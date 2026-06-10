@@ -3,13 +3,13 @@
   "body_plan": {
     "kind": "tree",
     "stem_count": 1,
-    "max_height": [12, 18]
+    "max_height": [9, 16]
   },
   "trunk": {
     "taper": 0.4,
     "base_flare": 0.35,
     "straightness": 0.82,
-    "thickness_ratio": 0.05
+    "thickness_ratio": 0.022
   },
   "branching": {
     "apical_dominance": 0.3,
