@@ -2898,8 +2898,8 @@ mod tests {
         let wz = cz as f32 * CHUNK_SIZE_METERS + lz;
         let clearance = house_clearance(&reg.species[0].kind);
 
-        let candidate = |target: usize, world_x: f32, world_z: f32, lx: f32, lz: f32| {
-            SpreadCandidate {
+        let candidate =
+            |target: usize, world_x: f32, world_z: f32, lx: f32, lz: f32| SpreadCandidate {
                 target: target as u32,
                 local_x: lx,
                 local_z: lz,
@@ -2909,8 +2909,7 @@ mod tests {
                 rotation: 0.0,
                 species: 0,
                 order: 0,
-            }
-        };
+            };
 
         // A house sitting on the candidate must reject it.
         world.houses[chunk_idx] = vec![Vec2::new(wx, wz)];
@@ -2949,7 +2948,10 @@ mod tests {
                 born_hour: 0.0,
             },
         );
-        assert_eq!(accepted, 1, "a seedling beyond the clearance must be accepted");
+        assert_eq!(
+            accepted, 1,
+            "a seedling beyond the clearance must be accepted"
+        );
         assert_eq!(plants.len(), 1);
     }
 

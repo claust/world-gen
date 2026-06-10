@@ -61,9 +61,8 @@ where
 
     // A hamlet house may be jittered past the chunk edge; reject it rather than
     // letting the grid sampler silently clamp it back in-bounds.
-    let in_bounds = |x: f32, z: f32| {
-        x >= 0.0 && z >= 0.0 && x < CHUNK_SIZE_METERS && z < CHUNK_SIZE_METERS
-    };
+    let in_bounds =
+        |x: f32, z: f32| x >= 0.0 && z >= 0.0 && x < CHUNK_SIZE_METERS && z < CHUNK_SIZE_METERS;
     let mut validate_local = |x: f32, z: f32| -> Option<f32> {
         if in_bounds(x, z) {
             validate(x, z)
