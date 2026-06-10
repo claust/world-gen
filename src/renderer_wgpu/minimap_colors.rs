@@ -3,9 +3,14 @@ use crate::world_core::chunk::SEA_LEVEL;
 /// Approximate biome colors for the minimap display.
 /// Uses hard thresholds (not the smooth blending from `biome_blend()` in the terrain shader)
 /// since the minimap doesn't need per-texel accuracy.
-pub fn biome_color_rgba(height: f32, moisture: f32) -> [u8; 4] {
+///
+/// `river` marks pixels carrying surfaced river water; they get a brighter
+/// blue than the sea so channels read as distinct waterways against terrain.
+pub fn biome_color_rgba(height: f32, moisture: f32, river: bool) -> [u8; 4] {
     let base: [f32; 3] = if height < SEA_LEVEL {
         [0.15, 0.30, 0.55] // Water — darker blue
+    } else if river {
+        [0.20, 0.45, 0.80] // River — clear bright blue
     } else if height > 165.0 {
         [0.88, 0.90, 0.93] // Snow — near-white with slight blue tint
     } else if height > 120.0 {
