@@ -1291,8 +1291,11 @@ impl SpacingGrid {
 }
 
 /// Sim-day index for a spread pass, used to salt the per-day reproduction roll.
-/// `as i64` (not `as u32`) wraps rather than saturating, so the bucket keeps
-/// advancing across arbitrarily long sessions instead of pinning to `u32::MAX`.
+/// Rust float→int casts *saturate*, so a direct `f64 as u32` would pin the bucket
+/// at `u32::MAX` once the day count overflows `u32` (~1e5 sim-years — unreachable,
+/// but then the roll would freeze again). The `i64` hop has headroom the divided
+/// hour never reaches, and the final narrowing `as u32` truncates, so consecutive
+/// days keep landing in distinct buckets indefinitely.
 fn day_bucket(born_hour: f64) -> u32 {
     (born_hour / SPREAD_TICK_HOURS).floor() as i64 as u32
 }
@@ -2776,6 +2779,9 @@ mod tests {
         let p0 = &reg.species[0].placement;
         assert!(p0.lifespan_hours > 0.0, "species 0 must be mortal");
         assert!(p0.spread_chance > 0.0, "species 0 must reproduce");
+        // Derive the run length from the configured lifespan so rebalancing the
+        // species can't silently shorten the test below a meaningful turnover.
+        let lifespan = p0.lifespan_hours as f64;
 
         // Seed one suitable chunk with a dense mature base forest.
         let mut chunks: Vec<Vec<Plant>> = (0..(n * n)).map(|_| Vec::new()).collect();
@@ -2805,7 +2811,6 @@ mod tests {
         // One "frame" jumps 240 sim-hours (10 sim-days). With the old code this
         // bottomed out near extinction; with catch-up spread it must persist.
         const FRAME_JUMP: f64 = 240.0;
-        let lifespan = 720.0;
         let mut t = 0.0f64;
         let mut last_spread = -SPREAD_TICK_HOURS;
         // Run well past several full lifespans so the base cohort is long gone and
