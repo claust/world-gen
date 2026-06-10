@@ -645,17 +645,24 @@ impl PlantWorld {
     }
 
     /// Approximate resident bytes of the store (packed plants + per-chunk Vec
-    /// headers + the parallel index Vecs).
+    /// headers + the parallel index Vecs + the house index).
     pub fn resident_bytes(&self) -> usize {
         let plant = self.population * std::mem::size_of::<Plant>();
         let headers = self.chunks.len() * std::mem::size_of::<Vec<Plant>>();
         let side = self.chunks.len();
+        // House index: outer per-chunk Vec headers + each inner Vec's allocated XZ.
+        let house_headers = self.houses.len() * std::mem::size_of::<Vec<Vec2>>();
+        let house_positions: usize = self
+            .houses
+            .iter()
+            .map(|h| h.capacity() * std::mem::size_of::<Vec2>())
+            .sum();
         let indices = side
             * (std::mem::size_of::<u32>() // immature
                 + std::mem::size_of::<bool>() // saturated
                 + std::mem::size_of::<u32>() // base_count
                 + std::mem::size_of::<Biome>()); // biome
-        plant + headers + indices
+        plant + headers + indices + house_headers + house_positions
     }
 
     /// Per-biome fill: the percentage (0–100) of each biome's chunks that are
