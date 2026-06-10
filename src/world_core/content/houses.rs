@@ -39,10 +39,12 @@ pub(crate) struct HouseSite {
 ///
 /// `validate(local_x, local_z)` returns the ground height when a site is
 /// buildable (grassland, slope/height in range, above sea level) or `None`
-/// otherwise. Sharing this loop lets chunk rendering validate against the
-/// per-chunk terrain grid while the spread pass validates against the continuous
-/// heightmap — one source of truth for *where* houses can stand, so the two never
-/// disagree about a house's location.
+/// otherwise. Sharing this loop gives the renderer (which validates against the
+/// per-chunk terrain grid) and the spread pass (which validates against the
+/// continuous heightmap) one source of truth for the hash-driven candidate
+/// positions. The two terrain samplers can still disagree at biome/slope/height
+/// thresholds, so a borderline site may be accepted by one and not the other —
+/// but away from those edges they place the same houses.
 pub(crate) fn place_houses<F>(
     seed: u32,
     config: &HousesConfig,
