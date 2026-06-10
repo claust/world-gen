@@ -97,10 +97,14 @@ impl TerrainTexture {
 /// ground they stand on. `tile` follows the atlas order:
 /// 0=grass, 1=desert, 2=forest, 3=rock, 4=snow.
 pub fn ground_albedo_linear(tile: u32, world_x: f32, world_z: f32) -> [f32; 3] {
-    // Matches TEXTURE_SCALE in terrain.wgsl's sample_biome().
+    // Matches TEXTURE_SCALE and the half-texel UV inset in terrain.wgsl's
+    // sample_biome(), so the function-space position evaluated here is the
+    // one the GPU effectively samples (the inset prevents cross-tile bleed).
     const TEXTURE_SCALE: f32 = 0.1;
-    let nx = (world_x * TEXTURE_SCALE).rem_euclid(1.0);
-    let ny = (world_z * TEXTURE_SCALE).rem_euclid(1.0);
+    const HALF_TEXEL: f32 = 0.5 / TILE_SIZE as f32;
+    let inset = |v: f32| HALF_TEXEL + v * (1.0 - 2.0 * HALF_TEXEL);
+    let nx = inset((world_x * TEXTURE_SCALE).rem_euclid(1.0));
+    let ny = inset((world_z * TEXTURE_SCALE).rem_euclid(1.0));
     let (r, g, b) = match tile {
         0 => generate_grass(nx, ny),
         1 => generate_desert(nx, ny),

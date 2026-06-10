@@ -19,8 +19,8 @@ use crate::world_core::rivers::MAX_PLANTABLE_WETNESS;
 /// exactly so a tile never straddles chunk terrain fields.
 pub const GRASS_TILE_SIZE: f32 = 32.0;
 
-/// Grass tiles per chunk side (`CHUNK_SIZE_METERS / GRASS_TILE_SIZE`).
-pub const GRASS_TILES_PER_CHUNK: i32 = 8;
+/// Grass tiles per chunk side.
+pub const GRASS_TILES_PER_CHUNK: i32 = (CHUNK_SIZE_METERS / GRASS_TILE_SIZE) as i32;
 
 /// Tuft grid spacing in metres within a tile.
 const GRASS_SPACING: f32 = 0.5;
