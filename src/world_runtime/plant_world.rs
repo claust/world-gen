@@ -79,6 +79,12 @@ fn stage_from_u8(value: u8) -> GrowthStage {
 // neighbouring chunk.
 const SPAN_STEPS: f32 = 65536.0;
 
+/// Sim-hours per global spread (reproduction) round — one pass per sim-day. The
+/// runtime drives the cadence and runs catch-up passes at this granularity, and
+/// [`day_bucket`] salts each round's roll with `floor(born_hour / this)`, so the
+/// width must be shared. Owned here as the single source of truth.
+pub const SPREAD_TICK_HOURS: f64 = 24.0;
+
 fn quantize_span(value: f32) -> u16 {
     (value / CHUNK_SIZE_METERS * SPAN_STEPS)
         .floor()
@@ -523,6 +529,14 @@ impl PlantWorld {
     pub fn tick_spread(&mut self, born_hour: f64) -> bool {
         let total = self.chunks.len();
 
+        // Per-sim-day reproduction bucket. The spread roll and seedling positions
+        // are salted with it so each day's pass is an *independent* reproduction
+        // event rather than the same deterministic roll repeated forever. Without
+        // this, a plant that fails its one roll never reproduces, and the catch-up
+        // passes the runtime fires at high `day_speed` would be exact duplicates —
+        // births would never keep pace with the analytic death rate.
+        let bucket = day_bucket(born_hour);
+
         // Phase 1: emit candidates. Read-only over the whole grid. A chunk is
         // skipped only when it and all eight neighbours are saturated, so a packed
         // chunk still seeds a not-yet-full neighbour across the border.
@@ -531,7 +545,7 @@ impl PlantWorld {
             if neighbourhood_saturated(saturated, idx) {
                 return Vec::new();
             }
-            emit_chunk_candidates(idx, &self.chunks, &self.registry, self.seed)
+            emit_chunk_candidates(idx, &self.chunks, &self.registry, self.seed, bucket)
         };
         #[cfg(not(target_arch = "wasm32"))]
         let candidates: Vec<SpreadCandidate> = (0..total).into_par_iter().flat_map(emit).collect();
@@ -1085,6 +1099,7 @@ fn emit_chunk_candidates(
     chunks: &[Vec<Plant>],
     registry: &PlantRegistry,
     seed: u32,
+    bucket: u32,
 ) -> Vec<SpreadCandidate> {
     let n = WORLD_SIZE_CHUNKS;
     let world = WORLD_SIZE_METERS as f32;
@@ -1100,16 +1115,21 @@ fn emit_chunk_candidates(
         let Some(species) = registry.species.get(plant.species as usize) else {
             continue;
         };
-        if spread_roll(seed, canon, pi as u32) >= species.placement.spread_chance.clamp(0.0, 1.0) {
+        if spread_roll(seed, canon, pi as u32, bucket)
+            >= species.placement.spread_chance.clamp(0.0, 1.0)
+        {
             continue;
         }
 
         let src_x = cx as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_x);
         let src_z = cz as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_z);
         let [h_lo, h_hi] = species.height_range;
-        let count = spread_seed_count(seed, canon, pi as u32);
+        let count = spread_seed_count(seed, canon, pi as u32, bucket);
         for seed_i in 0..count {
-            let sub = (pi as u32).wrapping_mul(31).wrapping_add(seed_i);
+            // Salt the per-seedling jitter with the day bucket too, so a fresh
+            // roll also aims at a fresh spot — otherwise each day's survivor would
+            // re-target the same (already occupied) cells and never fill new gaps.
+            let sub = bucket_salt((pi as u32).wrapping_mul(31).wrapping_add(seed_i), bucket);
             let angle = hash_unit(seed.wrapping_add(4101), canon, sub) * std::f32::consts::TAU;
             let distance = hash_unit(seed.wrapping_add(4102), canon, sub).sqrt()
                 * species.placement.spread_radius.max(0.0);
@@ -1270,12 +1290,37 @@ impl SpacingGrid {
     }
 }
 
-fn spread_roll(seed: u32, canon: IVec2, plant_index: u32) -> f32 {
-    hash_unit(seed.wrapping_add(4001), canon, plant_index)
+/// Sim-day index for a spread pass, used to salt the per-day reproduction roll.
+/// Rust float→int casts *saturate*, so a direct `f64 as u32` would pin the bucket
+/// at `u32::MAX` once the day count overflows `u32` (~1e5 sim-years — unreachable,
+/// but then the roll would freeze again). The `i64` hop has headroom the divided
+/// hour never reaches, and the final narrowing `as u32` truncates, so consecutive
+/// days keep landing in distinct buckets indefinitely.
+fn day_bucket(born_hour: f64) -> u32 {
+    (born_hour / SPREAD_TICK_HOURS).floor() as i64 as u32
 }
 
-fn spread_seed_count(seed: u32, canon: IVec2, plant_index: u32) -> u32 {
-    1 + (hash_unit(seed.wrapping_add(4002), canon, plant_index) * 2.0).floor() as u32
+/// Mix a per-day `bucket` into a hash sub-key so the same plant draws a fresh,
+/// independent value (roll or position jitter) on each successive spread pass.
+fn bucket_salt(base: u32, bucket: u32) -> u32 {
+    base ^ bucket.wrapping_mul(0x9E37_79B9)
+}
+
+fn spread_roll(seed: u32, canon: IVec2, plant_index: u32, bucket: u32) -> f32 {
+    hash_unit(
+        seed.wrapping_add(4001),
+        canon,
+        bucket_salt(plant_index, bucket),
+    )
+}
+
+fn spread_seed_count(seed: u32, canon: IVec2, plant_index: u32, bucket: u32) -> u32 {
+    1 + (hash_unit(
+        seed.wrapping_add(4002),
+        canon,
+        bucket_salt(plant_index, bucket),
+    ) * 2.0)
+        .floor() as u32
 }
 
 fn hash_unit(seed: u32, canon: IVec2, sub: u32) -> f32 {
@@ -2487,7 +2532,7 @@ mod tests {
         assert_eq!(world.chunks[idx][0].stage, DEAD);
         assert_eq!(world.population(), 1);
         assert_eq!(world.immature[idx], 0);
-        assert!(emit_chunk_candidates(idx, &world.chunks, &reg, world.seed).is_empty());
+        assert!(emit_chunk_candidates(idx, &world.chunks, &reg, world.seed, 0).is_empty());
 
         // At gone_at it despawns: record removed, counters adjusted, and the
         // chunk plus its 8 neighbours woken so spread can reclaim the ground.
@@ -2693,7 +2738,7 @@ mod tests {
         let chance = species0.placement.spread_chance.clamp(0.0, 1.0);
         let canon = (0..n)
             .flat_map(|z| (0..n).map(move |x| IVec2::new(x, z)))
-            .find(|c| spread_roll(7, *c, 0) < chance)
+            .find(|c| spread_roll(7, *c, 0, 0) < chance)
             .expect("a chunk whose plant 0 spreads");
         let idx = (canon.y * n + canon.x) as usize;
         let mut chunks = vec![Vec::new(); (n * n) as usize];
@@ -2706,7 +2751,7 @@ mod tests {
             stage: MATURE,
             born_hour: 0.0,
         });
-        let mature = emit_chunk_candidates(idx, &chunks, &reg, 7);
+        let mature = emit_chunk_candidates(idx, &chunks, &reg, 7, 0);
         assert!(!mature.is_empty(), "a firing mature plant emits candidates");
         for c in &mature {
             // Candidate world position is within spread_radius of the source.
@@ -2717,6 +2762,81 @@ mod tests {
 
         // The same plant as a seedling emits nothing.
         chunks[idx][0].stage = stage_to_u8(GrowthStage::Seedling);
-        assert!(emit_chunk_candidates(idx, &chunks, &reg, 7).is_empty());
+        assert!(emit_chunk_candidates(idx, &chunks, &reg, 7, 0).is_empty());
+    }
+
+    // Replays the runtime's growth+spread loop at a coarse per-frame time step
+    // (mimicking a high `day_speed`, where a frame spans many sim-days) and
+    // asserts the mortal forest survives. Before the day-bucketed roll + catch-up
+    // spread, reproduction was throttled to one identical pass per frame while
+    // death stayed analytic, so a forest like this went extinct.
+    #[test]
+    fn forest_survives_high_dayspeed_fast_forward() {
+        let reg = registry();
+        let n = WORLD_SIZE_CHUNKS;
+        // Sanity: species 0 must be a mortal that can spread, or the test proves
+        // nothing about reproduction keeping pace with death.
+        let p0 = &reg.species[0].placement;
+        assert!(p0.lifespan_hours > 0.0, "species 0 must be mortal");
+        assert!(p0.spread_chance > 0.0, "species 0 must reproduce");
+        // Derive the run length from the configured lifespan so rebalancing the
+        // species can't silently shorten the test below a meaningful turnover.
+        let lifespan = p0.lifespan_hours as f64;
+
+        // Seed one suitable chunk with a dense mature base forest.
+        let mut chunks: Vec<Vec<Plant>> = (0..(n * n)).map(|_| Vec::new()).collect();
+        let probe = test_world(vec![Vec::new(); (n * n) as usize], Arc::clone(&reg));
+        let (chunk_idx, _, _) = find_suitable_spot(&probe, 0);
+        let mut x = 8.0f32;
+        while x < 248.0 {
+            let mut z = 8.0f32;
+            while z < 248.0 {
+                chunks[chunk_idx].push(Plant {
+                    local_x: quantize_span(x),
+                    local_z: quantize_span(z),
+                    height: quantize_span(6.0),
+                    rotation: 0,
+                    species: 0,
+                    stage: MATURE,
+                    born_hour: 0.0,
+                });
+                z += 12.0;
+            }
+            x += 12.0;
+        }
+        let seeded = chunks[chunk_idx].len();
+        assert!(seeded > 100, "need a dense starting forest, got {seeded}");
+        let mut world = test_world(chunks, reg);
+
+        // One "frame" jumps 240 sim-hours (10 sim-days). With the old code this
+        // bottomed out near extinction; with catch-up spread it must persist.
+        const FRAME_JUMP: f64 = 240.0;
+        let mut t = 0.0f64;
+        let mut last_spread = -SPREAD_TICK_HOURS;
+        // Run well past several full lifespans so the base cohort is long gone and
+        // only spread-born descendants remain.
+        while t <= 6.0 * lifespan {
+            world.tick_growth(t);
+            // Mirror the runtime's catch-up spread loop.
+            let mut rounds = 0;
+            while t - last_spread >= SPREAD_TICK_HOURS && rounds < 8 {
+                last_spread += SPREAD_TICK_HOURS;
+                world.tick_spread(last_spread);
+                rounds += 1;
+            }
+            if t - last_spread >= SPREAD_TICK_HOURS {
+                last_spread = t;
+            }
+            t += FRAME_JUMP;
+        }
+
+        // Survival, not a specific count: the population must stay healthily above
+        // zero rather than collapsing to the immortal residue.
+        assert!(
+            world.population() >= seeded / 2,
+            "forest collapsed under high day_speed: {} survivors from {seeded} (expected >= {})",
+            world.population(),
+            seeded / 2,
+        );
     }
 }
