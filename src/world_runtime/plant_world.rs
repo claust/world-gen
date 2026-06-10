@@ -329,12 +329,14 @@ impl PlantWorld {
         // growth pass (it also reaps anything whose despawn lies in the past).
         let next_event = vec![0.0; chunks.len()];
         let heightmap = Heightmap::new(seed, config.heightmap.clone());
+        // Cap to the same thread budget the flora generation above used.
         let houses = build_house_index(
             seed,
             &config.houses,
             &config.biome,
             &heightmap,
             config.sea_level,
+            Some(threads),
         );
         let mut world = Self {
             chunks,
@@ -983,12 +985,14 @@ impl PlantWorld {
         // growth pass (it also reaps anything whose despawn lies in the past).
         let next_event = vec![0.0; chunks.len()];
         let heightmap = Heightmap::new(seed, config.heightmap.clone());
+        // Snapshot load is light and carries no thread budget; use the ambient pool.
         let houses = build_house_index(
             seed,
             &config.houses,
             &config.biome,
             &heightmap,
             config.sea_level,
+            None,
         );
         let mut world = Self {
             chunks,
@@ -1374,12 +1378,18 @@ fn hash_unit(seed: u32, canon: IVec2, sub: u32) -> f32 {
 /// reconstructed identically on every world, locally generated or downloaded,
 /// without persisting them in the base snapshot. Returns one XZ list per
 /// canonical chunk, indexed `cz * WORLD_SIZE_CHUNKS + cx`.
+///
+/// `threads` caps Rayon parallelism: `Some(n)` runs in a pool of `n` threads so
+/// this step honours the same budget as the rest of `generate_base` (rather than
+/// oversubscribing the global pool during world creation); `None` uses the
+/// ambient pool, for the lighter snapshot-load path.
 fn build_house_index(
     seed: u32,
     houses_config: &HousesConfig,
     biome_config: &BiomeConfig,
     heightmap: &Heightmap,
     sea_level: f32,
+    threads: Option<usize>,
 ) -> Vec<Vec<Vec2>> {
     let n = WORLD_SIZE_CHUNKS;
     let total = (n as usize) * (n as usize);
@@ -1420,10 +1430,24 @@ fn build_house_index(
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
-        (0..total).into_par_iter().map(build).collect()
+        let run = || (0..total).into_par_iter().map(build).collect::<Vec<_>>();
+        match threads {
+            Some(t) => {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(t.max(1))
+                    .build()
+                    .ok();
+                match &pool {
+                    Some(pool) => pool.install(run),
+                    None => run(),
+                }
+            }
+            None => run(),
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
+        let _ = threads;
         (0..total).map(build).collect()
     }
 }
