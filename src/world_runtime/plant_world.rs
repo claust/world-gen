@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
-use glam::{IVec2, Vec3};
+use glam::{IVec2, Vec2, Vec3};
 
 use crate::world_core::biome::{classify, Biome};
 use crate::world_core::chunk::{
@@ -20,7 +20,8 @@ use crate::world_core::chunk::{
     WORLD_SIZE_CHUNKS, WORLD_SIZE_METERS,
 };
 use crate::world_core::chunk_generator::ChunkGenerator;
-use crate::world_core::config::{BiomeConfig, GameConfig};
+use crate::world_core::config::{BiomeConfig, GameConfig, HousesConfig};
+use crate::world_core::content::place_houses;
 use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::herbarium::PlantRegistry;
@@ -187,6 +188,13 @@ pub struct PlantWorld {
     /// seedlings that fall in a river channel — the same guard base flora
     /// applies via the per-chunk `terrain.river` grid.
     rivers: Arc<RiverField>,
+    /// House XZ positions per canonical chunk (`cz * WORLD_SIZE_CHUNKS + cx`),
+    /// so the spread landing pass can fence seedlings away from houses and stop
+    /// trees from growing up inside them. Built once at construction from the
+    /// continuous heightmap — the same sampling the landing pass already uses to
+    /// validate terrain — so locally generated and downloaded worlds agree on
+    /// where the houses are without shipping them in the base snapshot.
+    houses: Vec<Vec<Vec2>>,
     biome_config: BiomeConfig,
     sea_level: f32,
     seed: u32,
@@ -320,6 +328,14 @@ impl PlantWorld {
         // Force a full recompute of per-chunk life timelines on the first
         // growth pass (it also reaps anything whose despawn lies in the past).
         let next_event = vec![0.0; chunks.len()];
+        let heightmap = Heightmap::new(seed, config.heightmap.clone());
+        let houses = build_house_index(
+            seed,
+            &config.houses,
+            &config.biome,
+            &heightmap,
+            config.sea_level,
+        );
         let mut world = Self {
             chunks,
             immature,
@@ -330,8 +346,9 @@ impl PlantWorld {
             biome,
             cell_bytes,
             registry,
-            heightmap: Heightmap::new(seed, config.heightmap.clone()),
+            heightmap,
             rivers,
+            houses,
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed,
@@ -568,6 +585,7 @@ impl PlantWorld {
             rivers: &self.rivers,
             registry: &self.registry,
             biome_config: &self.biome_config,
+            houses: &self.houses,
             sea_level: self.sea_level,
             born_hour: born_hour as f32,
         };
@@ -964,6 +982,14 @@ impl PlantWorld {
         // Force a full recompute of per-chunk life timelines on the first
         // growth pass (it also reaps anything whose despawn lies in the past).
         let next_event = vec![0.0; chunks.len()];
+        let heightmap = Heightmap::new(seed, config.heightmap.clone());
+        let houses = build_house_index(
+            seed,
+            &config.houses,
+            &config.biome,
+            &heightmap,
+            config.sea_level,
+        );
         let mut world = Self {
             chunks,
             immature,
@@ -974,8 +1000,9 @@ impl PlantWorld {
             biome,
             cell_bytes,
             registry,
-            heightmap: Heightmap::new(seed, config.heightmap.clone()),
+            heightmap,
             rivers,
+            houses,
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed,
@@ -1090,6 +1117,8 @@ struct SpreadContext<'a> {
     rivers: &'a RiverField,
     registry: &'a PlantRegistry,
     biome_config: &'a BiomeConfig,
+    /// House XZ positions per canonical chunk, for the keep-clear-of-houses guard.
+    houses: &'a [Vec<Vec2>],
     sea_level: f32,
     born_hour: f32,
 }
@@ -1214,6 +1243,18 @@ fn land_chunk_candidates(
             continue;
         }
 
+        // Keep seedlings clear of houses so reproduction can't slowly fill the
+        // buildings with trees. Cheap (house lists are sparse) so it precedes the
+        // 12-sample slope test.
+        if near_house(
+            ctx.houses,
+            candidate.world_x,
+            candidate.world_z,
+            house_clearance(&species.kind),
+        ) {
+            continue;
+        }
+
         if slope_at(ctx.heightmap, candidate.world_x, candidate.world_z) > placement.max_slope {
             continue;
         }
@@ -1325,6 +1366,117 @@ fn spread_seed_count(seed: u32, canon: IVec2, plant_index: u32, bucket: u32) -> 
 
 fn hash_unit(seed: u32, canon: IVec2, sub: u32) -> f32 {
     hash_to_unit_float(hash4(seed, canon.x as u32, canon.y as u32, sub))
+}
+
+/// Build the per-canonical-chunk house index by sampling the continuous
+/// heightmap — the same terrain source [`land_chunk_candidates`] validates
+/// against — so the houses the spread pass fences seedlings away from are
+/// reconstructed identically on every world, locally generated or downloaded,
+/// without persisting them in the base snapshot. Returns one XZ list per
+/// canonical chunk, indexed `cz * WORLD_SIZE_CHUNKS + cx`.
+fn build_house_index(
+    seed: u32,
+    houses_config: &HousesConfig,
+    biome_config: &BiomeConfig,
+    heightmap: &Heightmap,
+    sea_level: f32,
+) -> Vec<Vec<Vec2>> {
+    let n = WORLD_SIZE_CHUNKS;
+    let total = (n as usize) * (n as usize);
+    let build = |idx: usize| -> Vec<Vec2> {
+        let cx = (idx as i32) % n;
+        let cz = (idx as i32) / n;
+        let origin_x = cx as f32 * CHUNK_SIZE_METERS;
+        let origin_z = cz as f32 * CHUNK_SIZE_METERS;
+        place_houses(
+            seed,
+            houses_config,
+            IVec2::new(cx, cz),
+            |local_x, local_z| {
+                // Mirror `HousesLayer`'s grid validation, but sample the continuous
+                // heightmap and classify the biome from it (as the landing pass
+                // does) rather than the per-chunk terrain/biome grids. Biome first;
+                // `slope_at`'s four extra samples are paid only on grassland.
+                let wx = origin_x + local_x;
+                let wz = origin_z + local_z;
+                let height = heightmap.sample_height(wx, wz);
+                let moisture = heightmap.sample_moisture(wx, wz);
+                if classify(height, moisture, biome_config) != Biome::Grassland {
+                    return None;
+                }
+                if slope_at(heightmap, wx, wz) <= houses_config.max_slope
+                    && height >= sea_level
+                    && (houses_config.height_min..=houses_config.height_max).contains(&height)
+                {
+                    Some(height)
+                } else {
+                    None
+                }
+            },
+        )
+        .into_iter()
+        .map(|site| Vec2::new(site.world_x, site.world_z))
+        .collect()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        (0..total).into_par_iter().map(build).collect()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        (0..total).map(build).collect()
+    }
+}
+
+/// Minimum clearance, in metres, a spread seedling of `kind` must keep from any
+/// house — so reproducing trees and shrubs don't slowly grow up inside the
+/// buildings. Trees get a wider berth than shrubs.
+fn house_clearance(kind: &str) -> f32 {
+    if kind == "shrub" {
+        5.0
+    } else {
+        10.0
+    }
+}
+
+/// Whether `(world_x, world_z)` lies within `clearance` of any house. Houses are
+/// indexed by canonical chunk, so only the candidate's chunk and its eight
+/// (wrapped) neighbours can hold one close enough — distances are measured on the
+/// torus so the check is correct across the world seam.
+fn near_house(houses: &[Vec<Vec2>], world_x: f32, world_z: f32, clearance: f32) -> bool {
+    let world = WORLD_SIZE_METERS as f32;
+    let half = world * 0.5;
+    let clearance_sq = clearance * clearance;
+    let n = WORLD_SIZE_CHUNKS;
+    let cx = ((world_x / CHUNK_SIZE_METERS).floor() as i32).rem_euclid(n);
+    let cz = ((world_z / CHUNK_SIZE_METERS).floor() as i32).rem_euclid(n);
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let nx = (cx + dx).rem_euclid(n);
+            let nz = (cz + dz).rem_euclid(n);
+            // The real index always spans the full canonical grid; `get` only
+            // guards the smaller hand-built worlds used in tests.
+            let Some(cell) = houses.get((nz * n + nx) as usize) else {
+                continue;
+            };
+            for house in cell {
+                // Shortest separation on the torus, so a neighbour chunk wrapped
+                // across the seam still measures as adjacent rather than a lap away.
+                let mut ddx = (house.x - world_x).abs();
+                if ddx > half {
+                    ddx = world - ddx;
+                }
+                let mut ddz = (house.y - world_z).abs();
+                if ddz > half {
+                    ddz = world - ddz;
+                }
+                if ddx * ddx + ddz * ddz < clearance_sq {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn slope_at(heightmap: &Heightmap, x: f32, z: f32) -> f32 {
@@ -2057,6 +2209,7 @@ mod tests {
         let biome = vec![Biome::Forest; chunks.len()];
         let cell_bytes = vec![0u8; chunks.len()];
         let next_event = vec![0.0; chunks.len()];
+        let houses = vec![Vec::new(); chunks.len()];
         PlantWorld {
             chunks,
             immature,
@@ -2069,6 +2222,7 @@ mod tests {
             registry: reg,
             heightmap: Heightmap::new(7, config.heightmap.clone()),
             rivers: Arc::new(RiverField::empty()),
+            houses,
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed: 7,
@@ -2700,6 +2854,7 @@ mod tests {
             rivers: &world.rivers,
             registry: &reg,
             biome_config: &world.biome_config,
+            houses: &world.houses,
             sea_level: world.sea_level,
             born_hour: 0.0,
         };
@@ -2724,6 +2879,77 @@ mod tests {
         // which is what makes the global spread terminate.
         let mut again = vec![mk(5)];
         assert_eq!(land_chunk_candidates(&mut plants, &mut again, &ctx), 0);
+        assert_eq!(plants.len(), 1);
+    }
+
+    #[test]
+    fn spread_landing_keeps_seedlings_clear_of_houses() {
+        // A seedling that lands on top of a house is rejected; the same seedling
+        // just beyond the species' clearance is accepted.
+        let reg = registry();
+        let mut world = test_world(vec![Vec::new(); 4], Arc::clone(&reg));
+        // `find_suitable_spot` returns a canonical-grid index, so size the house
+        // index to the full grid (as a real world does) before indexing into it.
+        world.houses = vec![Vec::new(); (WORLD_SIZE_CHUNKS * WORLD_SIZE_CHUNKS) as usize];
+        let (chunk_idx, lx, lz) = find_suitable_spot(&world, 0);
+        let cx = (chunk_idx as i32) % WORLD_SIZE_CHUNKS;
+        let cz = (chunk_idx as i32) / WORLD_SIZE_CHUNKS;
+        let wx = cx as f32 * CHUNK_SIZE_METERS + lx;
+        let wz = cz as f32 * CHUNK_SIZE_METERS + lz;
+        let clearance = house_clearance(&reg.species[0].kind);
+
+        let candidate = |target: usize, world_x: f32, world_z: f32, lx: f32, lz: f32| {
+            SpreadCandidate {
+                target: target as u32,
+                local_x: lx,
+                local_z: lz,
+                world_x,
+                world_z,
+                height: 6.0,
+                rotation: 0.0,
+                species: 0,
+                order: 0,
+            }
+        };
+
+        // A house sitting on the candidate must reject it.
+        world.houses[chunk_idx] = vec![Vec2::new(wx, wz)];
+        let mut plants = Vec::new();
+        let mut blocked = vec![candidate(chunk_idx, wx, wz, lx, lz)];
+        let accepted = land_chunk_candidates(
+            &mut plants,
+            &mut blocked,
+            &SpreadContext {
+                heightmap: &world.heightmap,
+                rivers: &world.rivers,
+                registry: &reg,
+                biome_config: &world.biome_config,
+                houses: &world.houses,
+                sea_level: world.sea_level,
+                born_hour: 0.0,
+            },
+        );
+        assert_eq!(accepted, 0, "a seedling on top of a house must be rejected");
+        assert!(plants.is_empty());
+
+        // Move the house just past the clearance ring: the seedling is now allowed.
+        world.houses[chunk_idx] = vec![Vec2::new(wx + clearance + 1.0, wz)];
+        let mut plants = Vec::new();
+        let mut allowed = vec![candidate(chunk_idx, wx, wz, lx, lz)];
+        let accepted = land_chunk_candidates(
+            &mut plants,
+            &mut allowed,
+            &SpreadContext {
+                heightmap: &world.heightmap,
+                rivers: &world.rivers,
+                registry: &reg,
+                biome_config: &world.biome_config,
+                houses: &world.houses,
+                sea_level: world.sea_level,
+                born_hour: 0.0,
+            },
+        );
+        assert_eq!(accepted, 1, "a seedling beyond the clearance must be accepted");
         assert_eq!(plants.len(), 1);
     }
 
