@@ -74,8 +74,17 @@ pub struct WorldRuntime {
 /// cadence is plenty and keeps the per-frame cost off the hot path.
 const GROWTH_TICK_HOURS: f64 = 1.0;
 
-/// Sim-hours between global spread passes (one reproduction round per sim-day).
-const SPREAD_TICK_HOURS: f64 = 24.0;
+// Sim-hours between global spread passes (one reproduction round per sim-day).
+// Owned by `plant_world` so the reproduction roll can salt itself with the same
+// day bucket.
+use super::plant_world::SPREAD_TICK_HOURS;
+
+/// Cap on spread catch-up passes per frame. At high `day_speed` a single frame
+/// spans many sim-days; each missed reproduction round is replayed so births
+/// track sim-time, not frame rate (the old one-pass-per-frame cap let the
+/// analytic death rate outrun reproduction and drove mortal species extinct).
+/// Bounded so an extreme jump can't fire an unbounded burst of full-grid passes.
+const MAX_SPREAD_CATCHUP: u32 = 8;
 
 impl WorldRuntime {
     pub fn new(
@@ -348,18 +357,32 @@ impl WorldRuntime {
         Some(self.plant_world.tick_growth(now))
     }
 
-    /// Run a global spread pass, rate-limited to [`SPREAD_TICK_HOURS`] of sim
-    /// time and capped to one pass per call (the pass is the expensive part, so a
-    /// high `day_speed` lets sim-time lag rather than running it many times per
-    /// frame). Returns `None` if no pass was due, else `Some(added)` where `added`
-    /// is whether any seedling was placed.
+    /// Run the due global spread passes. Each pass is one sim-day reproduction
+    /// round; at high `day_speed` a frame can span many sim-days, so missed rounds
+    /// are caught up (up to [`MAX_SPREAD_CATCHUP`]) rather than collapsed into a
+    /// single pass. This keeps the birth rate tied to sim-time instead of frame
+    /// rate — without it, the analytic death rate outruns reproduction and mortal
+    /// species die out. Returns `None` if no pass was due, else `Some(changed)`.
     fn tick_plant_world_spread(&mut self) -> Option<bool> {
         let now = self.clock.total_hours();
         if now - self.last_spread_hour < SPREAD_TICK_HOURS {
             return None;
         }
-        self.last_spread_hour = now;
-        Some(self.plant_world.tick_spread(now))
+        let mut changed = false;
+        let mut rounds = 0;
+        while now - self.last_spread_hour >= SPREAD_TICK_HOURS && rounds < MAX_SPREAD_CATCHUP {
+            // Step the clock by a whole round (not to `now`) so each pass lands in
+            // a distinct sim-day bucket and reproduces independently.
+            self.last_spread_hour += SPREAD_TICK_HOURS;
+            changed |= self.plant_world.tick_spread(self.last_spread_hour);
+            rounds += 1;
+        }
+        // An enormous jump exhausted the cap: drop the remaining backlog so the
+        // next frame doesn't keep replaying capped bursts forever.
+        if now - self.last_spread_hour >= SPREAD_TICK_HOURS {
+            self.last_spread_hour = now;
+        }
+        Some(changed)
     }
 
     pub fn chunks(&self) -> &HashMap<IVec2, ChunkData> {
