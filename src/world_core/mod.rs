@@ -9,6 +9,7 @@ pub mod heightmap;
 pub mod herbarium;
 pub mod layer;
 pub mod lifecycle;
+pub mod noise4;
 pub mod plant_gen;
 pub mod rivers;
 pub mod save;

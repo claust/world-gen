@@ -1,10 +1,9 @@
 use std::f64::consts::TAU;
 use std::sync::Arc;
 
-use noise::{NoiseFn, OpenSimplex};
-
 use crate::world_core::chunk::WORLD_SIZE_METERS;
 use crate::world_core::config::HeightmapConfig;
+use crate::world_core::noise4::Simplex4;
 use crate::world_core::terrain_fields::{FieldKind, TerrainFields};
 
 pub struct Heightmap {
@@ -13,7 +12,7 @@ pub struct Heightmap {
     /// octaves barely change within a chunk). The ridge crease, amplitudes, and
     /// moisture weights are still applied per vertex.
     fields: Arc<TerrainFields>,
-    detail: OpenSimplex,
+    detail: Simplex4,
     config: HeightmapConfig,
 }
 
@@ -35,7 +34,7 @@ impl Heightmap {
     pub fn new(seed: u32, config: HeightmapConfig) -> Self {
         Self {
             fields: TerrainFields::shared(seed, &config),
-            detail: OpenSimplex::new(seed.wrapping_add(907)),
+            detail: Simplex4::new(seed.wrapping_add(907)),
             config,
         }
     }
@@ -45,7 +44,7 @@ impl Heightmap {
     /// world-wrap seam.
     ///
     /// Each world axis is mapped onto a circle and the four circle coordinates
-    /// are fed to 4D OpenSimplex (a torus embedded in 4D). For requested spatial
+    /// are fed to 4D noise (a torus embedded in 4D). For requested spatial
     /// frequency `f`, the loop must close after a whole number of noise cycles,
     /// so we snap the cycle count `k = round(f * L)` to an integer (the effective
     /// frequency becomes `k / L`, a hair off `f` — negligible at these `k`). The
@@ -55,7 +54,7 @@ impl Heightmap {
     /// (cycles) units as the original `x * f + offset` domain offset, applied as
     /// an angular rotation so decorrelated layers stay decorrelated on the torus.
     fn torus_sample(
-        noise: &OpenSimplex,
+        noise: &Simplex4,
         x: f64,
         z: f64,
         frequency: f64,
@@ -111,7 +110,7 @@ impl Heightmap {
     /// samples starting at world coordinate `origin` with `cell_size` spacing.
     ///
     /// `torus_sample` maps a world axis onto a circle and feeds the two circle
-    /// coordinates (`radius·cosθ`, `radius·sinθ`) to 4D OpenSimplex. Those two
+    /// coordinates (`radius·cosθ`, `radius·sinθ`) to 4D noise. Those two
     /// numbers depend only on that one axis, so for a regular grid the cost can
     /// be hoisted: the X pair is shared by every row, the Z pair by every column.
     /// This computes one axis's pairs once. The arithmetic is byte-for-byte the

@@ -787,46 +787,58 @@ mod tests {
         let field = RiverField::generate(42, &config);
         let hm = Heightmap::new(42, config.heightmap.clone());
 
-        // Start from the strongest channel cell that actually has downstream flow,
-        // so the walk has somewhere to go: the wettest cell can be an outlet/ocean
-        // cell whose flow is `(0, 0)`, which would end the walk immediately.
+        // Walk the strongest channels first: a wet cell can sit just shy of its
+        // outlet (or be an outlet/ocean cell with `(0, 0)` flow), ending the
+        // walk after a handful of steps, so try candidates by descending wetness
+        // until one offers a usefully long downstream reach.
         let res = field.res;
         let cell = WORLD_SIZE_METERS as f32 / res as f32;
-        let (start, _) = field
+        let mut candidates: Vec<(usize, f32)> = field
             .wet
             .iter()
             .enumerate()
             .filter(|(i, &w)| w > 0.0 && (field.flow_x[*i] != 0.0 || field.flow_z[*i] != 0.0))
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .expect("default world has a flowing channel");
-        let (mut wx, mut wz) = ((start % res) as f32 * cell, (start / res) as f32 * cell);
+            .map(|(i, &w)| (i, w))
+            .collect();
+        assert!(
+            !candidates.is_empty(),
+            "default world has a flowing channel"
+        );
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
         // Follow the flow field downstream at terrain-vertex resolution and count
         // dry gaps: stretches inside the marked channel where the bed pokes above
         // the sheet. The pre-fix field produced a gap at nearly every cell.
-        let mut gaps = 0;
-        let mut in_gap = false;
-        let mut steps = 0;
-        while steps < 600 {
-            let (fx, fz) = field.sample_flow(wx, wz);
-            if fx == 0.0 && fz == 0.0 {
-                break;
+        let walk = |start: usize| {
+            let (mut wx, mut wz) = ((start % res) as f32 * cell, (start / res) as f32 * cell);
+            let mut gaps = 0;
+            let mut in_gap = false;
+            let mut steps = 0;
+            while steps < 600 {
+                let (fx, fz) = field.sample_flow(wx, wz);
+                if fx == 0.0 && fz == 0.0 {
+                    break;
+                }
+                let raw = hm.sample_height(wx, wz);
+                let (bed, wet, sheet) = field.sample(raw, wx, wz);
+                let dry = wet > RIVER_SURFACE_THRESHOLD && bed >= sheet;
+                if dry && !in_gap {
+                    gaps += 1;
+                }
+                in_gap = dry;
+                wx += fx * 2.0;
+                wz += fz * 2.0;
+                steps += 1;
             }
-            let raw = hm.sample_height(wx, wz);
-            let (bed, wet, sheet) = field.sample(raw, wx, wz);
-            let dry = wet > RIVER_SURFACE_THRESHOLD && bed >= sheet;
-            if dry && !in_gap {
-                gaps += 1;
-            }
-            in_gap = dry;
-            wx += fx * 2.0;
-            wz += fz * 2.0;
-            steps += 1;
-        }
-        assert!(
-            steps > 100,
-            "walk terminated early ({steps} steps); test did not exercise a channel"
-        );
+            (steps, gaps)
+        };
+
+        let (_, gaps) = candidates
+            .iter()
+            .take(64)
+            .map(|&(start, _)| walk(start))
+            .find(|&(steps, _)| steps > 100)
+            .expect("no strong channel offered a >100-step downstream walk");
         assert_eq!(gaps, 0, "channel broke into pools: {gaps} dry gaps");
     }
 
