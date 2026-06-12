@@ -302,9 +302,7 @@ fn main() {
                 .sum()
         });
         let row = bench("row API  ", &origins, reps, |o| {
-            o.iter()
-                .map(|o| chunk_rows(noise, &torus, *o, cell))
-                .sum()
+            o.iter().map(|o| chunk_rows(noise, &torus, *o, cell)).sum()
         });
         let par = bench("row, par ", &origins, reps, |o| {
             o.par_iter()
