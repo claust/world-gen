@@ -249,6 +249,8 @@ impl AppState {
             config.sea_level,
             config.world.load_radius,
             registry,
+            config.world.seed,
+            config.biome.clone(),
         );
 
         // Menu camera — fixed position looking at the sky
@@ -375,6 +377,8 @@ impl AppState {
             config.sea_level,
             config.world.load_radius,
             registry,
+            config.world.seed,
+            config.biome.clone(),
         );
 
         // Menu camera — fixed position looking at the sky
@@ -1550,8 +1554,8 @@ impl AppState {
 
         // Poll for completed generation
         if let Some(editor) = &mut self.plant_editor {
-            if let Some(plant_mesh) = editor.generator.poll() {
-                editor.load_plant_mesh(&self.gpu.device, &plant_mesh);
+            if let Some(generated) = editor.generator.poll() {
+                editor.load_plant_meshes(&self.gpu.device, &generated);
             }
         }
     }
@@ -1875,6 +1879,9 @@ impl AppState {
                 if let Some(editor) = &self.plant_editor {
                     let mut meshes = vec![(&editor.ground_mesh, &editor.ground_instance)];
                     if let (Some(m), Some(i)) = (&editor.tree_mesh, &editor.tree_instance) {
+                        meshes.push((m, i));
+                    }
+                    if let (Some(m), Some(i)) = (&editor.snag_mesh, &editor.snag_instance) {
                         meshes.push((m, i));
                     }
                     self.world_renderer.render_editor_scene(&mut pass, &meshes);

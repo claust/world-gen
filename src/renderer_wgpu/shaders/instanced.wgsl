@@ -53,6 +53,9 @@ struct VertexInput {
     @location(4) inst_rotation_y: f32,
     @location(5) inst_scale: vec3<f32>,
     @location(6) inst_color: vec4<f32>,
+    // Dead-snag lean (radians) around local X, applied before the yaw so the
+    // random yaw scatters the lean direction. Zero for living plants.
+    @location(7) inst_tilt: f32,
 };
 
 struct VertexOutput {
@@ -66,21 +69,33 @@ struct VertexOutput {
 fn vs_main(input: VertexInput) -> VertexOutput {
     let c = cos(input.inst_rotation_y);
     let s = sin(input.inst_rotation_y);
+    let ct = cos(input.inst_tilt);
+    let st = sin(input.inst_tilt);
 
-    // Scale, then rotate around Y, then translate
+    // Scale, then tilt around X (snag lean), then rotate around Y, then translate
     let scaled = input.position * input.inst_scale;
+    let tilted = vec3<f32>(
+        scaled.x,
+        scaled.y * ct - scaled.z * st,
+        scaled.y * st + scaled.z * ct,
+    );
     let rotated = vec3<f32>(
-        scaled.x * c - scaled.z * s,
-        scaled.y,
-        scaled.x * s + scaled.z * c,
+        tilted.x * c - tilted.z * s,
+        tilted.y,
+        tilted.x * s + tilted.z * c,
     );
     let world_pos = rotated + input.inst_position;
 
     // Rotate normal (approximate for non-uniform scale)
+    let tilted_normal = vec3<f32>(
+        input.normal.x,
+        input.normal.y * ct - input.normal.z * st,
+        input.normal.y * st + input.normal.z * ct,
+    );
     let rot_normal = vec3<f32>(
-        input.normal.x * c - input.normal.z * s,
-        input.normal.y,
-        input.normal.x * s + input.normal.z * c,
+        tilted_normal.x * c - tilted_normal.z * s,
+        tilted_normal.y,
+        tilted_normal.x * s + tilted_normal.z * c,
     );
 
     var out: VertexOutput;

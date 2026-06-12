@@ -17,6 +17,7 @@ pub mod world;
 
 pub(crate) mod blur_pass;
 mod frustum;
+mod grass_pass;
 mod hud_font;
 mod hud_pass;
 mod instanced_pass;

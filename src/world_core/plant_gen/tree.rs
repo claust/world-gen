@@ -545,6 +545,11 @@ fn generate_fronds(
             use_leaf_color: false,
         });
 
+        // Dead palms keep their frond stubs but drop the leaf mass, matching
+        // how every other body plan honours `style == "none"`.
+        if spec.foliage.style == "none" {
+            continue;
+        }
         for j in 0..5 {
             let ft = 0.25 + j as f32 * 0.15;
             foliage.push(FoliageBlob {

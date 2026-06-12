@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
-use glam::{IVec2, Vec3};
+use glam::{IVec2, Vec2, Vec3};
 
 use crate::world_core::biome::{classify, Biome};
 use crate::world_core::chunk::{
@@ -20,7 +20,8 @@ use crate::world_core::chunk::{
     WORLD_SIZE_CHUNKS, WORLD_SIZE_METERS,
 };
 use crate::world_core::chunk_generator::ChunkGenerator;
-use crate::world_core::config::{BiomeConfig, GameConfig};
+use crate::world_core::config::{BiomeConfig, GameConfig, HousesConfig};
+use crate::world_core::content::place_houses;
 use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::herbarium::PlantRegistry;
@@ -52,12 +53,14 @@ pub struct Plant {
 }
 
 const MATURE: u8 = stage_to_u8(GrowthStage::Mature);
+const DEAD: u8 = stage_to_u8(GrowthStage::Dead);
 
 const fn stage_to_u8(stage: GrowthStage) -> u8 {
     match stage {
         GrowthStage::Seedling => 0,
         GrowthStage::Young => 1,
         GrowthStage::Mature => 2,
+        GrowthStage::Dead => 3,
     }
 }
 
@@ -65,6 +68,7 @@ fn stage_from_u8(value: u8) -> GrowthStage {
     match value {
         0 => GrowthStage::Seedling,
         1 => GrowthStage::Young,
+        3 => GrowthStage::Dead,
         _ => GrowthStage::Mature,
     }
 }
@@ -75,6 +79,12 @@ fn stage_from_u8(value: u8) -> GrowthStage {
 // boundary, where `floor(pos / CHUNK_SIZE_METERS)` would attribute it to the
 // neighbouring chunk.
 const SPAN_STEPS: f32 = 65536.0;
+
+/// Sim-hours per global spread (reproduction) round — one pass per sim-day. The
+/// runtime drives the cadence and runs catch-up passes at this granularity, and
+/// [`day_bucket`] salts each round's roll with `floor(born_hour / this)`, so the
+/// width must be shared. Owned here as the single source of truth.
+pub const SPREAD_TICK_HOURS: f64 = 24.0;
 
 fn quantize_span(value: f32) -> u16 {
     (value / CHUNK_SIZE_METERS * SPAN_STEPS)
@@ -133,6 +143,7 @@ impl Plant {
             height: dequantize_span(self.height),
             species_index: self.species as usize,
             growth_stage: stage_from_u8(self.stage),
+            decay: 0.0,
         }
     }
 }
@@ -141,9 +152,18 @@ impl Plant {
 pub struct PlantWorld {
     /// One list per canonical chunk, indexed `cz * WORLD_SIZE_CHUNKS + cx`.
     chunks: Vec<Vec<Plant>>,
-    /// Count of plants not yet `Mature`, per chunk — lets the growth tick skip
-    /// fully-grown chunks.
+    /// Count of plants not yet `Mature` (dead snags excluded), per chunk —
+    /// feeds the spread pass's saturation logic.
     immature: Vec<u32>,
+    /// Earliest sim-hour at which any plant in the chunk crosses a life
+    /// threshold (young/mature/dead/despawn) — lets the growth tick skip
+    /// settled chunks without freezing mature plants short of their death.
+    /// `0.0` forces a recompute on the next pass; `INFINITY` means nothing left
+    /// to happen (empty, or all-mature immortals).
+    next_event: Vec<f64>,
+    /// Sim-hour of the most recent growth pass; snag decay (the render-side
+    /// shrink) is measured against this.
+    growth_hours: f64,
     /// Per chunk: all-mature and saturated — the last spread pass added nothing
     /// here. A chunk's plants can only spread into the 8 adjacent chunks (spread
     /// radius ≪ chunk size), so phase 1 skips a chunk only when it *and* all eight
@@ -168,6 +188,13 @@ pub struct PlantWorld {
     /// seedlings that fall in a river channel — the same guard base flora
     /// applies via the per-chunk `terrain.river` grid.
     rivers: Arc<RiverField>,
+    /// House XZ positions per canonical chunk (`cz * WORLD_SIZE_CHUNKS + cx`),
+    /// so the spread landing pass can fence seedlings away from houses and stop
+    /// trees from growing up inside them. Built once at construction from the
+    /// continuous heightmap — the same sampling the landing pass already uses to
+    /// validate terrain — so locally generated and downloaded worlds agree on
+    /// where the houses are without shipping them in the base snapshot.
+    houses: Vec<Vec<Vec2>>,
     biome_config: BiomeConfig,
     sea_level: f32,
     seed: u32,
@@ -293,21 +320,37 @@ impl PlantWorld {
         let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
         let immature = chunks
             .iter()
-            .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
+            .map(|c| c.iter().filter(|p| p.stage < MATURE).count() as u32)
             .collect();
         let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let saturated = vec![false; chunks.len()];
 
+        // Force a full recompute of per-chunk life timelines on the first
+        // growth pass (it also reaps anything whose despawn lies in the past).
+        let next_event = vec![0.0; chunks.len()];
+        let heightmap = Heightmap::new(seed, config.heightmap.clone());
+        // Cap to the same thread budget the flora generation above used.
+        let houses = build_house_index(
+            seed,
+            &config.houses,
+            &config.biome,
+            &heightmap,
+            config.sea_level,
+            Some(threads),
+        );
         let mut world = Self {
             chunks,
             immature,
+            next_event,
+            growth_hours: 0.0,
             saturated,
             base_count,
             biome,
             cell_bytes,
             registry,
-            heightmap: Heightmap::new(seed, config.heightmap.clone()),
+            heightmap,
             rivers,
+            houses,
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed,
@@ -359,49 +402,140 @@ impl PlantWorld {
         self.populated_chunks
     }
 
-    /// Packed plants for a canonical chunk.
-    fn chunk(&self, canon: IVec2) -> &[Plant] {
-        &self.chunks[chunk_index(canon)]
-    }
-
     /// Reconstruct renderable instances for the raw chunk at `raw_coord`, reading
     /// the canonical chunk's plant list and resampling ground height from
-    /// `terrain`.
+    /// `terrain`. Dead snags carry their decay fraction (0 freshly dead → 1
+    /// about to despawn) so the renderer can ease them smaller as they rot.
     pub fn instances_for(&self, raw_coord: IVec2, terrain: &ChunkTerrain) -> Vec<PlantInstance> {
         let canon = canonical_chunk(raw_coord);
-        self.chunk(canon)
+        let idx = chunk_index(canon);
+        let base_count = self.base_count[idx] as usize;
+        self.chunks[idx]
             .iter()
-            .map(|plant| plant.to_instance(raw_coord, terrain))
+            .enumerate()
+            .map(|(pi, plant)| {
+                let mut instance = plant.to_instance(raw_coord, terrain);
+                if plant.stage == DEAD {
+                    if let Some(species) = self.registry.species.get(plant.species as usize) {
+                        let schedule =
+                            life_schedule(self.seed, idx, plant, species, pi < base_count);
+                        if schedule.gone_at.is_finite() {
+                            let span = (schedule.gone_at - schedule.dead_at).max(1e-6);
+                            let age = (self.growth_hours - plant.born_hour as f64).max(0.0);
+                            instance.decay =
+                                ((age - schedule.dead_at) / span).clamp(0.0, 1.0) as f32;
+                        }
+                    }
+                }
+                instance
+            })
             .collect()
     }
 
-    /// Advance growth on the global clock. Growth is analytic — each plant's
-    /// stage is a function of its `born_hour` and the species' stage durations —
-    /// so this only walks chunks that still hold immature plants. Returns whether
-    /// any plant's stage advanced (so the render bridge can refresh loaded chunks).
+    /// Advance the life cycle on the global clock. Stages — including death and
+    /// despawn — are analytic functions of each plant's `born_hour` and stable
+    /// identity, so this only walks chunks whose earliest pending transition
+    /// (`next_event`) has arrived. Plants past their `gone_at` are removed,
+    /// freeing their ground: the chunk (and its 8 neighbours, which can reach
+    /// the freed spot) is un-saturated so the spread pass resumes there.
+    /// Returns whether anything changed (so the render bridge can refresh
+    /// loaded chunks).
     pub fn tick_growth(&mut self, total_hours: f64) -> bool {
-        let registry = &self.registry;
+        self.growth_hours = total_hours;
+        let registry = Arc::clone(&self.registry);
+        let seed = self.seed;
         let mut changed = false;
-        for (idx, chunk) in self.chunks.iter_mut().enumerate() {
-            if self.immature[idx] == 0 {
+        let mut reaped_chunks: Vec<usize> = Vec::new();
+        for idx in 0..self.chunks.len() {
+            if total_hours < self.next_event[idx] {
+                continue;
+            }
+            let base_count = self.base_count[idx] as usize;
+            let chunk = &mut self.chunks[idx];
+            if chunk.is_empty() {
+                self.next_event[idx] = f64::INFINITY;
                 continue;
             }
             let mut immature = 0u32;
-            for plant in chunk.iter_mut() {
-                if plant.stage != MATURE {
-                    let next = stage_to_u8(stage_for(plant, total_hours, registry));
-                    if next != plant.stage {
-                        plant.stage = next;
-                        changed = true;
+            let mut next_event = f64::INFINITY;
+            let mut removed_base = 0u32;
+            let mut write = 0usize;
+            for read in 0..chunk.len() {
+                let mut plant = chunk[read];
+                let Some(species) = registry.species.get(plant.species as usize) else {
+                    chunk[write] = plant;
+                    write += 1;
+                    continue;
+                };
+                let schedule = life_schedule(seed, idx, &plant, species, read < base_count);
+                let age = (total_hours - plant.born_hour as f64).max(0.0);
+                let Some(stage) = schedule.stage_at(age) else {
+                    // Despawned: drop the record, freeing its spacing-grid spot
+                    // for the next spread pass (the grid is rebuilt per pass).
+                    if read < base_count {
+                        removed_base += 1;
                     }
-                    if plant.stage != MATURE {
-                        immature += 1;
-                    }
+                    changed = true;
+                    continue;
+                };
+                if stage != plant.stage {
+                    plant.stage = stage;
+                    changed = true;
                 }
+                if plant.stage < MATURE {
+                    immature += 1;
+                }
+                next_event = next_event.min(plant.born_hour as f64 + schedule.next_threshold(age));
+                chunk[write] = plant;
+                write += 1;
             }
+            let removed = chunk.len() - write;
+            chunk.truncate(write);
             self.immature[idx] = immature;
+            self.next_event[idx] = next_event;
+            if removed > 0 {
+                self.base_count[idx] -= removed_base;
+                self.population -= removed;
+                if self.chunks[idx].is_empty() {
+                    self.populated_chunks -= 1;
+                }
+                reaped_chunks.push(idx);
+            }
+        }
+        if !reaped_chunks.is_empty() {
+            // Freed ground is reachable by the 8-neighbourhood's spread radius,
+            // so the whole block must wake up or the gap never refills.
+            let mut any_unsaturated = false;
+            for &idx in &reaped_chunks {
+                any_unsaturated |= self.unsaturate_neighbourhood(idx);
+            }
+            if any_unsaturated {
+                self.recompute_biome_fill();
+            }
         }
         changed
+    }
+
+    /// Clear the saturation flag on chunk `idx` and its 8 (wrapped) neighbours.
+    /// Returns whether any flag actually flipped.
+    fn unsaturate_neighbourhood(&mut self, idx: usize) -> bool {
+        let n = WORLD_SIZE_CHUNKS;
+        let cx = (idx as i32) % n;
+        let cz = (idx as i32) / n;
+        let mut flipped = false;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let nx = (cx + dx).rem_euclid(n);
+                let nz = (cz + dz).rem_euclid(n);
+                let nidx = (nz * n + nx) as usize;
+                // Unit-test worlds are smaller than the real canonical grid;
+                // a wrapped neighbour outside them has no flag to clear.
+                if let Some(flag) = self.saturated.get_mut(nidx) {
+                    flipped |= std::mem::replace(flag, false);
+                }
+            }
+        }
+        flipped
     }
 
     /// Global spread pass on the canonical grid. Two-phase to stay race-free:
@@ -414,6 +548,14 @@ impl PlantWorld {
     pub fn tick_spread(&mut self, born_hour: f64) -> bool {
         let total = self.chunks.len();
 
+        // Per-sim-day reproduction bucket. The spread roll and seedling positions
+        // are salted with it so each day's pass is an *independent* reproduction
+        // event rather than the same deterministic roll repeated forever. Without
+        // this, a plant that fails its one roll never reproduces, and the catch-up
+        // passes the runtime fires at high `day_speed` would be exact duplicates —
+        // births would never keep pace with the analytic death rate.
+        let bucket = day_bucket(born_hour);
+
         // Phase 1: emit candidates. Read-only over the whole grid. A chunk is
         // skipped only when it and all eight neighbours are saturated, so a packed
         // chunk still seeds a not-yet-full neighbour across the border.
@@ -422,7 +564,7 @@ impl PlantWorld {
             if neighbourhood_saturated(saturated, idx) {
                 return Vec::new();
             }
-            emit_chunk_candidates(idx, &self.chunks, &self.registry, self.seed)
+            emit_chunk_candidates(idx, &self.chunks, &self.registry, self.seed, bucket)
         };
         #[cfg(not(target_arch = "wasm32"))]
         let candidates: Vec<SpreadCandidate> = (0..total).into_par_iter().flat_map(emit).collect();
@@ -445,6 +587,7 @@ impl PlantWorld {
             rivers: &self.rivers,
             registry: &self.registry,
             biome_config: &self.biome_config,
+            houses: &self.houses,
             sea_level: self.sea_level,
             born_hour: born_hour as f32,
         };
@@ -481,6 +624,9 @@ impl PlantWorld {
                 }
                 self.immature[idx] += count;
                 self.population += count as usize;
+                // New seedlings bring new life thresholds; recompute the
+                // chunk's timeline on the next growth pass.
+                self.next_event[idx] = 0.0;
             } else {
                 // Nothing landed: saturated iff nothing is left growing here. A
                 // neighbour maturing and spreading in (above) clears this again.
@@ -499,17 +645,24 @@ impl PlantWorld {
     }
 
     /// Approximate resident bytes of the store (packed plants + per-chunk Vec
-    /// headers + the parallel index Vecs).
+    /// headers + the parallel index Vecs + the house index).
     pub fn resident_bytes(&self) -> usize {
         let plant = self.population * std::mem::size_of::<Plant>();
         let headers = self.chunks.len() * std::mem::size_of::<Vec<Plant>>();
         let side = self.chunks.len();
+        // House index: outer per-chunk Vec headers + each inner Vec's allocated XZ.
+        let house_headers = self.houses.len() * std::mem::size_of::<Vec<Vec2>>();
+        let house_positions: usize = self
+            .houses
+            .iter()
+            .map(|h| h.capacity() * std::mem::size_of::<Vec2>())
+            .sum();
         let indices = side
             * (std::mem::size_of::<u32>() // immature
                 + std::mem::size_of::<bool>() // saturated
                 + std::mem::size_of::<u32>() // base_count
                 + std::mem::size_of::<Biome>()); // biome
-        plant + headers + indices
+        plant + headers + indices + house_headers + house_positions
     }
 
     /// Per-biome fill: the percentage (0–100) of each biome's chunks that are
@@ -635,7 +788,7 @@ impl PlantWorld {
             self.chunks[idx].reserve(count);
             for _ in 0..count {
                 let plant = read_plant(&mut cur)?;
-                if plant.stage != MATURE {
+                if plant.stage < MATURE {
                     self.immature[idx] += 1;
                 }
                 self.chunks[idx].push(plant);
@@ -830,21 +983,37 @@ impl PlantWorld {
         let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
         let immature = chunks
             .iter()
-            .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
+            .map(|c| c.iter().filter(|p| p.stage < MATURE).count() as u32)
             .collect();
         let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let saturated = vec![false; chunks.len()];
 
+        // Force a full recompute of per-chunk life timelines on the first
+        // growth pass (it also reaps anything whose despawn lies in the past).
+        let next_event = vec![0.0; chunks.len()];
+        let heightmap = Heightmap::new(seed, config.heightmap.clone());
+        // Snapshot load is light and carries no thread budget; use the ambient pool.
+        let houses = build_house_index(
+            seed,
+            &config.houses,
+            &config.biome,
+            &heightmap,
+            config.sea_level,
+            None,
+        );
         let mut world = Self {
             chunks,
             immature,
+            next_event,
+            growth_hours: 0.0,
             saturated,
             base_count,
             biome,
             cell_bytes,
             registry,
-            heightmap: Heightmap::new(seed, config.heightmap.clone()),
+            heightmap,
             rivers,
+            houses,
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed,
@@ -959,6 +1128,8 @@ struct SpreadContext<'a> {
     rivers: &'a RiverField,
     registry: &'a PlantRegistry,
     biome_config: &'a BiomeConfig,
+    /// House XZ positions per canonical chunk, for the keep-clear-of-houses guard.
+    houses: &'a [Vec<Vec2>],
     sea_level: f32,
     born_hour: f32,
 }
@@ -968,6 +1139,7 @@ fn emit_chunk_candidates(
     chunks: &[Vec<Plant>],
     registry: &PlantRegistry,
     seed: u32,
+    bucket: u32,
 ) -> Vec<SpreadCandidate> {
     let n = WORLD_SIZE_CHUNKS;
     let world = WORLD_SIZE_METERS as f32;
@@ -983,16 +1155,21 @@ fn emit_chunk_candidates(
         let Some(species) = registry.species.get(plant.species as usize) else {
             continue;
         };
-        if spread_roll(seed, canon, pi as u32) >= species.placement.spread_chance.clamp(0.0, 1.0) {
+        if spread_roll(seed, canon, pi as u32, bucket)
+            >= species.placement.spread_chance.clamp(0.0, 1.0)
+        {
             continue;
         }
 
         let src_x = cx as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_x);
         let src_z = cz as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_z);
         let [h_lo, h_hi] = species.height_range;
-        let count = spread_seed_count(seed, canon, pi as u32);
+        let count = spread_seed_count(seed, canon, pi as u32, bucket);
         for seed_i in 0..count {
-            let sub = (pi as u32).wrapping_mul(31).wrapping_add(seed_i);
+            // Salt the per-seedling jitter with the day bucket too, so a fresh
+            // roll also aims at a fresh spot — otherwise each day's survivor would
+            // re-target the same (already occupied) cells and never fill new gaps.
+            let sub = bucket_salt((pi as u32).wrapping_mul(31).wrapping_add(seed_i), bucket);
             let angle = hash_unit(seed.wrapping_add(4101), canon, sub) * std::f32::consts::TAU;
             let distance = hash_unit(seed.wrapping_add(4102), canon, sub).sqrt()
                 * species.placement.spread_radius.max(0.0);
@@ -1077,6 +1254,18 @@ fn land_chunk_candidates(
             continue;
         }
 
+        // Keep seedlings clear of houses so reproduction can't slowly fill the
+        // buildings with trees. Cheap (house lists are sparse) so it precedes the
+        // 12-sample slope test.
+        if near_house(
+            ctx.houses,
+            candidate.world_x,
+            candidate.world_z,
+            house_clearance(&species.kind),
+        ) {
+            continue;
+        }
+
         if slope_at(ctx.heightmap, candidate.world_x, candidate.world_z) > placement.max_slope {
             continue;
         }
@@ -1153,16 +1342,172 @@ impl SpacingGrid {
     }
 }
 
-fn spread_roll(seed: u32, canon: IVec2, plant_index: u32) -> f32 {
-    hash_unit(seed.wrapping_add(4001), canon, plant_index)
+/// Sim-day index for a spread pass, used to salt the per-day reproduction roll.
+/// Rust float→int casts *saturate*, so a direct `f64 as u32` would pin the bucket
+/// at `u32::MAX` once the day count overflows `u32` (~1e5 sim-years — unreachable,
+/// but then the roll would freeze again). The `i64` hop has headroom the divided
+/// hour never reaches, and the final narrowing `as u32` truncates, so consecutive
+/// days keep landing in distinct buckets indefinitely.
+fn day_bucket(born_hour: f64) -> u32 {
+    (born_hour / SPREAD_TICK_HOURS).floor() as i64 as u32
 }
 
-fn spread_seed_count(seed: u32, canon: IVec2, plant_index: u32) -> u32 {
-    1 + (hash_unit(seed.wrapping_add(4002), canon, plant_index) * 2.0).floor() as u32
+/// Mix a per-day `bucket` into a hash sub-key so the same plant draws a fresh,
+/// independent value (roll or position jitter) on each successive spread pass.
+fn bucket_salt(base: u32, bucket: u32) -> u32 {
+    base ^ bucket.wrapping_mul(0x9E37_79B9)
+}
+
+fn spread_roll(seed: u32, canon: IVec2, plant_index: u32, bucket: u32) -> f32 {
+    hash_unit(
+        seed.wrapping_add(4001),
+        canon,
+        bucket_salt(plant_index, bucket),
+    )
+}
+
+fn spread_seed_count(seed: u32, canon: IVec2, plant_index: u32, bucket: u32) -> u32 {
+    1 + (hash_unit(
+        seed.wrapping_add(4002),
+        canon,
+        bucket_salt(plant_index, bucket),
+    ) * 2.0)
+        .floor() as u32
 }
 
 fn hash_unit(seed: u32, canon: IVec2, sub: u32) -> f32 {
     hash_to_unit_float(hash4(seed, canon.x as u32, canon.y as u32, sub))
+}
+
+/// Build the per-canonical-chunk house index by sampling the continuous
+/// heightmap — the same terrain source [`land_chunk_candidates`] validates
+/// against — so the houses the spread pass fences seedlings away from are
+/// reconstructed identically on every world, locally generated or downloaded,
+/// without persisting them in the base snapshot. Returns one XZ list per
+/// canonical chunk, indexed `cz * WORLD_SIZE_CHUNKS + cx`.
+///
+/// `threads` caps Rayon parallelism: `Some(n)` runs in a pool of `n` threads so
+/// this step honours the same budget as the rest of `generate_base` (rather than
+/// oversubscribing the global pool during world creation); `None` uses the
+/// ambient pool, for the lighter snapshot-load path.
+fn build_house_index(
+    seed: u32,
+    houses_config: &HousesConfig,
+    biome_config: &BiomeConfig,
+    heightmap: &Heightmap,
+    sea_level: f32,
+    threads: Option<usize>,
+) -> Vec<Vec<Vec2>> {
+    let n = WORLD_SIZE_CHUNKS;
+    let total = (n as usize) * (n as usize);
+    let build = |idx: usize| -> Vec<Vec2> {
+        let cx = (idx as i32) % n;
+        let cz = (idx as i32) / n;
+        let origin_x = cx as f32 * CHUNK_SIZE_METERS;
+        let origin_z = cz as f32 * CHUNK_SIZE_METERS;
+        place_houses(
+            seed,
+            houses_config,
+            IVec2::new(cx, cz),
+            |local_x, local_z| {
+                // Mirror `HousesLayer`'s grid validation, but sample the continuous
+                // heightmap and classify the biome from it (as the landing pass
+                // does) rather than the per-chunk terrain/biome grids. Biome first;
+                // `slope_at`'s four extra samples are paid only on grassland.
+                let wx = origin_x + local_x;
+                let wz = origin_z + local_z;
+                let height = heightmap.sample_height(wx, wz);
+                let moisture = heightmap.sample_moisture(wx, wz);
+                if classify(height, moisture, biome_config) != Biome::Grassland {
+                    return None;
+                }
+                if slope_at(heightmap, wx, wz) <= houses_config.max_slope
+                    && height >= sea_level
+                    && (houses_config.height_min..=houses_config.height_max).contains(&height)
+                {
+                    Some(height)
+                } else {
+                    None
+                }
+            },
+        )
+        .into_iter()
+        .map(|site| Vec2::new(site.world_x, site.world_z))
+        .collect()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let run = || (0..total).into_par_iter().map(build).collect::<Vec<_>>();
+        match threads {
+            Some(t) => {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(t.max(1))
+                    .build()
+                    .ok();
+                match &pool {
+                    Some(pool) => pool.install(run),
+                    None => run(),
+                }
+            }
+            None => run(),
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = threads;
+        (0..total).map(build).collect()
+    }
+}
+
+/// Minimum clearance, in metres, a spread seedling of `kind` must keep from any
+/// house — so reproducing trees and shrubs don't slowly grow up inside the
+/// buildings. Trees get a wider berth than shrubs.
+fn house_clearance(kind: &str) -> f32 {
+    if kind == "shrub" {
+        5.0
+    } else {
+        10.0
+    }
+}
+
+/// Whether `(world_x, world_z)` lies within `clearance` of any house. Houses are
+/// indexed by canonical chunk, so only the candidate's chunk and its eight
+/// (wrapped) neighbours can hold one close enough — distances are measured on the
+/// torus so the check is correct across the world seam.
+fn near_house(houses: &[Vec<Vec2>], world_x: f32, world_z: f32, clearance: f32) -> bool {
+    let world = WORLD_SIZE_METERS as f32;
+    let half = world * 0.5;
+    let clearance_sq = clearance * clearance;
+    let n = WORLD_SIZE_CHUNKS;
+    let cx = ((world_x / CHUNK_SIZE_METERS).floor() as i32).rem_euclid(n);
+    let cz = ((world_z / CHUNK_SIZE_METERS).floor() as i32).rem_euclid(n);
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let nx = (cx + dx).rem_euclid(n);
+            let nz = (cz + dz).rem_euclid(n);
+            // The real index always spans the full canonical grid; `get` only
+            // guards the smaller hand-built worlds used in tests.
+            let Some(cell) = houses.get((nz * n + nx) as usize) else {
+                continue;
+            };
+            for house in cell {
+                // Shortest separation on the torus, so a neighbour chunk wrapped
+                // across the seam still measures as adjacent rather than a lap away.
+                let mut ddx = (house.x - world_x).abs();
+                if ddx > half {
+                    ddx = world - ddx;
+                }
+                let mut ddz = (house.y - world_z).abs();
+                if ddz > half {
+                    ddz = world - ddz;
+                }
+                if ddx * ddx + ddz * ddz < clearance_sq {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn slope_at(heightmap: &Heightmap, x: f32, z: f32) -> f32 {
@@ -1765,20 +2110,108 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// Analytic growth stage for a packed plant at `total_hours`.
-fn stage_for(plant: &Plant, total_hours: f64, registry: &PlantRegistry) -> GrowthStage {
-    let Some(species) = registry.species.get(plant.species as usize) else {
-        return stage_from_u8(plant.stage);
-    };
-    let age = (total_hours - plant.born_hour as f64).max(0.0);
-    let young_at = species.placement.seedling_hours.max(0.0) as f64;
-    let mature_at = young_at + species.placement.young_hours.max(0.0) as f64;
-    if age >= mature_at {
-        GrowthStage::Mature
-    } else if age >= young_at {
-        GrowthStage::Young
+/// A plant's full life timeline in age-space (sim-hours since `born_hour`).
+/// `dead_at`/`gone_at` are `INFINITY` for immortal species (`lifespan_hours <=
+/// 0`). Death and despawn are analytic, exactly like growth: the timeline is a
+/// pure function of the plant's stable identity, so a reloaded world removes
+/// the same plants a live one did — no tombstones in the save.
+#[derive(Clone, Copy, Debug)]
+struct LifeSchedule {
+    young_at: f64,
+    mature_at: f64,
+    dead_at: f64,
+    gone_at: f64,
+}
+
+impl LifeSchedule {
+    /// Cached stage byte for a plant of this schedule at `age`, or `None` once
+    /// it is past `gone_at` and should despawn.
+    fn stage_at(&self, age: f64) -> Option<u8> {
+        if age >= self.gone_at {
+            None
+        } else if age >= self.dead_at {
+            Some(DEAD)
+        } else if age >= self.mature_at {
+            Some(MATURE)
+        } else if age >= self.young_at {
+            Some(stage_to_u8(GrowthStage::Young))
+        } else {
+            Some(stage_to_u8(GrowthStage::Seedling))
+        }
+    }
+
+    /// First threshold strictly ahead of `age`, in age-space (`INFINITY` when
+    /// nothing is left to happen — a mature immortal).
+    fn next_threshold(&self, age: f64) -> f64 {
+        if age < self.young_at {
+            self.young_at
+        } else if age < self.mature_at {
+            self.mature_at
+        } else if age < self.dead_at {
+            self.dead_at
+        } else {
+            self.gone_at
+        }
+    }
+}
+
+/// Deterministic per-plant unit hash for death timing, keyed on stable identity
+/// (world seed, canonical chunk, quantized position, birth time, species) —
+/// deliberately *not* the plant's index, which shifts as neighbours despawn.
+fn death_unit(seed: u32, chunk_idx: usize, plant: &Plant, salt: u32) -> f32 {
+    let pos = ((plant.local_x as u32) << 16) | plant.local_z as u32;
+    hash_to_unit_float(hash4(
+        seed.wrapping_add(salt),
+        chunk_idx as u32,
+        pos,
+        plant.born_hour.to_bits() ^ plant.species as u32,
+    ))
+}
+
+/// Analytic life timeline for a packed plant. `is_base` marks deterministic
+/// base-flora plants (the prefix of each chunk's list): they are **mature from
+/// creation** (their growth thresholds are zero — a new world must not demote
+/// the baked forest to seedlings), and instead of the spread plants' ±25%
+/// lifespan jitter they draw a uniform fraction of a full lifespan, so the
+/// starting forest dies as a steady trickle spread over one lifespan, never a
+/// wavefront.
+fn life_schedule(
+    seed: u32,
+    chunk_idx: usize,
+    plant: &Plant,
+    species: &crate::world_core::herbarium::PlantSpeciesInfo,
+    is_base: bool,
+) -> LifeSchedule {
+    let (young_at, mature_at) = if is_base {
+        (0.0, 0.0)
     } else {
-        GrowthStage::Seedling
+        let young_at = species.placement.seedling_hours.max(0.0) as f64;
+        (
+            young_at,
+            young_at + species.placement.young_hours.max(0.0) as f64,
+        )
+    };
+    let lifespan = species.placement.lifespan_hours;
+    if lifespan <= 0.0 {
+        return LifeSchedule {
+            young_at,
+            mature_at,
+            dead_at: f64::INFINITY,
+            gone_at: f64::INFINITY,
+        };
+    }
+    let life_factor = if is_base {
+        death_unit(seed, chunk_idx, plant, 4301)
+    } else {
+        0.75 + 0.5 * death_unit(seed, chunk_idx, plant, 4301)
+    };
+    let snag_factor = 0.75 + 0.5 * death_unit(seed, chunk_idx, plant, 4302);
+    let dead_at = mature_at + (lifespan * life_factor) as f64;
+    LifeSchedule {
+        young_at,
+        mature_at,
+        dead_at,
+        gone_at: dead_at + (species.placement.snag_hours.max(0.0) * snag_factor) as f64,
     }
 }
 
@@ -1800,15 +2233,19 @@ mod tests {
         let populated_chunks = chunks.iter().filter(|c| !c.is_empty()).count();
         let immature = chunks
             .iter()
-            .map(|c| c.iter().filter(|p| p.stage != MATURE).count() as u32)
+            .map(|c| c.iter().filter(|p| p.stage < MATURE).count() as u32)
             .collect();
         let saturated = vec![false; chunks.len()];
         let base_count = chunks.iter().map(|c| c.len() as u32).collect();
         let biome = vec![Biome::Forest; chunks.len()];
         let cell_bytes = vec![0u8; chunks.len()];
+        let next_event = vec![0.0; chunks.len()];
+        let houses = vec![Vec::new(); chunks.len()];
         PlantWorld {
             chunks,
             immature,
+            next_event,
+            growth_hours: 0.0,
             saturated,
             base_count,
             biome,
@@ -1816,6 +2253,7 @@ mod tests {
             registry: reg,
             heightmap: Heightmap::new(7, config.heightmap.clone()),
             rivers: Arc::new(RiverField::empty()),
+            houses,
             biome_config: config.biome.clone(),
             sea_level: config.sea_level,
             seed: 7,
@@ -2121,6 +2559,7 @@ mod tests {
             height: 12.5,
             species_index: 3,
             growth_stage: GrowthStage::Mature,
+            decay: 0.0,
         };
         let packed = Plant::pack(&original, origin_x, origin_z);
 
@@ -2227,6 +2666,146 @@ mod tests {
     }
 
     #[test]
+    fn life_schedule_jitters_within_bounds_and_orders_thresholds() {
+        let reg = registry();
+        let species = &reg.species[0];
+        let lifespan = species.placement.lifespan_hours as f64;
+        let snag = species.placement.snag_hours as f64;
+        assert!(lifespan > 0.0 && snag > 0.0);
+
+        for i in 0..200u32 {
+            let plant = seedling(i as f32, i as f32 * 7.0);
+            let mature_at =
+                (species.placement.seedling_hours + species.placement.young_hours) as f64;
+
+            // Spread plants: ±25% jitter on both phases.
+            let s1 = life_schedule(7, i as usize, &plant, species, false);
+            assert_eq!(s1.mature_at, mature_at);
+            let lived = s1.dead_at - s1.mature_at;
+            assert!(lived >= lifespan * 0.75 - 1e-6 && lived <= lifespan * 1.25 + 1e-6);
+            let stood = s1.gone_at - s1.dead_at;
+            assert!(stood >= snag * 0.75 - 1e-6 && stood <= snag * 1.25 + 1e-6);
+
+            // Base plants: a uniform fraction of one lifespan, so the starting
+            // forest trickles out instead of dying in a wave.
+            let s2 = life_schedule(7, i as usize, &plant, species, true);
+            let lived = s2.dead_at - s2.mature_at;
+            assert!(lived >= 0.0 && lived <= lifespan + 1e-6);
+        }
+    }
+
+    #[test]
+    fn snags_stand_then_despawn_freeing_the_ground() {
+        let reg = registry();
+        let total = (WORLD_SIZE_CHUNKS as usize) * (WORLD_SIZE_CHUNKS as usize);
+        let n = WORLD_SIZE_CHUNKS as usize;
+        let idx = 5 * n + 5;
+        let mut chunks = vec![Vec::new(); total];
+        chunks[idx].push(grid_plant(10.0, 50.0, 0)); // base plant, mature
+        let mut world = test_world(chunks, Arc::clone(&reg));
+        for flag in world.saturated.iter_mut() {
+            *flag = true;
+        }
+
+        let plant = world.chunks[idx][0];
+        let schedule = life_schedule(world.seed, idx, &plant, &reg.species[0], true);
+        assert!(schedule.gone_at.is_finite());
+
+        // At dead_at the plant flips to a standing snag: still present, not
+        // immature, and no longer a spread source.
+        assert!(world.tick_growth(plant.born_hour as f64 + schedule.dead_at + 0.01));
+        assert_eq!(world.chunks[idx][0].stage, DEAD);
+        assert_eq!(world.population(), 1);
+        assert_eq!(world.immature[idx], 0);
+        assert!(emit_chunk_candidates(idx, &world.chunks, &reg, world.seed, 0).is_empty());
+
+        // At gone_at it despawns: record removed, counters adjusted, and the
+        // chunk plus its 8 neighbours woken so spread can reclaim the ground.
+        assert!(world.tick_growth(plant.born_hour as f64 + schedule.gone_at + 0.01));
+        assert!(world.chunks[idx].is_empty());
+        assert_eq!(world.population(), 0);
+        assert_eq!(world.base_count[idx], 0);
+        assert_eq!(world.populated_chunks(), 0);
+        let woken = world.saturated.iter().filter(|s| !**s).count();
+        assert_eq!(woken, 9, "the 3x3 neighbourhood must be unsaturated");
+        for dz in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let nidx = ((5 + dz) * n as i32 + (5 + dx)) as usize;
+                assert!(!world.saturated[nidx]);
+            }
+        }
+    }
+
+    #[test]
+    fn immortal_species_never_die() {
+        let reg = registry();
+        let cattail = reg
+            .species
+            .iter()
+            .position(|s| s.placement.lifespan_hours <= 0.0)
+            .expect("an immortal species (cattail)") as u8;
+        let mut world = test_world(
+            vec![vec![Plant {
+                species: cattail,
+                ..grid_plant(10.0, 50.0, 0)
+            }]],
+            Arc::clone(&reg),
+        );
+
+        // Far beyond any mortal lifespan, the reed clump still stands mature.
+        world.tick_growth(1.0e9);
+        assert_eq!(world.chunks[0].len(), 1);
+        assert_eq!(world.chunks[0][0].stage, MATURE);
+        assert_eq!(world.population(), 1);
+    }
+
+    #[test]
+    fn a_reloaded_world_reaps_exactly_what_a_live_world_did() {
+        let reg = registry();
+        // One mortal base plant plus two spread seedlings born at hour 0.
+        let base = grid_plant(10.0, 50.0, 0);
+        let make = |reg: Arc<PlantRegistry>| {
+            let mut world = test_world(vec![Vec::new(), vec![base], Vec::new()], reg);
+            world.chunks[1].push(seedling(20.0, 0.0));
+            world.chunks[1].push(seedling(30.0, 0.0));
+            world.immature[1] = 2;
+            world.population += 2;
+            world
+        };
+
+        let mut live = make(Arc::clone(&reg));
+        // Save before anything dies, so the blob still holds every plant.
+        let storage = MemBytes::default();
+        live.save_spread(&storage).unwrap();
+
+        // Pick the first despawn among the three plants and tick just past it:
+        // the live world reaps that plant (and only it).
+        let species = &reg.species[0];
+        let gone = |pi: usize, is_base: bool| {
+            let plant = live.chunks[1][pi];
+            let s = life_schedule(live.seed, 1, &plant, species, is_base);
+            plant.born_hour as f64 + s.gone_at
+        };
+        let t = gone(0, true).min(gone(1, false)).min(gone(2, false)) + 0.01;
+        live.tick_growth(t);
+        assert!(
+            live.chunks[1].len() < 3,
+            "at least one plant must have despawned"
+        );
+
+        // A fresh world restored from the pre-death save and ticked to the same
+        // hour converges on the identical plant list and derived counters.
+        let mut reloaded = test_world(vec![Vec::new(), vec![base], Vec::new()], reg);
+        reloaded.apply_saved_spread(&storage);
+        reloaded.tick_growth(t);
+
+        assert_eq!(reloaded.chunks[1], live.chunks[1]);
+        assert_eq!(reloaded.population(), live.population());
+        assert_eq!(reloaded.base_count[1], live.base_count[1]);
+        assert_eq!(reloaded.immature[1], live.immature[1]);
+    }
+
+    #[test]
     fn tick_growth_promotes_immature_plants_to_mature() {
         let reg = registry();
         let species = &reg.species[0];
@@ -2244,6 +2823,9 @@ mod tests {
             }]],
             Arc::clone(&reg),
         );
+        // The seedling is a spread plant, not part of the mature-from-creation
+        // base prefix.
+        world.base_count[0] = 0;
 
         // Before any growth time, it stays a seedling.
         assert!(!world.tick_growth(0.0));
@@ -2303,6 +2885,7 @@ mod tests {
             rivers: &world.rivers,
             registry: &reg,
             biome_config: &world.biome_config,
+            houses: &world.houses,
             sea_level: world.sea_level,
             born_hour: 0.0,
         };
@@ -2331,6 +2914,79 @@ mod tests {
     }
 
     #[test]
+    fn spread_landing_keeps_seedlings_clear_of_houses() {
+        // A seedling that lands on top of a house is rejected; the same seedling
+        // just beyond the species' clearance is accepted.
+        let reg = registry();
+        let mut world = test_world(vec![Vec::new(); 4], Arc::clone(&reg));
+        // `find_suitable_spot` returns a canonical-grid index, so size the house
+        // index to the full grid (as a real world does) before indexing into it.
+        world.houses = vec![Vec::new(); (WORLD_SIZE_CHUNKS * WORLD_SIZE_CHUNKS) as usize];
+        let (chunk_idx, lx, lz) = find_suitable_spot(&world, 0);
+        let cx = (chunk_idx as i32) % WORLD_SIZE_CHUNKS;
+        let cz = (chunk_idx as i32) / WORLD_SIZE_CHUNKS;
+        let wx = cx as f32 * CHUNK_SIZE_METERS + lx;
+        let wz = cz as f32 * CHUNK_SIZE_METERS + lz;
+        let clearance = house_clearance(&reg.species[0].kind);
+
+        let candidate =
+            |target: usize, world_x: f32, world_z: f32, lx: f32, lz: f32| SpreadCandidate {
+                target: target as u32,
+                local_x: lx,
+                local_z: lz,
+                world_x,
+                world_z,
+                height: 6.0,
+                rotation: 0.0,
+                species: 0,
+                order: 0,
+            };
+
+        // A house sitting on the candidate must reject it.
+        world.houses[chunk_idx] = vec![Vec2::new(wx, wz)];
+        let mut plants = Vec::new();
+        let mut blocked = vec![candidate(chunk_idx, wx, wz, lx, lz)];
+        let accepted = land_chunk_candidates(
+            &mut plants,
+            &mut blocked,
+            &SpreadContext {
+                heightmap: &world.heightmap,
+                rivers: &world.rivers,
+                registry: &reg,
+                biome_config: &world.biome_config,
+                houses: &world.houses,
+                sea_level: world.sea_level,
+                born_hour: 0.0,
+            },
+        );
+        assert_eq!(accepted, 0, "a seedling on top of a house must be rejected");
+        assert!(plants.is_empty());
+
+        // Move the house just past the clearance ring: the seedling is now allowed.
+        world.houses[chunk_idx] = vec![Vec2::new(wx + clearance + 1.0, wz)];
+        let mut plants = Vec::new();
+        let mut allowed = vec![candidate(chunk_idx, wx, wz, lx, lz)];
+        let accepted = land_chunk_candidates(
+            &mut plants,
+            &mut allowed,
+            &SpreadContext {
+                heightmap: &world.heightmap,
+                rivers: &world.rivers,
+                registry: &reg,
+                biome_config: &world.biome_config,
+                houses: &world.houses,
+                sea_level: world.sea_level,
+                born_hour: 0.0,
+            },
+        );
+        assert_eq!(
+            accepted, 1,
+            "a seedling beyond the clearance must be accepted"
+        );
+        assert_eq!(plants.len(), 1);
+    }
+
+    #[test]
     fn spread_emits_seedlings_for_mature_plants() {
         // A mature plant whose spread roll succeeds emits at least one candidate
         // anchored near it; immature plants emit none.
@@ -2341,7 +2997,7 @@ mod tests {
         let chance = species0.placement.spread_chance.clamp(0.0, 1.0);
         let canon = (0..n)
             .flat_map(|z| (0..n).map(move |x| IVec2::new(x, z)))
-            .find(|c| spread_roll(7, *c, 0) < chance)
+            .find(|c| spread_roll(7, *c, 0, 0) < chance)
             .expect("a chunk whose plant 0 spreads");
         let idx = (canon.y * n + canon.x) as usize;
         let mut chunks = vec![Vec::new(); (n * n) as usize];
@@ -2354,7 +3010,7 @@ mod tests {
             stage: MATURE,
             born_hour: 0.0,
         });
-        let mature = emit_chunk_candidates(idx, &chunks, &reg, 7);
+        let mature = emit_chunk_candidates(idx, &chunks, &reg, 7, 0);
         assert!(!mature.is_empty(), "a firing mature plant emits candidates");
         for c in &mature {
             // Candidate world position is within spread_radius of the source.
@@ -2365,6 +3021,81 @@ mod tests {
 
         // The same plant as a seedling emits nothing.
         chunks[idx][0].stage = stage_to_u8(GrowthStage::Seedling);
-        assert!(emit_chunk_candidates(idx, &chunks, &reg, 7).is_empty());
+        assert!(emit_chunk_candidates(idx, &chunks, &reg, 7, 0).is_empty());
+    }
+
+    // Replays the runtime's growth+spread loop at a coarse per-frame time step
+    // (mimicking a high `day_speed`, where a frame spans many sim-days) and
+    // asserts the mortal forest survives. Before the day-bucketed roll + catch-up
+    // spread, reproduction was throttled to one identical pass per frame while
+    // death stayed analytic, so a forest like this went extinct.
+    #[test]
+    fn forest_survives_high_dayspeed_fast_forward() {
+        let reg = registry();
+        let n = WORLD_SIZE_CHUNKS;
+        // Sanity: species 0 must be a mortal that can spread, or the test proves
+        // nothing about reproduction keeping pace with death.
+        let p0 = &reg.species[0].placement;
+        assert!(p0.lifespan_hours > 0.0, "species 0 must be mortal");
+        assert!(p0.spread_chance > 0.0, "species 0 must reproduce");
+        // Derive the run length from the configured lifespan so rebalancing the
+        // species can't silently shorten the test below a meaningful turnover.
+        let lifespan = p0.lifespan_hours as f64;
+
+        // Seed one suitable chunk with a dense mature base forest.
+        let mut chunks: Vec<Vec<Plant>> = (0..(n * n)).map(|_| Vec::new()).collect();
+        let probe = test_world(vec![Vec::new(); (n * n) as usize], Arc::clone(&reg));
+        let (chunk_idx, _, _) = find_suitable_spot(&probe, 0);
+        let mut x = 8.0f32;
+        while x < 248.0 {
+            let mut z = 8.0f32;
+            while z < 248.0 {
+                chunks[chunk_idx].push(Plant {
+                    local_x: quantize_span(x),
+                    local_z: quantize_span(z),
+                    height: quantize_span(6.0),
+                    rotation: 0,
+                    species: 0,
+                    stage: MATURE,
+                    born_hour: 0.0,
+                });
+                z += 12.0;
+            }
+            x += 12.0;
+        }
+        let seeded = chunks[chunk_idx].len();
+        assert!(seeded > 100, "need a dense starting forest, got {seeded}");
+        let mut world = test_world(chunks, reg);
+
+        // One "frame" jumps 240 sim-hours (10 sim-days). With the old code this
+        // bottomed out near extinction; with catch-up spread it must persist.
+        const FRAME_JUMP: f64 = 240.0;
+        let mut t = 0.0f64;
+        let mut last_spread = -SPREAD_TICK_HOURS;
+        // Run well past several full lifespans so the base cohort is long gone and
+        // only spread-born descendants remain.
+        while t <= 6.0 * lifespan {
+            world.tick_growth(t);
+            // Mirror the runtime's catch-up spread loop.
+            let mut rounds = 0;
+            while t - last_spread >= SPREAD_TICK_HOURS && rounds < 8 {
+                last_spread += SPREAD_TICK_HOURS;
+                world.tick_spread(last_spread);
+                rounds += 1;
+            }
+            if t - last_spread >= SPREAD_TICK_HOURS {
+                last_spread = t;
+            }
+            t += FRAME_JUMP;
+        }
+
+        // Survival, not a specific count: the population must stay healthily above
+        // zero rather than collapsing to the immortal residue.
+        assert!(
+            world.population() >= seeded / 2,
+            "forest collapsed under high day_speed: {} survivors from {seeded} (expected >= {})",
+            world.population(),
+            seeded / 2,
+        );
     }
 }

@@ -3,6 +3,7 @@ use crate::renderer_wgpu::instancing::{
     upload_instances, upload_prototype, GpuInstanceChunk, InstanceData, PrototypeMesh,
 };
 use crate::ui::plant_editor_panel::PlantParams;
+use crate::world_core::lifecycle::{GrowthStage, DEAD_TINT};
 use crate::world_core::plant_gen::config::SpeciesConfig;
 use crate::world_core::plant_gen::{generate_plant_mesh, PlantMesh};
 
@@ -31,6 +32,10 @@ pub struct PlantEditorState {
     seed: u32,
     pub tree_mesh: Option<PrototypeMesh>,
     pub tree_instance: Option<GpuInstanceChunk>,
+    /// Dead-snag variant of the current species, shown beside the living
+    /// plant so the designer sees how the species reads once it dies.
+    pub snag_mesh: Option<PrototypeMesh>,
+    pub snag_instance: Option<GpuInstanceChunk>,
     pub ground_mesh: PrototypeMesh,
     pub ground_instance: GpuInstanceChunk,
     pub generator: MeshGenerator,
@@ -61,6 +66,8 @@ impl PlantEditorState {
             seed,
             tree_mesh: None,
             tree_instance: None,
+            snag_mesh: None,
+            snag_instance: None,
             ground_mesh,
             ground_instance,
             generator: MeshGenerator::new(),
@@ -89,12 +96,28 @@ impl PlantEditorState {
             position: [0.0, 0.0, 0.0],
             rotation_y: 0.0,
             scale: [1.0, 1.0, 1.0],
-            _pad: 0.0,
+            tilt: 0.0,
             color: [1.0, 1.0, 1.0, 1.0],
         }];
         let instance = upload_instances(device, &instance_data, "plant-editor-tree");
         self.tree_mesh = Some(mesh);
         self.tree_instance = instance;
+    }
+
+    fn set_snag_mesh(&mut self, device: &wgpu::Device, mesh: PrototypeMesh, offset_x: f32) {
+        // Rendered exactly as the world draws a fresh snag: dead scale, the
+        // shared weathered tint, and a slight lean.
+        let dead_scale = GrowthStage::Dead.scale_factor();
+        let instance_data = [InstanceData {
+            position: [offset_x, 0.0, 0.0],
+            rotation_y: 0.0,
+            scale: [dead_scale, dead_scale, dead_scale],
+            tilt: 0.08,
+            color: DEAD_TINT,
+        }];
+        let instance = upload_instances(device, &instance_data, "plant-editor-snag");
+        self.snag_mesh = Some(mesh);
+        self.snag_instance = instance;
     }
 
     /// Update the orbit angle. Auto-orbits slowly until user presses left/right.
@@ -187,24 +210,38 @@ impl PlantEditorState {
         (cam_pos, yaw, pitch)
     }
 
-    /// Upload a generated PlantMesh as a GPU prototype.
-    pub fn load_plant_mesh(&mut self, device: &wgpu::Device, plant_mesh: &PlantMesh) {
-        let vertices: Vec<Vertex> = plant_mesh
-            .vertices
-            .iter()
-            .map(|v| Vertex {
-                position: v.position,
-                normal: v.normal,
-                color: v.color,
-            })
-            .collect();
-        let mesh = upload_prototype(device, &vertices, &plant_mesh.indices, "plant-editor-tree");
+    /// Upload the generated living + snag meshes as GPU prototypes, the snag
+    /// offset to the side of the living plant.
+    pub fn load_plant_meshes(&mut self, device: &wgpu::Device, generated: &GeneratedMeshes) {
+        let upload = |mesh: &PlantMesh, label: &str| {
+            let vertices: Vec<Vertex> = mesh
+                .vertices
+                .iter()
+                .map(|v| Vertex {
+                    position: v.position,
+                    normal: v.normal,
+                    color: v.color,
+                })
+                .collect();
+            upload_prototype(device, &vertices, &mesh.indices, label)
+        };
+        let mesh = upload(&generated.living, "plant-editor-tree");
         self.set_tree_mesh(device, mesh);
+        let snag = upload(&generated.snag, "plant-editor-snag");
+        self.set_snag_mesh(device, snag, generated.snag_offset_x);
     }
 }
 
+/// One editor generation result: the living plant, its dead-snag variant, and
+/// how far to the side the snag preview should stand.
+pub struct GeneratedMeshes {
+    pub living: PlantMesh,
+    pub snag: PlantMesh,
+    pub snag_offset_x: f32,
+}
+
 pub struct MeshGenerator {
-    result: Option<PlantMesh>,
+    result: Option<GeneratedMeshes>,
 }
 
 impl MeshGenerator {
@@ -213,10 +250,18 @@ impl MeshGenerator {
     }
 
     pub fn request(&mut self, species: SpeciesConfig, seed: u32) {
-        self.result = Some(generate_plant_mesh(&species, seed));
+        // Stand the snag clear of the living crown: both are widest at roughly
+        // half their height, so a bit over the average max height separates them.
+        let avg_height = (species.body_plan.max_height[0] + species.body_plan.max_height[1]) * 0.5;
+        let snag_offset_x = (avg_height * 0.7).max(6.0);
+        self.result = Some(GeneratedMeshes {
+            living: generate_plant_mesh(&species, seed),
+            snag: generate_plant_mesh(&species.deadify(), seed),
+            snag_offset_x,
+        });
     }
 
-    pub fn poll(&mut self) -> Option<PlantMesh> {
+    pub fn poll(&mut self) -> Option<GeneratedMeshes> {
         self.result.take()
     }
 }
@@ -359,7 +404,7 @@ fn create_ground_plane(device: &wgpu::Device) -> (PrototypeMesh, GpuInstanceChun
         position: [0.0, 0.0, 0.0],
         rotation_y: 0.0,
         scale: [1.0, 1.0, 1.0],
-        _pad: 0.0,
+        tilt: 0.0,
         color: [1.0, 1.0, 1.0, 1.0],
     }];
     let instance =

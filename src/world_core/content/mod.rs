@@ -1,9 +1,12 @@
 mod flora;
+pub(crate) mod grass;
 mod houses;
 pub(crate) mod sampling;
 
 use self::flora::{FloraInput, FloraLayer};
 use self::houses::{HousesInput, HousesLayer};
+
+pub(crate) use self::houses::place_houses;
 
 use std::sync::Arc;
 

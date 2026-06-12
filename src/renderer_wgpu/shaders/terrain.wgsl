@@ -109,7 +109,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let color_a = sample_biome(biome_a, input.world_position);
     let color_b = sample_biome(biome_b, input.world_position);
-    let biome_albedo = mix(color_a, color_b, blend_factor);
+    var biome_albedo = mix(color_a, color_b, blend_factor);
+
+    // Large-scale patchiness (shared with the grass blades via lighting.wgsl)
+    // so distant ground isn't a uniform carpet. Faded out on riverbeds, which
+    // get the water tint below instead.
+    let wet = clamp(input.wetness, 0.0, 1.0);
+    let macro_v = ground_macro_variation(input.world_position.xz);
+    biome_albedo = biome_albedo * mix(macro_v, vec3<f32>(1.0), wet);
 
     // Tint riverbeds toward water. `wetness` ramps 0..1 from bank to channel
     // centre, so the carved valley reads as a river from above and the ground.

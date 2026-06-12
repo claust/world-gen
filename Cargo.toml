@@ -14,11 +14,13 @@ name = "FloraForge"
 path = "src/main.rs"
 
 # Fast debug builds (e.g. VS Code F5 → target/debug). World generation is
-# dominated by 4D OpenSimplex sampling in the `noise` crate; at the default
-# dev opt-level (0) that runs unoptimized and full-world gen takes ~24 min
-# instead of ~50s. Fully optimize dependencies (rarely stepped through) while
-# keeping our own crate lightly optimized so it stays debuggable and quick to
-# rebuild incrementally.
+# dominated by 4D simplex sampling, and since terrain noise moved into our
+# own crate (`world_core::noise4`; the `noise` dependency remains only as the
+# benchmark baseline in examples) the dev opt-level below — not the
+# dependency override — is what keeps it usable: at opt-level 0 full-world
+# gen took ~24 min. Fully optimize dependencies (rarely stepped through)
+# while keeping our own crate lightly optimized so it stays debuggable and
+# quick to rebuild incrementally.
 [profile.dev]
 opt-level = 1
 

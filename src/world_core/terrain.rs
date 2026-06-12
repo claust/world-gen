@@ -39,7 +39,7 @@ impl Layer<IVec2, ChunkTerrain> for TerrainLayer {
         let origin_x = coord.x as f32 * CHUNK_SIZE_METERS;
         let origin_z = coord.y as f32 * CHUNK_SIZE_METERS;
 
-        // The terrain field is dominated by 4D OpenSimplex sampling. Generate
+        // The terrain field is dominated by 4D simplex-noise sampling. Generate
         // the whole grid through the trig-hoisting grid samplers (bit-identical
         // to per-vertex `sample_height`/`sample_moisture`, but the per-axis torus
         // trig is computed once per row/column instead of once per vertex).

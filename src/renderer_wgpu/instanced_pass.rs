@@ -7,7 +7,7 @@ use super::geometry::Vertex;
 use super::instancing::{
     build_house_instances, build_plant_instances, shrub_billboard_mesh, sign_post_mesh,
     upload_instances, upload_prototype, GpuInstanceChunk, InstanceData, ModelRegistry,
-    PrototypeMesh,
+    PlantInstanceBuckets, PrototypeMesh,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::model_loader;
@@ -30,12 +30,16 @@ pub struct InstancedPass {
     species_names: Vec<String>,
     /// species_lod_names[i] = LOD model key for species i
     species_lod_names: Vec<String>,
+    /// species_dead_names[i] = dead-snag model key for species i
+    species_dead_names: Vec<String>,
     /// species_is_shrub[i] = true when species i renders as a billboard
     species_is_shrub: Vec<bool>,
     /// Mature plants; drawn full-res nearby and as LOD at distance.
     plant_instances: Vec<HashMap<IVec2, ChunkPlantBuffers>>,
     /// Seedlings and young plants; always drawn with LOD meshes.
     plant_lod_instances: Vec<HashMap<IVec2, ChunkPlantBuffers>>,
+    /// Dead snags; drawn with the bark-only snag mesh at every distance.
+    plant_dead_instances: Vec<HashMap<IVec2, ChunkPlantBuffers>>,
     house_instances: HashMap<IVec2, GpuInstanceChunk>,
     /// One debug road-post sign per chunk, placed at the chunk center.
     sign_instances: HashMap<IVec2, GpuInstanceChunk>,
@@ -50,6 +54,7 @@ struct ChunkPlantBuffers {
 pub struct InstancedStats {
     pub buffered_mature_plants: usize,
     pub buffered_lod_plants: usize,
+    pub buffered_dead_plants: usize,
     pub buffered_house_instances: usize,
 }
 
@@ -126,6 +131,11 @@ impl InstancedPass {
                     shader_location: 6,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 28,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32,
+                },
             ],
         };
 
@@ -180,7 +190,7 @@ impl InstancedPass {
         );
 
         let mut models = ModelRegistry::new(device);
-        let (species_names, species_lod_names, species_is_shrub) =
+        let (species_names, species_lod_names, species_dead_names, species_is_shrub) =
             Self::build_species_meshes(device, &mut models, registry);
 
         // Debug tile-marker road-post sign (one shared prototype mesh).
@@ -201,9 +211,13 @@ impl InstancedPass {
             models,
             species_names,
             species_lod_names,
+            species_dead_names,
             species_is_shrub,
             plant_instances,
             plant_lod_instances: (0..registry.species.len())
+                .map(|_| HashMap::new())
+                .collect(),
+            plant_dead_instances: (0..registry.species.len())
                 .map(|_| HashMap::new())
                 .collect(),
             house_instances: HashMap::new(),
@@ -214,16 +228,19 @@ impl InstancedPass {
     /// Build (or rebuild) the per-species prototype meshes into `models`.
     ///
     /// `kind == "shrub"` species route to a single hardcoded crossed-quad
-    /// billboard (same mesh for near and far — no separate LOD); all other
-    /// species get the full procedural mesh plus a simplified LOD mesh.
-    /// Returns `(species_names, species_lod_names, species_is_shrub)`.
+    /// billboard (same mesh for near, far, and dead — dead shrubs are the same
+    /// card under the weathered tint); all other species get the full
+    /// procedural mesh, a simplified LOD mesh, and a leafless dead-snag mesh.
+    /// Returns `(species_names, species_lod_names, species_dead_names,
+    /// species_is_shrub)`.
     fn build_species_meshes(
         device: &wgpu::Device,
         models: &mut ModelRegistry,
         registry: &PlantRegistry,
-    ) -> (Vec<String>, Vec<String>, Vec<bool>) {
+    ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<bool>) {
         let mut species_names = Vec::with_capacity(registry.species.len());
         let mut species_lod_names = Vec::with_capacity(registry.species.len());
+        let mut species_dead_names = Vec::with_capacity(registry.species.len());
         let mut species_is_shrub = Vec::with_capacity(registry.species.len());
 
         for (i, species) in registry.species.iter().enumerate() {
@@ -234,9 +251,10 @@ impl InstancedPass {
                 let (verts, indices) = shrub_billboard_mesh(ref_height, ref_height * 0.5);
                 let mesh = upload_prototype(device, &verts, &indices, &key);
                 models.models.insert(key.clone(), mesh);
-                // Near and far both use the same minimal billboard.
+                // Near, far, and dead all use the same minimal billboard.
                 species_names.push(key.clone());
-                species_lod_names.push(key);
+                species_lod_names.push(key.clone());
+                species_dead_names.push(key);
                 species_is_shrub.push(true);
                 continue;
             }
@@ -272,10 +290,34 @@ impl InstancedPass {
             let lod_mesh = upload_prototype(device, &lod_verts, &lod_plant_mesh.indices, &lod_key);
             models.models.insert(lod_key.clone(), lod_mesh);
             species_lod_names.push(lod_key);
+
+            // Dead snag: bark-only (no foliage SDF pass), so one prototype is
+            // cheap enough to serve every render distance.
+            let dead_key = format!("plant-{}-dead", species.name);
+            let dead_config = species.species_config.deadify();
+            let dead_plant_mesh = plant_gen::generate_plant_mesh(&dead_config, i as u32);
+            let dead_verts: Vec<Vertex> = dead_plant_mesh
+                .vertices
+                .iter()
+                .map(|v| Vertex {
+                    position: v.position,
+                    normal: v.normal,
+                    color: v.color,
+                })
+                .collect();
+            let dead_mesh =
+                upload_prototype(device, &dead_verts, &dead_plant_mesh.indices, &dead_key);
+            models.models.insert(dead_key.clone(), dead_mesh);
+            species_dead_names.push(dead_key);
             species_is_shrub.push(false);
         }
 
-        (species_names, species_lod_names, species_is_shrub)
+        (
+            species_names,
+            species_lod_names,
+            species_dead_names,
+            species_is_shrub,
+        )
     }
 
     /// Rebuild species prototype meshes from an updated registry.
@@ -283,17 +325,22 @@ impl InstancedPass {
     pub fn rebuild_species(&mut self, device: &wgpu::Device, registry: &PlantRegistry) {
         self.plant_instances.clear();
         self.plant_lod_instances.clear();
+        self.plant_dead_instances.clear();
 
-        let (species_names, species_lod_names, species_is_shrub) =
+        let (species_names, species_lod_names, species_dead_names, species_is_shrub) =
             Self::build_species_meshes(device, &mut self.models, registry);
         self.species_names = species_names;
         self.species_lod_names = species_lod_names;
+        self.species_dead_names = species_dead_names;
         self.species_is_shrub = species_is_shrub;
 
         self.plant_instances = (0..registry.species.len())
             .map(|_| HashMap::new())
             .collect();
         self.plant_lod_instances = (0..registry.species.len())
+            .map(|_| HashMap::new())
+            .collect();
+        self.plant_dead_instances = (0..registry.species.len())
             .map(|_| HashMap::new())
             .collect();
     }
@@ -312,36 +359,36 @@ impl InstancedPass {
         for per_species in &mut self.plant_lod_instances {
             per_species.retain(|coord, _| world_chunks.contains_key(coord));
         }
+        for per_species in &mut self.plant_dead_instances {
+            per_species.retain(|coord, _| world_chunks.contains_key(coord));
+        }
         self.house_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
         self.sign_instances
             .retain(|coord, _| world_chunks.contains_key(coord));
 
         for (coord, chunk) in world_chunks {
-            let needs_rebuild = self
-                .plant_instances
-                .iter()
-                .zip(self.plant_lod_instances.iter())
-                .any(|(mature, lod)| {
-                    mature
+            let stale = |maps: &[HashMap<IVec2, ChunkPlantBuffers>]| {
+                maps.iter().any(|chunks| {
+                    chunks
                         .get(coord)
                         .map(|entry| entry.revision != chunk.content.plants_revision)
                         .unwrap_or(true)
-                        || lod
-                            .get(coord)
-                            .map(|entry| entry.revision != chunk.content.plants_revision)
-                            .unwrap_or(true)
-                });
+                })
+            };
+            let needs_rebuild = stale(&self.plant_instances)
+                || stale(&self.plant_lod_instances)
+                || stale(&self.plant_dead_instances);
 
             if needs_rebuild {
                 let per_species = build_plant_instances(&chunk.content.plants, &registry.species);
-                for (i, (mature_instances, lod_instances)) in per_species.into_iter().enumerate() {
-                    let label = &self.species_names[i];
+                for (i, buckets) in per_species.into_iter().enumerate() {
+                    let PlantInstanceBuckets { mature, lod, dead } = buckets;
                     self.plant_instances[i].insert(
                         *coord,
                         ChunkPlantBuffers {
                             revision: chunk.content.plants_revision,
-                            gpu: upload_instances(device, &mature_instances, label),
+                            gpu: upload_instances(device, &mature, &self.species_names[i]),
                         },
                     );
 
@@ -349,11 +396,15 @@ impl InstancedPass {
                         *coord,
                         ChunkPlantBuffers {
                             revision: chunk.content.plants_revision,
-                            gpu: upload_instances(
-                                device,
-                                &lod_instances,
-                                &self.species_lod_names[i],
-                            ),
+                            gpu: upload_instances(device, &lod, &self.species_lod_names[i]),
+                        },
+                    );
+
+                    self.plant_dead_instances[i].insert(
+                        *coord,
+                        ChunkPlantBuffers {
+                            revision: chunk.content.plants_revision,
+                            gpu: upload_instances(device, &dead, &self.species_dead_names[i]),
                         },
                     );
                 }
@@ -380,7 +431,7 @@ impl InstancedPass {
                     position: [cx, ground, cz],
                     rotation_y: 0.0,
                     scale: [1.0, 1.0, 1.0],
-                    _pad: 0.0,
+                    tilt: 0.0,
                     color: [1.0, 1.0, 1.0, 1.0],
                 };
                 if let Some(gpu) = upload_instances(device, &[instance], "sign-post") {
@@ -453,7 +504,11 @@ impl InstancedPass {
                 };
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                for chunks in [&self.plant_instances[i], &self.plant_lod_instances[i]] {
+                for chunks in [
+                    &self.plant_instances[i],
+                    &self.plant_lod_instances[i],
+                    &self.plant_dead_instances[i],
+                ] {
                     for (coord, inst) in chunks {
                         let Some(gpu) = &inst.gpu else { continue };
                         if !frustum.is_chunk_visible(*coord) {
@@ -518,6 +573,20 @@ impl InstancedPass {
                 for inst in &forced_lod {
                     pass.set_vertex_buffer(1, inst.instance_buffer.slice(..));
                     pass.draw_indexed(0..mesh.index_count, 0, 0..inst.instance_count);
+                }
+            }
+
+            // Draw dead snags with the bark-only snag mesh at every distance.
+            if let Some(mesh) = self.models.get(&self.species_dead_names[i]) {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for (coord, inst) in &self.plant_dead_instances[i] {
+                    let Some(gpu) = &inst.gpu else { continue };
+                    if !frustum.is_chunk_visible(*coord) {
+                        continue;
+                    }
+                    pass.set_vertex_buffer(1, gpu.instance_buffer.slice(..));
+                    pass.draw_indexed(0..mesh.index_count, 0, 0..gpu.instance_count);
                 }
             }
         }
@@ -591,6 +660,18 @@ impl InstancedPass {
                     }
                 }
             }
+
+            // Dead snags.
+            if let Some(mesh) = self.models.get(&self.species_dead_names[i]) {
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                for inst in self.plant_dead_instances[i].values() {
+                    if let Some(gpu) = &inst.gpu {
+                        pass.set_vertex_buffer(1, gpu.instance_buffer.slice(..));
+                        pass.draw_indexed(0..mesh.index_count, 0, 0..gpu.instance_count);
+                    }
+                }
+            }
         }
 
         // Houses.
@@ -629,6 +710,13 @@ impl InstancedPass {
             .filter_map(|entry| entry.gpu.as_ref())
             .map(|gpu| gpu.instance_count as usize)
             .sum();
+        let buffered_dead_plants = self
+            .plant_dead_instances
+            .iter()
+            .flat_map(|chunks| chunks.values())
+            .filter_map(|entry| entry.gpu.as_ref())
+            .map(|gpu| gpu.instance_count as usize)
+            .sum();
         let buffered_house_instances = self
             .house_instances
             .values()
@@ -638,6 +726,7 @@ impl InstancedPass {
         InstancedStats {
             buffered_mature_plants,
             buffered_lod_plants,
+            buffered_dead_plants,
             buffered_house_instances,
         }
     }

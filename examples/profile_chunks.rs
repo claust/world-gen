@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use glam::IVec2;
-use noise::{NoiseFn, OpenSimplex};
 use rayon::prelude::*;
 
 use world_gen::world_core::biome_map::BiomeLayer;
@@ -35,6 +34,7 @@ use world_gen::world_core::content::{ContentInput, ContentLayer};
 use world_gen::world_core::heightmap::Heightmap;
 use world_gen::world_core::herbarium::{Herbarium, PlantRegistry};
 use world_gen::world_core::layer::Layer;
+use world_gen::world_core::noise4::Simplex4;
 use world_gen::world_core::rivers::RiverField;
 use world_gen::world_core::terrain::TerrainLayer;
 
@@ -284,7 +284,7 @@ fn experiment_terrain_subparts(
     });
     std::hint::black_box(acc);
     println!(
-        "  → height+moisture = 5 4D-OpenSimplex evals/vertex × {} verts = the terrain hot spot.",
+        "  → height+moisture = 5 4D-noise evals/vertex × {} verts = the terrain hot spot.",
         TOTAL
     );
 }
@@ -373,12 +373,12 @@ fn experiment_nested_parallelism(
 // Algebraically identical; we verify max abs error.
 // ---------------------------------------------------------------------------
 struct Octave {
-    noise: OpenSimplex,
+    noise: Simplex4,
     radius: f64,
     inv_l: f64,
 }
 impl Octave {
-    fn new(noise: OpenSimplex, frequency: f64) -> Self {
+    fn new(noise: Simplex4, frequency: f64) -> Self {
         let k = (frequency * WORLD_SIZE_METERS).round().max(1.0);
         Self {
             noise,
@@ -397,15 +397,9 @@ fn experiment_optimized_noise(seed: u32, cfg: &HeightmapConfig, coords: &[IVec2]
     let hm = Heightmap::new(seed, cfg.clone());
 
     // Rebuild the 3 height octaves with the same seeds Heightmap::new uses.
-    let cont = Octave::new(OpenSimplex::new(seed), cfg.continental.frequency);
-    let ridge = Octave::new(
-        OpenSimplex::new(seed.wrapping_add(101)),
-        cfg.ridge.frequency,
-    );
-    let detail = Octave::new(
-        OpenSimplex::new(seed.wrapping_add(907)),
-        cfg.detail.frequency,
-    );
+    let cont = Octave::new(Simplex4::new(seed), cfg.continental.frequency);
+    let ridge = Octave::new(Simplex4::new(seed.wrapping_add(101)), cfg.ridge.frequency);
+    let detail = Octave::new(Simplex4::new(seed.wrapping_add(907)), cfg.detail.frequency);
     let (a_c, a_r, a_d) = (
         cfg.continental.amplitude,
         cfg.ridge.amplitude,
@@ -518,15 +512,9 @@ fn experiment_coarse_lowfreq(seed: u32, cfg: &HeightmapConfig, coords: &[IVec2])
     let coarse = env_usize("PROFILE_COARSE", 8); // nodes per side = coarse+1
     let hm = Heightmap::new(seed, cfg.clone());
 
-    let cont = Octave::new(OpenSimplex::new(seed), cfg.continental.frequency);
-    let ridge = Octave::new(
-        OpenSimplex::new(seed.wrapping_add(101)),
-        cfg.ridge.frequency,
-    );
-    let detail = Octave::new(
-        OpenSimplex::new(seed.wrapping_add(907)),
-        cfg.detail.frequency,
-    );
+    let cont = Octave::new(Simplex4::new(seed), cfg.continental.frequency);
+    let ridge = Octave::new(Simplex4::new(seed.wrapping_add(101)), cfg.ridge.frequency);
+    let detail = Octave::new(Simplex4::new(seed.wrapping_add(907)), cfg.detail.frequency);
     let (a_c, a_r, a_d) = (
         cfg.continental.amplitude,
         cfg.ridge.amplitude,
@@ -633,15 +621,9 @@ fn experiment_coarse_rawnoise(seed: u32, cfg: &HeightmapConfig, coords: &[IVec2]
     let coarse = env_usize("PROFILE_COARSE", 8);
     let hm = Heightmap::new(seed, cfg.clone());
 
-    let cont = Octave::new(OpenSimplex::new(seed), cfg.continental.frequency);
-    let ridge = Octave::new(
-        OpenSimplex::new(seed.wrapping_add(101)),
-        cfg.ridge.frequency,
-    );
-    let detail = Octave::new(
-        OpenSimplex::new(seed.wrapping_add(907)),
-        cfg.detail.frequency,
-    );
+    let cont = Octave::new(Simplex4::new(seed), cfg.continental.frequency);
+    let ridge = Octave::new(Simplex4::new(seed.wrapping_add(101)), cfg.ridge.frequency);
+    let detail = Octave::new(Simplex4::new(seed.wrapping_add(907)), cfg.detail.frequency);
     let (a_c, a_r, a_d) = (
         cfg.continental.amplitude,
         cfg.ridge.amplitude,
@@ -771,15 +753,9 @@ fn experiment_global_rawnoise(seed: u32, config: &GameConfig, coords: &[IVec2]) 
     let res = env_usize("PROFILE_GLOBAL_RES", config.rivers.grid_resolution as usize).max(16);
     let gcell = WORLD_SIZE_METERS as f32 / res as f32;
 
-    let cont = Octave::new(OpenSimplex::new(seed), cfg.continental.frequency);
-    let ridge = Octave::new(
-        OpenSimplex::new(seed.wrapping_add(101)),
-        cfg.ridge.frequency,
-    );
-    let detail = Octave::new(
-        OpenSimplex::new(seed.wrapping_add(907)),
-        cfg.detail.frequency,
-    );
+    let cont = Octave::new(Simplex4::new(seed), cfg.continental.frequency);
+    let ridge = Octave::new(Simplex4::new(seed.wrapping_add(101)), cfg.ridge.frequency);
+    let detail = Octave::new(Simplex4::new(seed.wrapping_add(907)), cfg.detail.frequency);
     let (a_c, a_r, a_d) = (
         cfg.continental.amplitude,
         cfg.ridge.amplitude,

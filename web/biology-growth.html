@@ -2,9 +2,9 @@
 layout: article
 nav: biology
 title: "Growth & the Life Cycle | FloraForge"
-description: "How FloraForge plants age and reproduce: a three-stage life cycle driven analytically by the world clock, and a daily spread pass that grows bounded, self-limiting forests."
+description: "How FloraForge plants age, reproduce and die: a four-stage life cycle driven analytically by the world clock, a daily spread pass, and death that frees ground so forests keep turning over."
 og_title: Growth & the Life Cycle — FloraForge Biology
-og_description: "Seedling to mature on one global clock, and the race-free daily spread pass that lets forests fill in and then stop."
+og_description: "Seedling to mature to standing snag on one global clock — and the despawn that frees ground, so forests reach a living equilibrium instead of freezing."
 og_type: article
 og_url: https://floraforge.eu/biology-growth.html
 css: ./assets/article.css
@@ -16,88 +16,117 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
             <h1>A forest that <span class="accent">grows itself.</span></h1>
             <p>
                 Plants in FloraForge are not placed and frozen. Every one is born, ages
-                through three stages, and — once mature — casts seedlings of its own. A
-                single world clock drives the whole simulation: growth is computed from a
-                plant's age, and one reproduction round runs each sim-day. Populations climb
-                toward a full, bounded state and then quietly stop.
+                through four stages, and — once mature — casts seedlings of its own before
+                it dies. A single world clock drives the whole simulation: growth, death and
+                despawn are all computed from a plant's age, and one reproduction round runs
+                each sim-day. Populations climb toward a full state, then keep turning over:
+                old trees fall, gaps open, seedlings race in.
             </p>
             <div class="hero-meta">
-                <span>3 growth stages</span>
+                <span>4 life stages</span>
                 <span>Growth tick: 1 sim-hour</span>
                 <span>Spread pass: every sim-day</span>
-                <span>Bounded populations</span>
+                <span>Forests turn over</span>
             </div>
         </section>
 
         <!-- ===================== STAGES ===================== -->
         <section class="block wrap" id="stages">
             <p class="section-label">Life cycle</p>
-            <h2>Three ages of a plant</h2>
+            <h2>Four ages of a plant</h2>
             <p class="lead">
                 Every plant carries a <code>GrowthStage</code> — <strong>Seedling</strong>,
-                <strong>Young</strong>, or <strong>Mature</strong> — and nothing more about its
-                age. The stage sets how large it draws: a seedling renders at 0.15× its
-                species' full size, a young plant at 0.50×, and a mature plant at full scale.
-                The same oak recipe expands into a sapling or a spreading giant depending only
-                on which stage it has reached.
+                <strong>Young</strong>, <strong>Mature</strong>, or <strong>Dead</strong> — and
+                nothing more about its age. The stage sets how it draws: a seedling renders at
+                0.15× its species' full size, a young plant at 0.50×, a mature plant at full
+                scale, and a dead one becomes a leafless grey-brown snag at 0.85× — crooked,
+                slightly leaning, easing smaller as it rots. The same oak recipe expands into
+                a sapling, a spreading giant, or a weathered skeleton depending only on which
+                stage it has reached.
             </p>
 
             <div class="climate-card">
-                <svg class="climate-svg" viewBox="0 0 760 320" role="img" aria-label="Growth timeline: a plant passes from seedling at hour 0, to young at 48 sim-hours, to mature at 144 sim-hours, drawn at 0.15, 0.50 and 1.0 of full size.">
+                <svg class="climate-svg" viewBox="0 0 760 320" role="img" aria-label="Life timeline: a plant passes from seedling at hour 0, to young at 48 sim-hours, to mature at 144 sim-hours, dies into a leafless snag after its lifespan, and despawns to free the ground for a new seedling.">
                     <!-- ground line -->
-                    <line x1="60" y1="250" x2="710" y2="250" stroke="var(--line)" stroke-width="1.5"/>
+                    <line x1="40" y1="250" x2="730" y2="250" stroke="var(--line)" stroke-width="1.5"/>
 
                     <!-- stage bands -->
-                    <rect x="60" y="250" width="200" height="6" fill="#3ecf6e" opacity="0.25"/>
-                    <rect x="260" y="250" width="200" height="6" fill="#3ecf6e" opacity="0.5"/>
-                    <rect x="460" y="250" width="250" height="6" fill="#3ecf6e" opacity="0.85"/>
+                    <rect x="40" y="250" width="150" height="6" fill="#3ecf6e" opacity="0.25"/>
+                    <rect x="190" y="250" width="150" height="6" fill="#3ecf6e" opacity="0.5"/>
+                    <rect x="340" y="250" width="160" height="6" fill="#3ecf6e" opacity="0.85"/>
+                    <rect x="500" y="250" width="150" height="6" fill="#8a7a5f" opacity="0.6"/>
 
                     <!-- SEEDLING (0.15x) -->
-                    <g transform="translate(160,250)">
+                    <g transform="translate(112,250)">
                         <rect x="-1.5" y="-14" width="3" height="14" rx="1" fill="hsl(25,40%,22%)"/>
                         <circle cx="0" cy="-18" r="7" fill="hsl(115,50%,32%)"/>
                     </g>
-                    <text x="160" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#f0ede4">SEEDLING</text>
-                    <text x="160" y="302" text-anchor="middle" font-size="11" fill="#c7b99d">0.15× · from hour 0</text>
+                    <text x="112" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#f0ede4">SEEDLING</text>
+                    <text x="112" y="302" text-anchor="middle" font-size="11" fill="#c7b99d">0.15× · from hour 0</text>
 
                     <!-- YOUNG (0.5x) -->
-                    <g transform="translate(360,250)">
-                        <rect x="-3" y="-46" width="6" height="46" rx="2" fill="hsl(25,40%,22%)"/>
-                        <circle cx="0" cy="-54" r="22" fill="hsl(115,50%,32%)"/>
-                        <circle cx="-13" cy="-48" r="12" fill="hsl(115,50%,32%)"/>
-                        <circle cx="13" cy="-48" r="12" fill="hsl(115,50%,32%)"/>
+                    <g transform="translate(263,250)">
+                        <rect x="-3" y="-44" width="6" height="44" rx="2" fill="hsl(25,40%,22%)"/>
+                        <circle cx="0" cy="-52" r="20" fill="hsl(115,50%,32%)"/>
+                        <circle cx="-12" cy="-46" r="11" fill="hsl(115,50%,32%)"/>
+                        <circle cx="12" cy="-46" r="11" fill="hsl(115,50%,32%)"/>
                     </g>
-                    <text x="360" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#f0ede4">YOUNG</text>
-                    <text x="360" y="302" text-anchor="middle" font-size="11" fill="#c7b99d">0.50× · 48 sim-hours</text>
+                    <text x="263" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#f0ede4">YOUNG</text>
+                    <text x="263" y="302" text-anchor="middle" font-size="11" fill="#c7b99d">0.50× · 48 sim-hours</text>
 
                     <!-- MATURE (1.0x) -->
-                    <g transform="translate(585,250)">
-                        <rect x="-6" y="-92" width="12" height="92" rx="3" fill="hsl(25,40%,22%)"/>
-                        <path d="M-3 -64 Q-22 -76 -30 -98 M3 -60 Q26 -72 32 -94" stroke="hsl(25,40%,22%)" stroke-width="6" fill="none" stroke-linecap="round"/>
-                        <circle cx="0" cy="-112" r="42" fill="hsl(115,50%,32%)"/>
-                        <circle cx="-30" cy="-100" r="26" fill="hsl(115,50%,32%)"/>
-                        <circle cx="30" cy="-100" r="26" fill="hsl(115,50%,32%)"/>
-                        <circle cx="0" cy="-138" r="28" fill="hsl(115,50%,32%)"/>
+                    <g transform="translate(420,250)">
+                        <rect x="-5" y="-84" width="10" height="84" rx="3" fill="hsl(25,40%,22%)"/>
+                        <path d="M-3 -58 Q-19 -68 -26 -88 M3 -54 Q22 -64 28 -84" stroke="hsl(25,40%,22%)" stroke-width="5" fill="none" stroke-linecap="round"/>
+                        <circle cx="0" cy="-100" r="36" fill="hsl(115,50%,32%)"/>
+                        <circle cx="-26" cy="-90" r="22" fill="hsl(115,50%,32%)"/>
+                        <circle cx="26" cy="-90" r="22" fill="hsl(115,50%,32%)"/>
+                        <circle cx="0" cy="-124" r="24" fill="hsl(115,50%,32%)"/>
                     </g>
-                    <text x="585" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#f0ede4">MATURE</text>
-                    <text x="585" y="302" text-anchor="middle" font-size="11" fill="#c7b99d">1.0× · 144 sim-hours</text>
+                    <text x="420" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#f0ede4">MATURE</text>
+                    <text x="420" y="302" text-anchor="middle" font-size="11" fill="#c7b99d">1.0× · 144 sim-hours</text>
+
+                    <!-- DEAD snag (0.85x, leafless, crooked, leaning) -->
+                    <g transform="translate(572,250) rotate(-5)">
+                        <path d="M0 0 L-2 -34 L3 -62 L-1 -72" stroke="hsl(32,14%,42%)" stroke-width="8" fill="none" stroke-linecap="round"/>
+                        <path d="M-1 -40 Q-16 -50 -20 -64 M1 -52 Q14 -58 17 -72 M-2 -26 Q-12 -30 -16 -38" stroke="hsl(32,14%,42%)" stroke-width="4" fill="none" stroke-linecap="round"/>
+                    </g>
+                    <text x="572" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#f0ede4">DEAD</text>
+                    <text x="572" y="302" text-anchor="middle" font-size="11" fill="#c7b99d">0.85× → 0.68× · leafless snag</text>
+
+                    <!-- GONE: ground freed, a new seedling claims the spot -->
+                    <circle cx="690" cy="244" r="14" fill="none" stroke="rgba(124,255,159,0.45)" stroke-width="1.5" stroke-dasharray="4 4"/>
+                    <g transform="translate(690,250)">
+                        <rect x="-1" y="-9" width="2" height="9" rx="1" fill="hsl(25,40%,22%)"/>
+                        <circle cx="0" cy="-12" r="4.5" fill="hsl(115,50%,40%)"/>
+                    </g>
+                    <text x="690" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#7cff9f">GONE</text>
+                    <text x="690" y="302" text-anchor="middle" font-size="11" fill="#c7b99d">ground freed</text>
 
                     <!-- timeline ticks above -->
                     <g font-size="11" fill="#7cff9f" font-family="JetBrains Mono">
-                        <text x="160" y="40" text-anchor="middle">0 h</text>
-                        <text x="360" y="40" text-anchor="middle">48 h</text>
-                        <text x="585" y="40" text-anchor="middle">144 h</text>
+                        <text x="112" y="40" text-anchor="middle">0 h</text>
+                        <text x="263" y="40" text-anchor="middle">48 h</text>
+                        <text x="420" y="40" text-anchor="middle">144 h</text>
+                        <text x="572" y="40" text-anchor="middle">~864 h ±25%</text>
+                        <text x="690" y="40" text-anchor="middle">+~120 h</text>
                     </g>
-                    <line x1="160" y1="48" x2="160" y2="230" stroke="rgba(124,255,159,0.18)" stroke-width="1" stroke-dasharray="4 5"/>
-                    <line x1="360" y1="48" x2="360" y2="186" stroke="rgba(124,255,159,0.18)" stroke-width="1" stroke-dasharray="4 5"/>
-                    <line x1="585" y1="48" x2="585" y2="116" stroke="rgba(124,255,159,0.18)" stroke-width="1" stroke-dasharray="4 5"/>
+                    <line x1="112" y1="48" x2="112" y2="230" stroke="rgba(124,255,159,0.18)" stroke-width="1" stroke-dasharray="4 5"/>
+                    <line x1="263" y1="48" x2="263" y2="190" stroke="rgba(124,255,159,0.18)" stroke-width="1" stroke-dasharray="4 5"/>
+                    <line x1="420" y1="48" x2="420" y2="120" stroke="rgba(124,255,159,0.18)" stroke-width="1" stroke-dasharray="4 5"/>
+                    <line x1="572" y1="48" x2="572" y2="166" stroke="rgba(138,122,95,0.3)" stroke-width="1" stroke-dasharray="4 5"/>
+                    <line x1="690" y1="48" x2="690" y2="224" stroke="rgba(124,255,159,0.18)" stroke-width="1" stroke-dasharray="4 5"/>
                     <text x="385" y="20" text-anchor="middle" font-size="12" fill="#c7b99d">AGE IN SIM-HOURS →</text>
                 </svg>
                 <p class="climate-caption">
                     The default schedule: seedling for 48 sim-hours, young for a further 96, and
-                    mature at 144 sim-hours — roughly six sim-days from sprout to full size. Each
-                    species carries its own <code>seedling_hours</code> and <code>young_hours</code>,
-                    so a fast pioneer and a slow hardwood can share the same world clock.
+                    mature at 144 sim-hours — roughly six sim-days from sprout to full size. A tree
+                    then stands mature for its <code>lifespan_hours</code> (720 by default, jittered
+                    ±25% per plant so a generation never dies in one wave), spends
+                    <code>snag_hours</code> (120) as a standing snag, and despawns. Each species
+                    carries its own timings — shrubs live 360 hours and rot in 48, while the
+                    base-only cattail is immortal (it cannot respawn through the spread pass, so
+                    death would empty every reed bed for good).
                 </p>
             </div>
         </section>
@@ -109,11 +138,14 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
             <p class="section-label">The engine</p>
             <h2>The clock that drives it</h2>
             <p class="lead">
-                Growth is <strong>analytic</strong>. A plant never accumulates a timer — it stores
-                only the sim-hour it was born, <code>born_hour</code>, and its stage is a pure
-                function of its age. Subtract birth from the world's <code>total_hours</code> and
-                compare against the species' two thresholds; that one calculation yields seedling,
-                young, or mature with no per-tick bookkeeping.
+                The whole life cycle is <strong>analytic</strong>. A plant never accumulates a
+                timer — it stores only the sim-hour it was born, <code>born_hour</code>, and its
+                stage is a pure function of its age. Subtract birth from the world's
+                <code>total_hours</code> and compare against the species' thresholds; that one
+                calculation yields seedling, young, mature, dead, or <em>gone</em> with no per-tick
+                bookkeeping. The death and despawn thresholds are jittered per plant from a hash of
+                its identity, and base-world plants draw a uniform fraction of a full lifespan —
+                so the starting forest dies as a steady trickle, never a synchronized wave.
             </p>
 
             <div class="phases">
@@ -121,9 +153,10 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
                     <h3>Growth tick <code>1 sim-hour</code></h3>
                     <p class="sub">Cheap, off the hot path</p>
                     <ol class="steps">
-                        <li><strong>Skip the settled.</strong><span class="note">Each chunk tracks how many of its plants are still immature; a chunk with none is skipped entirely.</span></li>
-                        <li><strong>Recompute stages.</strong><span class="note">For the rest, the stage is re-derived from age — no state to advance, just a comparison.</span></li>
-                        <li><strong>Refresh on change.</strong><span class="note">If any plant crossed a threshold, loaded chunks are told to re-draw at the new scale.</span></li>
+                        <li><strong>Skip the settled.</strong><span class="note">Each chunk records the next sim-hour any of its plants crosses a threshold; a chunk whose hour hasn't come is skipped entirely.</span></li>
+                        <li><strong>Recompute stages.</strong><span class="note">For the rest, the stage — including death — is re-derived from age; no state to advance, just comparisons.</span></li>
+                        <li><strong>Reap the gone.</strong><span class="note">Plants past their despawn hour are removed, freeing their ground and waking the surrounding chunks for spread.</span></li>
+                        <li><strong>Refresh on change.</strong><span class="note">If anything changed, loaded chunks are told to re-draw at the new scale.</span></li>
                     </ol>
                 </div>
                 <div class="phase gpu">
@@ -131,7 +164,7 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
                     <p class="sub">One reproduction round per sim-day</p>
                     <ol class="steps">
                         <li><strong>Emit.</strong><span class="note">Every mature plant may cast a seedling candidate near itself.</span></li>
-                        <li><strong>Validate.</strong><span class="note">Each candidate is point-tested against terrain, the species' rules, and spacing.</span></li>
+                        <li><strong>Validate.</strong><span class="note">Each candidate is point-tested against terrain, the species' rules, spacing, and house clearance.</span></li>
                         <li><strong>Append.</strong><span class="note">Survivors are born at the current hour and start their own life cycle.</span></li>
                     </ol>
                 </div>
@@ -140,8 +173,14 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
             <div class="callout">
                 Because the stage is derived, not stored as a running counter, a world can sit idle
                 or fast-forward its clock and every plant still resolves to exactly the right age —
-                no catch-up loop, no drift. Persistence only needs the clock's <code>total_hours</code>
-                and each plant's <code>born_hour</code> to reconstruct the whole world's growth.
+                no catch-up loop, no drift. (Reproduction is the one exception: a birth is an
+                event, not a derived state, so a leaping clock replays missed spread rounds —
+                see below.) The same trick makes death free to persist: a despawn
+                needs <strong>no tombstone</strong> in the save, because a reloaded world re-derives
+                the same death day from the same identity and simply never materializes the plants
+                whose time has passed. Persistence only needs the clock's <code>total_hours</code>
+                and each plant's <code>born_hour</code> to reconstruct the whole living — and dying
+                — world.
             </div>
         </section>
 
@@ -204,10 +243,12 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
                 <p class="climate-caption">
                     Phase 1 (read-only, parallel): each mature plant rolls its <code>spread_chance</code>
                     (default 0.3) and, if it passes, throws one or two candidate seedlings within its
-                    <code>spread_radius</code> (default 25 m, always inside one 256 m chunk). Phase 2
-                    validates every candidate against the target chunk's height, moisture, slope,
-                    rivers and sea level, the species' placement rules, and spacing against existing
-                    plants — then appends the survivors.
+                    <code>spread_radius</code> (default 25 m — close by, but far enough to cross a
+                    chunk border, so a seedling lands in the parent's own chunk or a direct
+                    neighbour). Phase 2 validates every candidate against the target chunk's height,
+                    moisture, slope, rivers and sea level, the species' placement rules, spacing
+                    against existing plants, and a keep-clear ring around houses (10 m for trees,
+                    5 m for shrubs) — then appends the survivors.
                 </p>
             </div>
 
@@ -217,6 +258,17 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
                 fewer and fewer candidates find open ground, so each chunk climbs toward a bounded
                 full population and then holds steady — the forest reaches a natural carrying capacity
                 rather than growing without limit.
+            </div>
+
+            <div class="note">
+                <strong>A fast clock doesn't starve the forest.</strong> The spread roll is
+                salted with the sim-day, so every mature plant draws a fresh, independent
+                chance each day — failing today never means failing forever. And when a high
+                <code>day_speed</code> makes one frame span several sim-days, the runtime
+                replays the missed reproduction rounds (up to eight per frame) instead of
+                collapsing them into one. Births stay proportional to sim time, not frame
+                rate — without this, the analytic death rate would outrun a frame-throttled
+                birth rate, and every mortal species would slowly thin toward extinction.
             </div>
         </section>
 
@@ -240,6 +292,14 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
                 fills in, that entire neighbourhood is skipped, so the simulation's cost
                 <strong>falls as the world matures</strong>. A maturing seedling next door instantly
                 clears the flag and reopens the chunk for reproduction.
+            </p>
+            <p class="lead">
+                Death is what keeps a saturated forest from freezing forever. A standing snag still
+                holds its ground — seedlings can't sprout inside a dead trunk — but the moment it
+                despawns, its chunk <em>and</em> the eight neighbours are un-saturated and the next
+                spread pass competes for the gap. The forest settles into a
+                <strong>dynamic equilibrium</strong>: a steady trickle of deaths opening ground, and
+                a daily race of seedlings closing it again.
             </p>
 
             <div class="note">
