@@ -31,8 +31,8 @@ use std::f64::consts::TAU;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::world_core::chunk::WORLD_SIZE_METERS;
-use crate::world_core::noise4::Simplex4;
 use crate::world_core::config::HeightmapConfig;
+use crate::world_core::noise4::Simplex4;
 
 /// Baked raw noise on a coarse global grid, sampled during terrain generation.
 /// Immutable and deterministic from `(seed, the octave frequencies/offsets,

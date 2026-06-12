@@ -2,8 +2,8 @@ use std::f64::consts::TAU;
 use std::sync::Arc;
 
 use crate::world_core::chunk::WORLD_SIZE_METERS;
-use crate::world_core::noise4::Simplex4;
 use crate::world_core::config::HeightmapConfig;
+use crate::world_core::noise4::Simplex4;
 use crate::world_core::terrain_fields::{FieldKind, TerrainFields};
 
 pub struct Heightmap {
