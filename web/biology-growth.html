@@ -164,7 +164,7 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
                     <p class="sub">One reproduction round per sim-day</p>
                     <ol class="steps">
                         <li><strong>Emit.</strong><span class="note">Every mature plant may cast a seedling candidate near itself.</span></li>
-                        <li><strong>Validate.</strong><span class="note">Each candidate is point-tested against terrain, the species' rules, and spacing.</span></li>
+                        <li><strong>Validate.</strong><span class="note">Each candidate is point-tested against terrain, the species' rules, spacing, and house clearance.</span></li>
                         <li><strong>Append.</strong><span class="note">Survivors are born at the current hour and start their own life cycle.</span></li>
                     </ol>
                 </div>
@@ -173,7 +173,9 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
             <div class="callout">
                 Because the stage is derived, not stored as a running counter, a world can sit idle
                 or fast-forward its clock and every plant still resolves to exactly the right age —
-                no catch-up loop, no drift. The same trick makes death free to persist: a despawn
+                no catch-up loop, no drift. (Reproduction is the one exception: a birth is an
+                event, not a derived state, so a leaping clock replays missed spread rounds —
+                see below.) The same trick makes death free to persist: a despawn
                 needs <strong>no tombstone</strong> in the save, because a reloaded world re-derives
                 the same death day from the same identity and simply never materializes the plants
                 whose time has passed. Persistence only needs the clock's <code>total_hours</code>
@@ -241,10 +243,12 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
                 <p class="climate-caption">
                     Phase 1 (read-only, parallel): each mature plant rolls its <code>spread_chance</code>
                     (default 0.3) and, if it passes, throws one or two candidate seedlings within its
-                    <code>spread_radius</code> (default 25 m, always inside one 256 m chunk). Phase 2
-                    validates every candidate against the target chunk's height, moisture, slope,
-                    rivers and sea level, the species' placement rules, and spacing against existing
-                    plants — then appends the survivors.
+                    <code>spread_radius</code> (default 25 m — close by, but far enough to cross a
+                    chunk border, so a seedling lands in the parent's own chunk or a direct
+                    neighbour). Phase 2 validates every candidate against the target chunk's height,
+                    moisture, slope, rivers and sea level, the species' placement rules, spacing
+                    against existing plants, and a keep-clear ring around houses (10 m for trees,
+                    5 m for shrubs) — then appends the survivors.
                 </p>
             </div>
 
@@ -254,6 +258,17 @@ fonts: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;
                 fewer and fewer candidates find open ground, so each chunk climbs toward a bounded
                 full population and then holds steady — the forest reaches a natural carrying capacity
                 rather than growing without limit.
+            </div>
+
+            <div class="note">
+                <strong>A fast clock doesn't starve the forest.</strong> The spread roll is
+                salted with the sim-day, so every mature plant draws a fresh, independent
+                chance each day — failing today never means failing forever. And when a high
+                <code>day_speed</code> makes one frame span several sim-days, the runtime
+                replays the missed reproduction rounds (up to eight per frame) instead of
+                collapsing them into one. Births stay proportional to sim time, not frame
+                rate — without this, the analytic death rate would outrun a frame-throttled
+                birth rate, and every mortal species would slowly thin toward extinction.
             </div>
         </section>
 
