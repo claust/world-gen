@@ -289,7 +289,12 @@ impl<'a> BaseGenerationInputs<'a> {
             // land flora additionally rejects ground below the water sheet, so
             // bank terrain and the plants seated near channels both differ. See
             // `world_core::rivers` and `world_core::content::flora`.
-            version: 9,
+            // v10: the noise core swapped from the `noise` crate's classic
+            // OpenSimplex to the custom branchless 4D simplex in
+            // `world_core::noise4` (~2.2× faster, character-calibrated). Every
+            // octave is a different field now, so the whole baked world differs
+            // and old snapshots must be rejected.
+            version: 10,
             seed: config.world.seed,
             sea_level: config.sea_level,
             biome: &config.biome,

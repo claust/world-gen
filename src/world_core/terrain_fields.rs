@@ -5,7 +5,7 @@
 //! base (~530 m) and variation (~105 m). Of these five, only the height detail
 //! octave is high-frequency relative to the 2 m vertex spacing; the other four
 //! barely change within a 256 m chunk and are wildly oversampled when evaluated
-//! as 4D OpenSimplex per vertex.
+//! as 4D noise per vertex.
 //!
 //! So, exactly like [`RiverField`](crate::world_core::rivers), we bake those
 //! four **raw** (pre-amplitude, pre-crease, pre-weight) octaves once onto a
@@ -30,9 +30,8 @@ use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use noise::{NoiseFn, OpenSimplex};
-
 use crate::world_core::chunk::WORLD_SIZE_METERS;
+use crate::world_core::noise4::Simplex4;
 use crate::world_core::config::HeightmapConfig;
 
 /// Baked raw noise on a coarse global grid, sampled during terrain generation.
@@ -72,7 +71,7 @@ impl TerrainFields {
     /// Must stay in lockstep with `torus_sample`'s mapping; the bit-identity test
     /// in `heightmap.rs` guards the combined result.
     fn torus_raw(
-        noise: &OpenSimplex,
+        noise: &Simplex4,
         x: f64,
         z: f64,
         frequency: f64,
@@ -103,9 +102,9 @@ impl TerrainFields {
         let n2 = res * res;
         let cell = WORLD_SIZE_METERS as f32 / res as f32;
 
-        let cont_noise = OpenSimplex::new(seed);
-        let ridge_noise = OpenSimplex::new(seed.wrapping_add(101));
-        let moisture_noise = OpenSimplex::new(seed.wrapping_add(1701));
+        let cont_noise = Simplex4::new(seed);
+        let ridge_noise = Simplex4::new(seed.wrapping_add(101));
+        let moisture_noise = Simplex4::new(seed.wrapping_add(1701));
         let cont_freq = cfg.continental.frequency;
         let ridge_freq = cfg.ridge.frequency;
         let m_base_freq = cfg.moisture_base_frequency;

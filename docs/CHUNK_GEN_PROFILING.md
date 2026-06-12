@@ -319,3 +319,56 @@ extrapolation (chunk-parallel rate × 65,536); per-chunk *compute* dropped ~1.45
 wall-clock gain inside this harness's known thread-scaling variance. This lands
 the build in the doc's ~10–13 s target. **Phase 3** (fast 2D detail octave) is
 the only remaining lever and is independent of this work.
+
+## Implemented: Phase 3 — custom 4D noise core (2026-06-13)
+
+Phase 3 was sketched above as "fast 2D detail octave" via `fastnoise-lite`,
+trading away the seamless wrap of the finest octave. It shipped differently —
+and better: a **custom 4D simplex core** (`world_core::noise4::Simplex4`) that
+keeps the torus mapping (and thus exact seamlessness for every octave) while
+replacing the `noise` crate's classic OpenSimplex outright, for height detail
+*and* the one-time `TerrainFields` bake.
+
+A dedicated microbenchmark (`examples/profile_noise4d/`) isolates the exact
+production call pattern — torus-mapped 4D points, per-axis trig hoisted, one
+129×129 grid per chunk — and was used to run a three-way bake-off of custom
+implementations against the crate (10-core Apple silicon, `--release`):
+
+| Implementation | point ns/eval | row ns/eval | output field |
+|---|---|---|---|
+| `noise` crate OpenSimplex (old production) | 30.9 | 31.1 | — |
+| `faithful.rs`: exact specialized port | 20.3 | 19.5 (1.55×) | **bit-identical** |
+| `os2.rs`: branchless 4D simplex, f32 core | 14.7 | **14.0 (2.2×)** | new field, calibrated character |
+| `simd.rs`: NEON 4-lane simplex | 25.1 | 7.8 (4.0×) | new field, visibly dotty |
+
+**The branchless simplex shipped** (best portable speed with baseline-like
+character; the NEON one is faster but arm64-only and its narrow quartic kernel
+reads as polka-dots). Why it is ~2.2× faster than the crate: always exactly 5
+corner contributions (classic OpenSimplex: 5–10) selected by integer mask
+arithmetic with zero data-dependent branches; lattice hashing is one
+multiply/xor over per-axis primes instead of four dependent permutation-table
+lookups; inner math in f32. Two empirical findings worth keeping: the textbook
+kernel radius r² = 0.6 is **not continuous in 4D** (rank-swap boundaries crease;
+r² = 0.5 probes clean), and at the safe radius a quartic falloff disintegrates
+into disconnected blobs, so the kernel is the wider quadratic `max(0, r²−d²)²`
+(exactly C1 at support). Character is calibrated to the old field — `INPUT_SCALE`
+matches feature size, `RESCALE` lands std ≈ 0.30 — so all existing octave
+frequencies/amplitudes keep their meaning.
+
+This is a **new noise field** (not a port), so the whole baked world changes:
+`BaseGenerationInputs.version` bumped **9 → 10**, old snapshots auto-reject,
+and `world_base.bin` must be regenerated/reshipped (including the web bundle).
+A same-workload full-build A/B is therefore impossible (the chunk content
+itself changed); the isolated noise A/B above is the honest measure. Current
+absolutes on the new world (harness defaults, 4096 chunks, ~166 plants/chunk):
+0.506 ms/chunk serial full pipeline, 7227 chunks/s at 10 threads → ~9 s for
+the 65,536-chunk base build. The detail octave is 0.52 → 0.23 ms/chunk of the
+terrain layer's serial cost; the `TerrainFields`/`RiverField` bakes ride the
+same 2.2×.
+
+Unshipped follow-ups, in value order: (1) the bake-off's NEON row evaluator
+(7.8 ns) rebuilt around the shipped kernel (quadratic, r² = 0.5) with SSE2 /
+wasm-simd128 ports — a further ~1.8× on detail with proper character; (2) a
+32-bit hash variant for wasm, where i64 multiplies are slow; (3) the faithful
+port stays in the harness as the reference that exactly reproduces the old
+world if it is ever needed again.
