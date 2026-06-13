@@ -1,184 +1,411 @@
-# Plant Evolution — System Design
+# Plant Evolution - System Design
 
 > Status: design proposal. This document describes the *game system* for plant
-> genetics and evolution, not the implementation. It defines the genes, how they
-> become visible traits, how they're inherited and mutate, and how the
-> environment selects between them. Implementation details (struct layouts,
-> call-sites, serialization) come later, once the design is agreed.
+> genetics and evolution, not the implementation. It sketches several possible
+> implementation depths, then recommends a first playable path.
 
 ## Goal
 
-Let plants slowly diverge as they spread across the world: lineages that drift
-toward the conditions they live in, so that — over many in-game days — wetlands,
-dry ridges, and high slopes come to hold visibly different-looking plants of the
-same species. It should feel like adaptation, not like a random skin shuffle.
+Let plants evolve in ways the player can watch, understand, and become curious
+about. Over many in-game generations, lineages should drift, adapt, compete, and
+sometimes split into recognizably different local populations: wetland giants,
+dry ridge specialists, fast pioneer shrubs, shade-tolerant understory plants,
+and other niches that were not hand-authored one by one.
 
-The hard constraint is that **this is a game, not a biology simulator**. The gene
-set is deliberately tiny and abstract. Richness comes from *combination* and from
-*genes meeting the environment*, not from a large catalogue of authored variants.
+The system should stay close enough to real biology to feel honest:
 
-## The one idea that everything rests on: genotype ≠ phenotype
+- Genes are inherited, mutable information.
+- Phenotypes are produced by many genes interacting with the environment.
+- Selection acts on survival and reproduction, not on abstract "score" alone.
+- Adaptations have costs as well as benefits.
+- Populations diverge through selection, drift, gene flow, and competition.
 
-We keep two layers strictly separate.
+This is still a game, not a research simulator. The design should be compact,
+legible, deterministic where needed, and visually rewarding.
 
-- **Genotype** — a short vector of abstract genes the plant carries. Heritable,
-  mutable, and *not* directly meaningful on screen. A gene is never "the height
-  slider"; it is a tendency.
-- **Phenotype** — what you actually see and measure: rendered height, width,
-  leaf color, how long it lives, how often it reproduces. The phenotype is
-  **computed** from the genotype **and the local environment**.
+## Core Principle: Genotype != Phenotype
 
-The function that maps `(genotype, environment) → phenotype` is where the whole
-game lives. Two rules make it interesting rather than a set of renamed sliders:
+Keep two layers strictly separate.
 
-1. **One gene can fan out to many traits** (pleiotropy). The growth gene drives
-   both height and girth, so a mutant looks like a *plausible* bigger plant, not
-   a stretched one.
-2. **One trait can be driven by many genes.** Final height = growth gene *scaled
-   by* how well the tolerance genes match this spot. A plant that is genetically
-   vigorous but living somewhere it hates stays stunted.
+- **Genotype** - compact inherited information. Genes are not direct render
+  sliders. A gene should never simply mean "height" or "leaf color".
+- **Phenotype** - the realized plant: height, width, color, lifespan, seed
+  output, dispersal distance, stress, and competitive strength. Phenotype is
+  computed from genotype, species baseline, local environment, and local
+  competition.
 
-Because the mapping is many-to-many, we never author "tall swamp variant" — we
-author a few genes and one mapping function, and the player *discovers* the
-combinations that emerge across the terrain.
+The central mapping is:
 
-## The gene set (genotype)
+```text
+(species baseline, genotype, environment, neighbours) -> phenotype
+```
 
-Four genes to start. All are abstract scalars in `[0, 1]`; none renders anything
-on its own.
+This is where the system becomes alive. One gene may influence several
+phenotypes (pleiotropy), and one phenotype should usually depend on several
+genes (polygenic traits). A plant is not "tall because it has the tall gene"; it
+is tall because its inherited strategy, local fitness, life stage, and
+competitive situation allow it to realize height.
 
-| Gene | What it represents | Role in the mapping |
+## Non-Negotiable Principle: No Gene Is Purely Good
+
+Every adaptive advantage must buy a disadvantage somewhere else.
+
+If a gene can only improve fitness, evolution will simply push it to one end of
+its range and the system becomes a hidden upgrade tree. That is not evolution;
+it is optimization. Real ecological traits are trade-offs:
+
+- Bigger adults capture more light, but need more water and mature more slowly.
+- Heavy seeds establish better, but fewer can be produced.
+- Far-dispersing seeds colonize new ground, but establish less reliably.
+- Generalists survive many places, but lose to specialists in their ideal niche.
+- Fast life cycles reproduce sooner, but shorten lifespan or reduce adult size.
+- Shade tolerance helps under a canopy, but limits peak growth in open sun.
+
+This principle should be enforced in the phenotype mapping and in any future
+gene additions. A proposed gene is suspect until its cost is clear.
+
+## Existing World Constraints
+
+The current plant architecture has two populations:
+
+- **Base flora** - the huge generated background population. It is derived from
+  the world seed and position, and should remain deterministic and cheap to
+  reconstruct. It can have hashed founder genotypes, but it should not be the
+  main evolving population.
+- **Spreading population** - plants born during play. These are already
+  persisted separately and participate in lifecycle/spread. This is the natural
+  home for inherited genotypes, mutation, recombination, and local adaptation.
+
+That split is useful. The world begins as stable founder stock, then living
+evolution happens in the spreading layer on top of it.
+
+## Option 1: Tiny Genes With Real Trade-Offs
+
+This is the most conservative extension of the current plan. Keep a small set
+of named ecological genes, but make every one participate in costs.
+
+Possible genes:
+
+| Gene | Meaning | Benefit | Cost |
+|---|---|---|---|
+| `wet_pref` | Preferred moisture band | Thrives when local moisture matches | Poorer performance away from optimum |
+| `alt_pref` | Preferred altitude band | Thrives in matching elevation/temperature | Poorer performance away from optimum |
+| `stress_width` | Generalist vs specialist tolerance | Survives broader conditions | Lower peak performance in ideal niche |
+| `vigor` | Investment in adult size/capture | Taller, wider, stronger competitor | Slower maturity, higher water demand, fewer seeds |
+| `seed_mass` | Investment per seed | Better seedling establishment | Fewer seeds, shorter spread |
+| `dispersal` | Colonization strategy | Seeds travel farther | Lower establishment and/or seed mass |
+
+Example mapping:
+
+```text
+wet_match = bell(local_moisture, center = wet_pref, width = stress_width)
+alt_match = bell(local_altitude, center = alt_pref, width = stress_width)
+
+site_match = combine(wet_match, alt_match)
+peak_penalty = lerp(1.15, 0.85, stress_width)  # specialists peak higher
+fitness = site_match * peak_penalty
+
+adult_height = species_height * vigor * fitness * water_affordance
+maturity_time = species_maturity * lerp(0.8, 1.4, vigor)
+seed_count = species_seed_count * (1.0 - seed_mass) * (1.0 - vigor * 0.35)
+establishment = fitness * seed_mass * competition_room
+spread_radius = species_radius * dispersal * lerp(1.1, 0.7, seed_mass)
+```
+
+This option is easy to debug and fits the current runtime well. It should be the
+first implementation unless a more complex model is explicitly desired.
+
+## Option 2: Polygenic Phenotypes
+
+This option makes the genetics more biologically honest. Instead of each gene
+having a readable ecological name, store a compact vector of abstract genes:
+
+```text
+g0..g11 in 0..1
+```
+
+Phenotypes are computed from combinations:
+
+```text
+wet_pref        = sigmoid(+g0 - g3 + 0.5*g7)
+alt_pref        = sigmoid(+g1 + g4 - g8)
+vigor           = sigmoid(+g2 + g5 - g9)
+stress_width    = sigmoid(+g6 - g0 + g10)
+seed_mass       = sigmoid(+g3 + g9 - g11)
+leaf_darkness   = species_leaf + stress_shift + 0.2*g4 - 0.1*g8
+```
+
+This gives useful biological behavior:
+
+- One mutation can affect several traits.
+- Similar phenotypes can arise from different genotypes.
+- Hidden genetic diversity can persist before becoming visible.
+- Selection acts on expressed phenotypes, not directly on genes.
+
+The downside is observability. Debug tools must show both genotype distribution
+and derived phenotype distribution, because a player cannot reason about `g7`
+directly. This is a better second step than first step.
+
+## Option 3: Ecological Strategy Genes
+
+This option names genes after ecological strategies rather than visible traits.
+It is more readable than abstract genes and richer than simple preference genes.
+
+Possible strategy genes:
+
+| Gene | High value means | Trade-off |
 |---|---|---|
-| **Vigor** | how much the plant invests in raw size | The pure size driver: scales height *and* width together, and slightly speeds maturation. The only gene that touches size directly. |
-| **Wetness preference** | the moisture level this plant is happiest at (0 = dry-loving … 1 = swamp-loving) | An *optimum*, not a knob. Compared against local moisture to produce a fitness value. Renders nothing by itself. |
-| **Altitude preference** | the elevation / "air density" band it favors (0 = lowland … 1 = highland) | A second optimum, compared against local altitude. Lets lineages climb or stay low. |
-| **Hardiness** | how wide a range it tolerates around its preferences | Widens or narrows the fitness response. High hardiness = generalist that does okay everywhere; low hardiness = specialist that's excellent in its niche and poor outside it. |
+| `capture` | Big canopy, strong light competition | Higher water demand, slower maturity |
+| `stress_tolerance` | Survives poor sites | Lower peak growth |
+| `colonizer` | Many/far seeds, fast expansion | Lower adult competitiveness |
+| `seed_investment` | Fewer stronger seedlings | Lower seed count and spread |
+| `shade_tolerance` | Establishes under taller plants | Lower maximum growth in full sun |
+| `timing` | Fast maturity and turnover | Shorter lifespan or smaller adult form |
 
-Three of these (wetness, altitude, hardiness) feed a single combined **fitness**
-number; vigor feeds size directly. That keeps the design legible: *one gene for
-"how big," two genes for "where do I belong," one gene for "how picky am I."*
+These genes can produce recognizable niches:
 
-> The altitude gene is the newly requested axis. Framing it as "air-density / how
-> high it likes to grow" gives a second independent environmental gradient, so
-> populations can specialize along *two* directions at once (a wet-lowland type
-> and a dry-highland type can coexist and diverge separately).
+- **Dry ridge specialist** - high stress tolerance, low capture, low water need.
+- **Wetland giant** - high capture, high water demand, poor dry survival.
+- **Pioneer shrub** - high colonizer, fast timing, low adult dominance.
+- **Understory plant** - high shade tolerance, modest height, steady survival.
 
-## How genotype becomes phenotype
+This option is likely the most joyful to witness because evolution changes plant
+roles, not just plant size.
 
-A single conceptual function, applied everywhere a plant's traits are needed:
+## Option 4: Add Competition As Selection
 
+Terrain selection alone creates smooth clines: plants near water become
+wet-adapted, high plants become altitude-adapted, and so on. That is good, but
+it will not reliably create rich niches by itself.
+
+Plants should also select against each other.
+
+During seed establishment and possibly growth, compute local competition from
+nearby plants:
+
+```text
+light_available = reduced by nearby taller/wider adults
+root_pressure = reduced by nearby plants with similar moisture strategy
+similarity_penalty = stronger when neighbours have similar phenotypes
+competition_room = light_available * root_available * spacing_room
 ```
-# 1. How well does this genotype match where it actually is?
-wet_match = bell(local_moisture; center = wetness_pref, width = hardiness)
-alt_match = bell(local_altitude; center = altitude_pref, width = hardiness)
-fitness   = combine(wet_match, alt_match)      # 0 = wrong place, 1 = ideal spot
 
-# 2. Visible / measurable traits derive from genes AND fitness
-realized_height = base_height × vigor × (floor + (1-floor) × fitness)
-realized_width  = base_width  × vigor × (floor + (1-floor) × fitness)
-lifespan        = base_lifespan        × fitness
-spread_chance   = base_spread_chance   × fitness
-leaf_color      = base_color  shifted by stress (low fitness → paler/duller)
+The important biological rule is:
+
+```text
+similar plants compete more strongly than different plants
 ```
 
-Key consequences for the feel of the game:
+That encourages character displacement. Two lineages in the same area need not
+converge on one optimum; one may become taller and water-hungry while another
+becomes smaller, faster, or shade-tolerant. This is how new niches can appear.
 
-- A **swamp-preference** plant that sprouts on a **dry ridge** grows stunted,
-  pales, lives briefly, and rarely seeds — so its offspring lose ground there to
-  better-matched neighbors. The same genotype in a wetland thrives. *That* is
-  adaptation, and it falls out of the mapping rather than being scripted.
-- **No gene is a direct visual control.** The visible difference (lush vs.
-  stunted, green vs. pale) emerges from genotype meeting environment. This is the
-  genotype/phenotype separation working as intended.
-- The `base_*` values stay exactly the species presets we already have. Genes are
-  *modifiers on top of* the authored baseline, so an unmutated plant looks like
-  today's plant.
+Implementation can stay cheap. The spread landing pass already validates
+spacing. It can also inspect plants in the target chunk and neighbours, compute
+a coarse competition penalty, and use that penalty in establishment chance.
 
-## Inheritance, mutation, drift
+## Option 5: Sexual Reproduction And Recombination
 
-- **Inheritance.** A seedling copies its parent's genotype.
-- **Mutation.** At birth, each gene gets a small random nudge, clamped to
-  `[0, 1]`. Mutation size is a single global tuning value (call it the
-  *mutation rate*) so we can dial evolution's speed up for demos and down for
-  realism.
-- **Drift vs. selection.** Mutation alone is aimless drift. Selection comes from
-  the fitness coupling above: better-matched plants live longer and reproduce
-  more, so their (similarly-matched, slightly-mutated) offspring come to
-  dominate a locale. Over many generations a population *clines* along the
-  moisture and altitude gradients.
-- **Optional later: gene flow / pollination.** When a seedling lands, nudge its
-  genotype slightly toward nearby mature plants of the same species. This makes
-  regional varieties converge into recognizable local "breeds" instead of every
-  lineage drifting in isolation. Out of scope for the first version.
+Pure parent-copy-plus-mutation works, but it behaves like asexual hill-climbing.
+Recombination makes populations feel much more alive.
 
-## Two populations, two policies
+Simple first model:
 
-The world has two distinct plant populations, and evolution applies differently
-to each — this keeps storage and determinism intact.
+```text
+mother = plant emitting the seed
+father = nearby mature same-species plant, weighted by distance and fitness
+child_gene[i] = choose(mother_gene[i], father_gene[i]) + mutation
+```
 
-- **Base flora** (the world as first generated). Huge, regenerated from seed, not
-  individually stored. Its genotypes are derived from a **position + seed hash**,
-  so founders start already roughly matched to their biome and cost *nothing* to
-  store. Base flora is treated as a fixed **founder stock**: it does not itself
-  mutate or change over time. The fitness mapping still applies, so even founders
-  vary in size/color by how well their hashed genes suit their spot.
-- **Spreading population** (everything born from reproduction during play). This
-  *is* the evolving set. It carries real genotypes that inherit and mutate, and
-  it's the population that genuinely adapts over in-game time. It's already the
-  population we persist separately, so confining evolutionary state to it means
-  the static world snapshot stays static and reload-deterministic.
+This does not require full diploid genetics at first. Even haploid
+recombination gives:
 
-Net effect: the bulk of the world is a stable, reproducible backdrop, and a
-living, adapting frontier grows out of it.
+- local populations that blend into recognizable varieties
+- hybrid zones between habitats
+- useful gene combinations spreading faster
+- diversity that selection can recombine instead of waiting for mutation alone
 
-## Making evolution *visible* (it's a game)
+Later, this can grow into diploid alleles with dominance/recessiveness, but that
+is not necessary for a first fun version.
 
-Real selection is slow; a player must be able to see it.
+## Recommended Path
 
-- **Lead with the loud traits.** Size (vigor × fitness) and leaf color (stress
-  tint) are the immediately legible signals. Flying over a moisture or altitude
-  gradient should show a smooth cline of plant size/color — that reads instantly
-  as "these adapted to here."
-- **Stress coloring is optional pleiotropy worth taking.** Letting low fitness
-  drift leaves toward pale/dull (and ideal fitness toward rich green) makes
-  adaptation readable at a glance, not only by comparing heights. Cheap, because
-  per-instance color already exists.
-- **Tunable drama.** Mutation rate and selection strength are global dials, so
-  evolution can be sped up for showing off and slowed for a more naturalistic
-  pace.
-- **A readout.** Some way to inspect a region's gene distribution (e.g. mean
-  wetness-preference, mean vigor over an area) so slow drift is observable and
-  debuggable — otherwise the system's most interesting behavior is invisible.
+The first implementation should combine parts of options 1, 3, and 4:
 
-## Scope: first version vs. later
+1. Use a compact named genotype with ecological genes.
+2. Make every gene participate in at least one trade-off.
+3. Compute phenotype from genotype + environment + competition.
+4. Let selection act through lifecycle events: growth, survival, seed count,
+   seed landing, establishment, and death.
+5. Add region-level debug readouts and evolution overlays immediately, because
+   invisible evolution will feel like nothing is happening.
 
-**First version**
-- Four genes: vigor, wetness preference, altitude preference, hardiness.
-- One genotype→phenotype function with the combined fitness term.
-- Traits driven: rendered height, rendered width, lifespan, spread chance, and
-  (recommended) stress-based leaf tint.
-- Inheritance + mutation on the spreading population; hashed founder genes on
-  base flora.
-- A region-level gene readout for observation/tuning.
+Suggested first genotype:
 
-**Later**
-- Gene flow / pollination toward local neighbors.
-- Genes that affect *shape*, not just size — branchiness, crown form. These
-  change geometry, so they'd be quantized into a few discrete per-species
-  "morphs" rather than continuous, to avoid giving every plant a unique mesh.
-- More environmental axes (slope, temperature) if the two-gradient model proves
-  too thin.
+| Gene | Range | Notes |
+|---|---:|---|
+| `wet_pref` | 0..1 | Moisture optimum |
+| `alt_pref` | 0..1 | Altitude/temperature optimum |
+| `stress_width` | 0..1 | Generalist/specialist axis; broad tolerance lowers peak fitness |
+| `capture` | 0..1 | Adult size and competitive strength; costs water, maturity, seed output |
+| `fecundity` | 0..1 | More seeds; lowers seed mass or seedling survival |
+| `seed_mass` | 0..1 | Better establishment; fewer seeds and shorter dispersal |
+| `dispersal` | 0..1 | Farther spread; lower establishment |
+| `timing` | 0..1 | Faster maturity; shorter lifespan or smaller adult size |
 
-## Design principles to hold onto
+These genes are still readable enough to tune, but no longer behave like simple
+appearance sliders.
 
-1. **Genes are abstract; traits are computed.** Never collapse a gene into a
-   direct visual slider — that throws away the genotype/phenotype distinction
-   that makes combinations emergent.
-2. **Few genes, rich combinations.** Resist adding genes to get variety; get
-   variety from the mapping and the environment instead.
-3. **Environment is half the equation.** A genotype has no fixed phenotype — only
-   a phenotype *in a place*. This is what makes plants appear to adapt.
-4. **Keep the static world static.** Evolution lives in the spreading population;
-   the base world stays a reproducible backdrop.
-5. **Visible beats accurate.** When realism and legibility conflict, favor the
-   version the player can see.
+## Phenotype Mapping Sketch
+
+Compute local environment:
+
+```text
+moisture = terrain/rivers/biome moisture at plant
+altitude = normalized height
+shade = nearby canopy pressure
+root_competition = nearby below-ground pressure
+```
+
+Compute match:
+
+```text
+wet_match = bell(moisture, wet_pref, width = stress_width)
+alt_match = bell(altitude, alt_pref, width = stress_width)
+
+specialist_bonus = lerp(1.15, 0.85, stress_width)
+abiotic_fitness = wet_match * alt_match * specialist_bonus
+```
+
+Compute trade-offs:
+
+```text
+water_need = 0.4 + 0.8*capture
+maturity_scale = 0.75 + 0.65*capture - 0.25*timing
+lifespan_scale = 0.7 + 0.6*(1.0 - timing)
+
+seed_count = base_seed_count
+  * lerp(0.6, 1.4, fecundity)
+  * lerp(1.25, 0.55, seed_mass)
+  * lerp(1.0, 0.75, capture)
+
+establishment = abiotic_fitness
+  * lerp(0.6, 1.4, seed_mass)
+  * competition_room
+  * dispersal_establishment_penalty
+```
+
+Compute visible traits:
+
+```text
+realized_height = base_height * growth_stage_scale * capture * abiotic_fitness * water_affordance
+realized_width = base_width * (0.7 + 0.6*capture) * abiotic_fitness
+leaf_color = species_leaf shifted by stress, moisture, and perhaps hidden gene effects
+stress_visual = 1.0 - abiotic_fitness * competition_room
+```
+
+The exact numbers are tuning placeholders. The important structure is that
+phenotype comes from many interacting causes.
+
+## Population Divergence And New Niches
+
+The system should make several kinds of divergence possible:
+
+- **Clines** - gradual shifts along moisture or altitude gradients.
+- **Local adaptation** - a valley population becomes better at valley
+  conditions than its ancestors.
+- **Generalist/specialist balance** - broad-tolerance plants persist across many
+  sites, but specialists dominate ideal patches.
+- **Character displacement** - competing lineages diverge because similar plants
+  suppress each other more strongly.
+- **Founder effects** - a few seeds colonize an isolated patch and drift before
+  selection refines them.
+- **Hybrid zones** - if recombination is added, neighbouring populations can
+  mix at habitat boundaries.
+
+None of these should require authoring "the wetland variant" or "the ridge
+variant". The player should discover them.
+
+## Making Evolution Visible
+
+Evolution must be observable or it will feel like hidden bookkeeping.
+
+Recommended tools:
+
+- **Evolution lens** - toggle plant coloring by wet preference, altitude
+  preference, abiotic fitness, competition stress, lineage, or generation.
+- **Region inspector** - mean genes, phenotype averages, diversity, birth rate,
+  death rate, seed establishment rate, dominant lineage.
+- **Plant inspector** - selected plant's genotype, phenotype, local fitness,
+  parents, generation, and recent mutations.
+- **Time-lapse mode** - accelerate days and snapshot a region's population
+  colors over time.
+- **Niche labels** - debug summaries such as "dry ridge specialists", "wet
+  lowland generalists", or "fast colonizers", inferred from phenotype clusters.
+- **Mutation highlights** - optional debug markers for rare successful mutants
+  whose descendants are spreading.
+
+Normal rendering should remain natural. Debug overlays reveal the hidden
+biology when the player asks for it.
+
+## Persistence And Determinism
+
+Base flora can receive deterministic founder genotypes from a hash of:
+
+```text
+world_seed + canonical_chunk + plant_index + species
+```
+
+Those founders can be phenotype-mapped like any other plant, but they should not
+need per-plant genotype storage unless they enter the spreading population as
+parents.
+
+Spreading plants need persisted genetic state. The current packed `Plant` record
+is only 16 bytes, so this will require a storage-format decision:
+
+- Add compact gene bytes directly to spread plants.
+- Store genotypes in a parallel spread-genetics blob.
+- Store a lineage id per plant and keep lineage genotypes separately, if many
+  siblings share genes.
+
+The simplest robust first version is probably one byte per gene for spread
+plants, with a version bump for `plants.bin`. Base-snapshot format can remain
+separate unless founder genotypes must be inspectable without recomputing them.
+
+## First Version Scope
+
+First playable version:
+
+- Eight named ecological genes.
+- Genotype -> phenotype function with explicit trade-offs.
+- Fitness from moisture, altitude, and local competition.
+- Inheritance by parent copy plus mutation.
+- Selection through seed count, seed landing, establishment, growth, stress
+  color, lifespan, and spread chance.
+- Hashed founder genotypes for base flora.
+- Persisted genotypes for spreading plants.
+- Region readout and at least one evolution overlay.
+
+Strong next additions:
+
+- Recombination with a nearby mature same-species parent.
+- Niche clustering/readable emergent labels.
+- More visible morphology: quantized crown/branch/prototype variants selected
+  by phenotype bands, not unique meshes per plant.
+
+## Design Rules To Keep
+
+1. **Genotype is not phenotype.** Genes are inherited causes; traits are
+   realized outcomes.
+2. **No gene is purely good.** Every advantage has a cost.
+3. **Selection happens through life events.** Survival, maturity, seed output,
+   seed dispersal, establishment, and competition carry the evolutionary force.
+4. **Environment is half the organism.** The same genotype can look and perform
+   differently in different places.
+5. **Competition creates niches.** Terrain gradients make clines; neighbours
+   make ecological drama.
+6. **Few genes, rich interactions.** Add mapping depth before adding gene count.
+7. **Visible beats invisible.** Debug lenses and readable visual stress are part
+   of the feature, not polish.
+8. **Static world stays static.** Evolution lives primarily in the spreading
+   population so generation and saves stay tractable.
