@@ -23,12 +23,16 @@ use crate::world_core::chunk_generator::ChunkGenerator;
 use crate::world_core::config::{BiomeConfig, GameConfig, HousesConfig};
 use crate::world_core::content::place_houses;
 use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
+use crate::world_core::evolution::{
+    evaluate_phenotype, inherit_and_mutate, initial_genes, normalize_altitude,
+    EvolutionOverlayMode, FounderKey, MutationKey, PlantEnvironment, PlantGenes,
+};
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::GrowthStage;
 use crate::world_core::rivers::{RiverField, MAX_PLANTABLE_WETNESS};
 
-/// Packed per-plant record — **16 bytes** (`repr(C)`), validated against the
+/// Packed per-plant record — **24 bytes** (`repr(C)`), validated against the
 /// real plant count in the M0 feasibility spike.
 ///
 /// Position is stored **chunk-local and quantized** (`u16` over the 256 m chunk,
@@ -50,6 +54,7 @@ pub struct Plant {
     pub species: u8,
     pub stage: u8,
     pub born_hour: f32,
+    pub genes: PlantGenes,
 }
 
 const MATURE: u8 = stage_to_u8(GrowthStage::Mature);
@@ -96,6 +101,161 @@ fn dequantize_span(value: u16) -> f32 {
     value as f32 / SPAN_STEPS * CHUNK_SIZE_METERS
 }
 
+fn sample_chunk_field(field: &[f32], local_x: f32, local_z: f32) -> f32 {
+    let max = (CHUNK_GRID_RESOLUTION - 1) as f32;
+    let gx = (local_x / CHUNK_SIZE_METERS * max).clamp(0.0, max);
+    let gz = (local_z / CHUNK_SIZE_METERS * max).clamp(0.0, max);
+    let x0 = gx.floor() as usize;
+    let z0 = gz.floor() as usize;
+    let x1 = (x0 + 1).min(CHUNK_GRID_RESOLUTION - 1);
+    let z1 = (z0 + 1).min(CHUNK_GRID_RESOLUTION - 1);
+    let tx = gx - x0 as f32;
+    let tz = gz - z0 as f32;
+    let idx = |x: usize, z: usize| z * CHUNK_GRID_RESOLUTION + x;
+    let a = field[idx(x0, z0)] * (1.0 - tx) + field[idx(x1, z0)] * tx;
+    let b = field[idx(x0, z1)] * (1.0 - tx) + field[idx(x1, z1)] * tx;
+    a * (1.0 - tz) + b * tz
+}
+
+fn plant_environment(
+    heightmap: &Heightmap,
+    rivers: &RiverField,
+    sea_level: f32,
+    world_x: f32,
+    world_z: f32,
+) -> PlantEnvironment {
+    let height = heightmap.sample_height(world_x, world_z);
+    PlantEnvironment {
+        moisture: heightmap.sample_moisture(world_x, world_z),
+        altitude: normalize_altitude(height, sea_level),
+        river_wetness: rivers.wetness(world_x, world_z),
+        shade: 0.0,
+        root_pressure: 0.0,
+    }
+}
+
+fn plant_life_environment(
+    heightmap: &Heightmap,
+    rivers: &RiverField,
+    sea_level: f32,
+    chunk_idx: usize,
+    plant: &Plant,
+) -> PlantEnvironment {
+    let n = WORLD_SIZE_CHUNKS;
+    let cx = (chunk_idx as i32) % n;
+    let cz = (chunk_idx as i32) / n;
+    let world_x = cx as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_x);
+    let world_z = cz as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_z);
+    plant_environment(heightmap, rivers, sea_level, world_x, world_z)
+}
+
+fn overlay_tint(
+    mode: EvolutionOverlayMode,
+    plant: &Plant,
+    phenotype: crate::world_core::evolution::PlantPhenotype,
+) -> [f32; 4] {
+    match mode {
+        EvolutionOverlayMode::Off => phenotype.leaf_tint,
+        EvolutionOverlayMode::WetPreference => heat_tint(PlantGenes::unit(plant.genes.wet_pref)),
+        EvolutionOverlayMode::AltitudePreference => {
+            heat_tint(PlantGenes::unit(plant.genes.alt_pref))
+        }
+        EvolutionOverlayMode::AbioticFitness => fitness_tint(phenotype.abiotic_fitness),
+        EvolutionOverlayMode::CompetitionStress => stress_tint(phenotype.stress),
+        EvolutionOverlayMode::Generation => {
+            if plant.born_hour <= 0.0 {
+                [0.18, 0.18, 0.22, 1.0]
+            } else {
+                heat_tint(((plant.born_hour / (24.0 * 30.0)).ln_1p() / 4.0).clamp(0.0, 1.0))
+            }
+        }
+    }
+}
+
+fn heat_tint(value: f32) -> [f32; 4] {
+    let t = value.clamp(0.0, 1.0);
+    [
+        0.15 + t * 1.05,
+        0.25 + (1.0 - (t - 0.5).abs() * 2.0).max(0.0) * 0.75,
+        1.15 - t,
+        1.0,
+    ]
+}
+
+fn fitness_tint(value: f32) -> [f32; 4] {
+    let t = value.clamp(0.0, 1.0);
+    [1.1 - t * 0.85, 0.25 + t * 0.9, 0.2, 1.0]
+}
+
+fn stress_tint(value: f32) -> [f32; 4] {
+    let t = value.clamp(0.0, 1.0);
+    [0.3 + t * 0.9, 0.95 - t * 0.65, 0.25, 1.0]
+}
+
+#[derive(Default)]
+struct PhenotypeSums {
+    abiotic_fitness: f64,
+    competition_room: f64,
+    stress: f64,
+    height_scale: f64,
+    width_scale: f64,
+    maturity_scale: f64,
+    lifespan_scale: f64,
+    seed_count_scale: f64,
+    spread_radius_scale: f64,
+    establishment_chance: f64,
+}
+
+impl PhenotypeSums {
+    fn add(&mut self, p: crate::world_core::evolution::PlantPhenotype) {
+        self.abiotic_fitness += p.abiotic_fitness as f64;
+        self.competition_room += p.competition_room as f64;
+        self.stress += p.stress as f64;
+        self.height_scale += p.height_scale as f64;
+        self.width_scale += p.width_scale as f64;
+        self.maturity_scale += p.maturity_scale as f64;
+        self.lifespan_scale += p.lifespan_scale as f64;
+        self.seed_count_scale += p.seed_count_scale as f64;
+        self.spread_radius_scale += p.spread_radius_scale as f64;
+        self.establishment_chance += p.establishment_chance as f64;
+    }
+
+    fn mean_json(&self, count: usize) -> serde_json::Value {
+        let n = count.max(1) as f64;
+        serde_json::json!({
+            "abiotic_fitness": self.abiotic_fitness / n,
+            "competition_room": self.competition_room / n,
+            "stress": self.stress / n,
+            "height_scale": self.height_scale / n,
+            "width_scale": self.width_scale / n,
+            "maturity_scale": self.maturity_scale / n,
+            "lifespan_scale": self.lifespan_scale / n,
+            "seed_count_scale": self.seed_count_scale / n,
+            "spread_radius_scale": self.spread_radius_scale / n,
+            "establishment_chance": self.establishment_chance / n,
+        })
+    }
+
+    fn mean_abiotic_fitness(&self, count: usize) -> f64 {
+        self.abiotic_fitness / count.max(1) as f64
+    }
+
+    fn mean_stress(&self, count: usize) -> f64 {
+        self.stress / count.max(1) as f64
+    }
+}
+
+fn torus_delta(a: f32, b: f32, world: f32) -> f32 {
+    let d = a - b;
+    if d > world * 0.5 {
+        d - world
+    } else if d < -world * 0.5 {
+        d + world
+    } else {
+        d
+    }
+}
+
 fn quantize_rotation(radians: f32) -> u16 {
     (radians.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU * u16::MAX as f32)
         .round()
@@ -113,17 +273,53 @@ impl Plant {
     /// the snapshot would be lossy relative to generation and the two paths would
     /// diverge — and since spread RNG is keyed on a plant's index within its
     /// chunk, the caller also Morton-sorts each chunk after packing.
-    fn pack(plant: &PlantInstance, origin_x: f32, origin_z: f32) -> Self {
+    fn pack(
+        plant: &PlantInstance,
+        origin_x: f32,
+        origin_z: f32,
+        seed: u32,
+        canon: IVec2,
+        terrain: &ChunkTerrain,
+        sea_level: f32,
+    ) -> Self {
         let h8 = pack_height(plant.height);
         let r8 = pack_rotation(plant.rotation);
+        let local_x = snap_pos(quantize_span(plant.position.x - origin_x));
+        let local_z = snap_pos(quantize_span(plant.position.z - origin_z));
+        let env = PlantEnvironment {
+            moisture: sample_chunk_field(
+                &terrain.moisture,
+                dequantize_span(local_x),
+                dequantize_span(local_z),
+            ),
+            altitude: normalize_altitude(plant.position.y, sea_level),
+            river_wetness: sample_chunk_field(
+                &terrain.river,
+                dequantize_span(local_x),
+                dequantize_span(local_z),
+            ),
+            shade: 0.0,
+            root_pressure: 0.0,
+        };
+        let genes = initial_genes(
+            seed,
+            FounderKey {
+                chunk: canon,
+                local_x,
+                local_z,
+                species: plant.species_index as u8,
+            },
+            env,
+        );
         Plant {
-            local_x: snap_pos(quantize_span(plant.position.x - origin_x)),
-            local_z: snap_pos(quantize_span(plant.position.z - origin_z)),
+            local_x,
+            local_z,
             height: unpack_height(h8),
             rotation: (r8 as u16) << 8,
             species: plant.species_index as u8,
             stage: stage_to_u8(plant.growth_stage),
             born_hour: 0.0,
+            genes,
         }
     }
 
@@ -143,6 +339,10 @@ impl Plant {
             height: dequantize_span(self.height),
             species_index: self.species as usize,
             growth_stage: stage_from_u8(self.stage),
+            height_scale: 1.0,
+            width_scale: 1.0,
+            stress: 0.0,
+            leaf_tint: [1.0, 1.0, 1.0, 1.0],
             decay: 0.0,
         }
     }
@@ -263,7 +463,15 @@ impl PlantWorld {
             let origin_z = cz as f32 * CHUNK_SIZE_METERS;
             let mut plants = Vec::with_capacity(data.content.base_plants.len());
             for plant in &data.content.base_plants {
-                plants.push(Plant::pack(plant, origin_x, origin_z));
+                plants.push(Plant::pack(
+                    plant,
+                    origin_x,
+                    origin_z,
+                    seed,
+                    coord,
+                    &data.terrain,
+                    sea_level,
+                ));
             }
             // Canonical Morton order: makes the base-snapshot position deltas
             // small (the on-disk win) and fixes each plant's index within the
@@ -392,6 +600,116 @@ impl PlantWorld {
         self.heightmap.sample_height(x, z)
     }
 
+    pub fn inspect_evolution_region(&self, x: f32, z: f32, radius: f32) -> serde_json::Value {
+        let radius = radius.max(0.0);
+        let radius_sq = radius * radius;
+        let world = WORLD_SIZE_METERS as f32;
+        let target_x = x.rem_euclid(world);
+        let target_z = z.rem_euclid(world);
+        let mut count = 0usize;
+        let mut gene_sum = [0.0f64; PlantGenes::BYTE_LEN];
+        let mut gene_sq = [0.0f64; PlantGenes::BYTE_LEN];
+        let mut phenotype_sum = PhenotypeSums::default();
+        let mut stage_counts = [0usize; 4];
+        let mut species_counts = std::collections::HashMap::<u8, usize>::new();
+
+        for (idx, plants) in self.chunks.iter().enumerate() {
+            let cx = (idx as i32) % WORLD_SIZE_CHUNKS;
+            let cz = (idx as i32) / WORLD_SIZE_CHUNKS;
+            let origin_x = cx as f32 * CHUNK_SIZE_METERS;
+            let origin_z = cz as f32 * CHUNK_SIZE_METERS;
+            for plant in plants {
+                let world_x = origin_x + dequantize_span(plant.local_x);
+                let world_z = origin_z + dequantize_span(plant.local_z);
+                let dx = torus_delta(world_x, target_x, world);
+                let dz = torus_delta(world_z, target_z, world);
+                if dx * dx + dz * dz > radius_sq {
+                    continue;
+                }
+                let Some(species) = self.registry.species.get(plant.species as usize) else {
+                    continue;
+                };
+                count += 1;
+                let bytes = plant.genes.to_bytes();
+                for (i, byte) in bytes.iter().enumerate() {
+                    let v = *byte as f64;
+                    gene_sum[i] += v;
+                    gene_sq[i] += v * v;
+                }
+                let env = plant_environment(
+                    &self.heightmap,
+                    &self.rivers,
+                    self.sea_level,
+                    world_x,
+                    world_z,
+                );
+                phenotype_sum.add(evaluate_phenotype(plant.genes, species, env));
+                stage_counts[plant.stage.min(DEAD) as usize] += 1;
+                *species_counts.entry(plant.species).or_default() += 1;
+            }
+        }
+
+        let gene_names = [
+            "wet_pref",
+            "alt_pref",
+            "stress_width",
+            "capture",
+            "fecundity",
+            "seed_mass",
+            "dispersal",
+            "timing",
+        ];
+        let mut genes = serde_json::Map::new();
+        for (i, name) in gene_names.iter().enumerate() {
+            let mean = if count == 0 {
+                0.0
+            } else {
+                gene_sum[i] / count as f64
+            };
+            let variance = if count == 0 {
+                0.0
+            } else {
+                (gene_sq[i] / count as f64 - mean * mean).max(0.0)
+            };
+            genes.insert(
+                (*name).to_string(),
+                serde_json::json!({ "mean": mean, "stddev": variance.sqrt() }),
+            );
+        }
+
+        let mut top_species: Vec<_> = species_counts.into_iter().collect();
+        top_species.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        let top_species: Vec<_> = top_species
+            .into_iter()
+            .take(8)
+            .map(|(idx, count)| {
+                let name = self
+                    .registry
+                    .species
+                    .get(idx as usize)
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("unknown");
+                serde_json::json!({ "species": idx, "name": name, "count": count })
+            })
+            .collect();
+
+        serde_json::json!({
+            "center": { "x": x, "z": z, "radius": radius },
+            "plant_count": count,
+            "genes": genes,
+            "phenotype": phenotype_sum.mean_json(count),
+            "mean_abiotic_fitness": phenotype_sum.mean_abiotic_fitness(count),
+            "mean_competition_stress": phenotype_sum.mean_stress(count),
+            "stages": {
+                "seedling": stage_counts[stage_to_u8(GrowthStage::Seedling) as usize],
+                "young": stage_counts[stage_to_u8(GrowthStage::Young) as usize],
+                "mature": stage_counts[MATURE as usize],
+                "dead": stage_counts[DEAD as usize],
+            },
+            "top_species": top_species,
+        })
+    }
+
     /// Total plants across the whole world (loaded or not). O(1).
     pub fn population(&self) -> usize {
         self.population
@@ -406,7 +724,12 @@ impl PlantWorld {
     /// the canonical chunk's plant list and resampling ground height from
     /// `terrain`. Dead snags carry their decay fraction (0 freshly dead → 1
     /// about to despawn) so the renderer can ease them smaller as they rot.
-    pub fn instances_for(&self, raw_coord: IVec2, terrain: &ChunkTerrain) -> Vec<PlantInstance> {
+    pub fn instances_for(
+        &self,
+        raw_coord: IVec2,
+        terrain: &ChunkTerrain,
+        overlay: EvolutionOverlayMode,
+    ) -> Vec<PlantInstance> {
         let canon = canonical_chunk(raw_coord);
         let idx = chunk_index(canon);
         let base_count = self.base_count[idx] as usize;
@@ -415,10 +738,34 @@ impl PlantWorld {
             .enumerate()
             .map(|(pi, plant)| {
                 let mut instance = plant.to_instance(raw_coord, terrain);
-                if plant.stage == DEAD {
-                    if let Some(species) = self.registry.species.get(plant.species as usize) {
-                        let schedule =
-                            life_schedule(self.seed, idx, plant, species, pi < base_count);
+                if let Some(species) = self.registry.species.get(plant.species as usize) {
+                    let env = plant_environment(
+                        &self.heightmap,
+                        &self.rivers,
+                        self.sea_level,
+                        instance.position.x,
+                        instance.position.z,
+                    );
+                    let phenotype = evaluate_phenotype(plant.genes, species, env);
+                    instance.height_scale = phenotype.height_scale;
+                    instance.width_scale = phenotype.width_scale;
+                    instance.stress = phenotype.stress;
+                    instance.leaf_tint = overlay_tint(overlay, plant, phenotype);
+                    if plant.stage == DEAD {
+                        let schedule = life_schedule(
+                            self.seed,
+                            idx,
+                            plant,
+                            species,
+                            pi < base_count,
+                            plant_life_environment(
+                                &self.heightmap,
+                                &self.rivers,
+                                self.sea_level,
+                                idx,
+                                plant,
+                            ),
+                        );
                         if schedule.gone_at.is_finite() {
                             let span = (schedule.gone_at - schedule.dead_at).max(1e-6);
                             let age = (self.growth_hours - plant.born_hour as f64).max(0.0);
@@ -444,6 +791,9 @@ impl PlantWorld {
         self.growth_hours = total_hours;
         let registry = Arc::clone(&self.registry);
         let seed = self.seed;
+        let heightmap = &self.heightmap;
+        let rivers = &self.rivers;
+        let sea_level = self.sea_level;
         let mut changed = false;
         let mut reaped_chunks: Vec<usize> = Vec::new();
         for idx in 0..self.chunks.len() {
@@ -467,7 +817,8 @@ impl PlantWorld {
                     write += 1;
                     continue;
                 };
-                let schedule = life_schedule(seed, idx, &plant, species, read < base_count);
+                let env = plant_life_environment(heightmap, rivers, sea_level, idx, &plant);
+                let schedule = life_schedule(seed, idx, &plant, species, read < base_count, env);
                 let age = (total_hours - plant.born_hour as f64).max(0.0);
                 let Some(stage) = schedule.stage_at(age) else {
                     // Despawned: drop the record, freeing its spacing-grid spot
@@ -555,6 +906,14 @@ impl PlantWorld {
         // passes the runtime fires at high `day_speed` would be exact duplicates —
         // births would never keep pace with the analytic death rate.
         let bucket = day_bucket(born_hour);
+        let emit_ctx = EmitContext {
+            registry: &self.registry,
+            heightmap: &self.heightmap,
+            rivers: &self.rivers,
+            sea_level: self.sea_level,
+            seed: self.seed,
+            bucket,
+        };
 
         // Phase 1: emit candidates. Read-only over the whole grid. A chunk is
         // skipped only when it and all eight neighbours are saturated, so a packed
@@ -564,7 +923,7 @@ impl PlantWorld {
             if neighbourhood_saturated(saturated, idx) {
                 return Vec::new();
             }
-            emit_chunk_candidates(idx, &self.chunks, &self.registry, self.seed, bucket)
+            emit_chunk_candidates(idx, &self.chunks, &emit_ctx)
         };
         #[cfg(not(target_arch = "wasm32"))]
         let candidates: Vec<SpreadCandidate> = (0..total).into_par_iter().flat_map(emit).collect();
@@ -583,6 +942,7 @@ impl PlantWorld {
 
         // Phase 2: validate + append, one chunk per task (chunk Vecs are disjoint).
         let ctx = SpreadContext {
+            seed: self.seed,
             heightmap: &self.heightmap,
             rivers: &self.rivers,
             registry: &self.registry,
@@ -711,12 +1071,12 @@ impl PlantWorld {
             .filter(|&i| self.chunks[i].len() as u32 > self.base_count[i])
             .collect();
 
-        // header(16) + per-chunk(8) + 14 bytes per spread plant.
+        // header(16) + per-chunk(8) + PLANT_BYTES per spread plant.
         let plant_total: usize = spread_chunks
             .iter()
             .map(|&i| self.chunks[i].len() - self.base_count[i] as usize)
             .sum();
-        let mut buf = Vec::with_capacity(16 + spread_chunks.len() * 8 + plant_total * 14);
+        let mut buf = Vec::with_capacity(16 + spread_chunks.len() * 8 + plant_total * PLANT_BYTES);
         buf.extend_from_slice(&SPREAD_MAGIC.to_le_bytes());
         buf.extend_from_slice(&SPREAD_VERSION.to_le_bytes());
         buf.extend_from_slice(&self.seed.to_le_bytes());
@@ -827,10 +1187,10 @@ impl PlantWorld {
     /// regeneration. Distinct from [`save_spread`], which persists only the
     /// per-game spread delta on top of a regenerable base.
     ///
-    /// Layout (v2): a small plaintext header, then three independently
+    /// Layout (v3): a small plaintext header, then three independently
     /// Brotli-compressed columnar sections. Splitting by field lets the
     /// compressor exploit each column's statistics — `meta` (biome/cell/count)
-    /// and `attr` (height/rotation/species) are low-entropy and collapse, while
+    /// and `attr` (height/rotation/species/genes) are low-entropy and collapse, while
     /// `pos` (the irreducible position core) is kept small by Morton-sorting each
     /// chunk and storing varint deltas of the sorted codes. Plants are assumed to
     /// already be in canonical Morton order (generation and load both sort), so
@@ -867,6 +1227,7 @@ impl PlantWorld {
                 attr.push(pack_height(dequantize_span(p.height)));
                 attr.push((p.rotation >> 8) as u8);
                 attr.push(p.species);
+                attr.extend_from_slice(&p.genes.to_bytes());
             }
         }
 
@@ -1029,8 +1390,9 @@ impl PlantWorld {
 
 /// Decode one chunk's record from the three section cursors, walked in lockstep:
 /// `meta` carries biome/cell/count, `pos` the Morton-delta positions, `attr` the
-/// packed height/rotation/species. Shared by the one-shot [`PlantWorld::read_base`]
-/// and the incremental [`BaseLoader`] so they reconstruct plants identically.
+/// packed height/rotation/species/genes. Shared by the one-shot
+/// [`PlantWorld::read_base`] and the incremental [`BaseLoader`] so they
+/// reconstruct plants identically.
 fn parse_base_chunk(
     meta_cur: &mut Cursor<'_>,
     pos_cur: &mut Cursor<'_>,
@@ -1039,7 +1401,7 @@ fn parse_base_chunk(
     let biome_code = meta_cur.read_u8()?;
     let cell = meta_cur.read_u8()?;
     let count = meta_cur.read_u32()? as usize;
-    // Each plant consumes at least one varint byte from `pos` and exactly three
+    // Each plant consumes at least one varint byte from `pos` and exactly eleven
     // from `attr`; bound `count` by both before reserving so a corrupted length
     // can't trigger a huge allocation ahead of EOF. Also cap by the number of
     // distinct Morton cells — a 256 m chunk on the 10-bit grid can't hold more,
@@ -1047,7 +1409,7 @@ fn parse_base_chunk(
     // a crafted count from driving a multi-gigabyte `with_capacity`.
     if count > MORTON_CELLS
         || count > pos_cur.remaining()
-        || count.saturating_mul(3) > attr_cur.remaining()
+        || count.saturating_mul(BASE_ATTR_BYTES) > attr_cur.remaining()
     {
         anyhow::bail!("declared {count} plants exceed the section data");
     }
@@ -1069,6 +1431,7 @@ fn parse_base_chunk(
         let h8 = attr_cur.read_u8()?;
         let r8 = attr_cur.read_u8()?;
         let species = attr_cur.read_u8()?;
+        let genes = PlantGenes::from_bytes(attr_cur.read_array()?);
         plants.push(Plant {
             local_x: x10 << POS_SHIFT,
             local_z: z10 << POS_SHIFT,
@@ -1077,6 +1440,7 @@ fn parse_base_chunk(
             species,
             stage: MATURE,
             born_hour: 0.0,
+            genes,
         });
     }
     Ok((plants, biome_from_slot(biome_code), cell))
@@ -1118,12 +1482,14 @@ struct SpreadCandidate {
     height: f32,
     rotation: f32,
     species: u8,
+    genes: PlantGenes,
     /// Deterministic ordering key (source chunk, plant, seed) so landing order
     /// — and thus which candidates win spacing — is independent of parallelism.
     order: u64,
 }
 
 struct SpreadContext<'a> {
+    seed: u32,
     heightmap: &'a Heightmap,
     rivers: &'a RiverField,
     registry: &'a PlantRegistry,
@@ -1134,12 +1500,19 @@ struct SpreadContext<'a> {
     born_hour: f32,
 }
 
+struct EmitContext<'a> {
+    registry: &'a PlantRegistry,
+    heightmap: &'a Heightmap,
+    rivers: &'a RiverField,
+    sea_level: f32,
+    seed: u32,
+    bucket: u32,
+}
+
 fn emit_chunk_candidates(
     idx: usize,
     chunks: &[Vec<Plant>],
-    registry: &PlantRegistry,
-    seed: u32,
-    bucket: u32,
+    ctx: &EmitContext<'_>,
 ) -> Vec<SpreadCandidate> {
     let n = WORLD_SIZE_CHUNKS;
     let world = WORLD_SIZE_METERS as f32;
@@ -1152,29 +1525,54 @@ fn emit_chunk_candidates(
         if plant.stage != MATURE {
             continue;
         }
-        let Some(species) = registry.species.get(plant.species as usize) else {
+        let Some(species) = ctx.registry.species.get(plant.species as usize) else {
             continue;
         };
-        if spread_roll(seed, canon, pi as u32, bucket)
-            >= species.placement.spread_chance.clamp(0.0, 1.0)
-        {
+        let src_x = cx as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_x);
+        let src_z = cz as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_z);
+        let parent_env = plant_environment(ctx.heightmap, ctx.rivers, ctx.sea_level, src_x, src_z);
+        let parent_pheno = evaluate_phenotype(plant.genes, species, parent_env);
+        let fecundity = PlantGenes::unit(plant.genes.fecundity);
+        let spread_chance = (species.placement.spread_chance
+            * (0.35 + parent_pheno.abiotic_fitness * 0.65)
+            * (0.65 + fecundity * 0.7)
+            * (1.0 - parent_pheno.stress * 0.35))
+            .clamp(0.0, 1.0);
+        if spread_roll(ctx.seed, canon, pi as u32, ctx.bucket) >= spread_chance {
             continue;
         }
 
-        let src_x = cx as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_x);
-        let src_z = cz as f32 * CHUNK_SIZE_METERS + dequantize_span(plant.local_z);
         let [h_lo, h_hi] = species.height_range;
-        let count = spread_seed_count(seed, canon, pi as u32, bucket);
+        let count = ((spread_seed_count(ctx.seed, canon, pi as u32, ctx.bucket) as f32
+            * parent_pheno.seed_count_scale)
+            .round() as u32)
+            .clamp(1, 4);
+        let spread_radius =
+            species.placement.spread_radius.max(0.0) * parent_pheno.spread_radius_scale.max(0.0);
         for seed_i in 0..count {
             // Salt the per-seedling jitter with the day bucket too, so a fresh
             // roll also aims at a fresh spot — otherwise each day's survivor would
             // re-target the same (already occupied) cells and never fill new gaps.
-            let sub = bucket_salt((pi as u32).wrapping_mul(31).wrapping_add(seed_i), bucket);
-            let angle = hash_unit(seed.wrapping_add(4101), canon, sub) * std::f32::consts::TAU;
-            let distance = hash_unit(seed.wrapping_add(4102), canon, sub).sqrt()
-                * species.placement.spread_radius.max(0.0);
-            let height = h_lo + hash_unit(seed.wrapping_add(4201), canon, sub) * (h_hi - h_lo);
-            let rotation = hash_unit(seed.wrapping_add(4202), canon, sub) * std::f32::consts::TAU;
+            let sub = bucket_salt(
+                (pi as u32).wrapping_mul(31).wrapping_add(seed_i),
+                ctx.bucket,
+            );
+            let angle = hash_unit(ctx.seed.wrapping_add(4101), canon, sub) * std::f32::consts::TAU;
+            let distance =
+                hash_unit(ctx.seed.wrapping_add(4102), canon, sub).sqrt() * spread_radius;
+            let height = h_lo + hash_unit(ctx.seed.wrapping_add(4201), canon, sub) * (h_hi - h_lo);
+            let rotation =
+                hash_unit(ctx.seed.wrapping_add(4202), canon, sub) * std::f32::consts::TAU;
+            let genes = inherit_and_mutate(
+                plant.genes,
+                ctx.seed,
+                MutationKey {
+                    chunk: canon,
+                    parent_index: pi as u32,
+                    bucket: ctx.bucket,
+                    seed_index: seed_i,
+                },
+            );
 
             // Wrap the seedling onto the torus, then split into canonical chunk +
             // local offset.
@@ -1191,6 +1589,7 @@ fn emit_chunk_candidates(
                 height,
                 rotation,
                 species: plant.species,
+                genes,
                 order: ((idx as u64) << 24) | ((pi as u64) << 4) | seed_i as u64,
             });
         }
@@ -1212,6 +1611,7 @@ fn land_chunk_candidates(
     // only a 3×3 cell neighbourhood instead of every plant — without it the pass
     // is O(candidates × plants) and chokes as chunks densify.
     let mut grid = SpacingGrid::build(plants);
+    let mut competition = CompetitionGrid::build(plants);
 
     let mut accepted = 0u32;
     for candidate in candidates.iter() {
@@ -1270,7 +1670,28 @@ fn land_chunk_candidates(
             continue;
         }
 
+        let (shade, root_pressure) =
+            competition.pressure(candidate.local_x, candidate.local_z, candidate.genes);
+        let candidate_env = PlantEnvironment {
+            moisture,
+            altitude: normalize_altitude(height, ctx.sea_level),
+            river_wetness: ctx.rivers.wetness(candidate.world_x, candidate.world_z),
+            shade,
+            root_pressure,
+        };
+        let candidate_pheno = evaluate_phenotype(candidate.genes, species, candidate_env);
+        if establishment_roll(ctx.seed, candidate.order) > candidate_pheno.establishment_chance {
+            continue;
+        }
+
         grid.insert(candidate.local_x, candidate.local_z);
+        competition.insert(
+            candidate.local_x,
+            candidate.local_z,
+            candidate.height,
+            stage_to_u8(GrowthStage::Seedling),
+            candidate.genes,
+        );
         plants.push(Plant {
             local_x: quantize_span(candidate.local_x),
             local_z: quantize_span(candidate.local_z),
@@ -1279,6 +1700,7 @@ fn land_chunk_candidates(
             species: candidate.species,
             stage: stage_to_u8(GrowthStage::Seedling),
             born_hour: ctx.born_hour,
+            genes: candidate.genes,
         });
         accepted += 1;
     }
@@ -1342,6 +1764,103 @@ impl SpacingGrid {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CompetitionEntry {
+    x: f32,
+    z: f32,
+    height: f32,
+    stage: u8,
+    genes: PlantGenes,
+}
+
+struct CompetitionGrid {
+    cells: Vec<Vec<CompetitionEntry>>,
+}
+
+const COMPETITION_RADIUS: f32 = 24.0;
+const COMPETITION_STRENGTH: f32 = 0.55;
+
+impl CompetitionGrid {
+    fn build(plants: &[Plant]) -> Self {
+        let mut grid = Self {
+            cells: vec![Vec::new(); (SPACING_GRID_SIDE * SPACING_GRID_SIDE) as usize],
+        };
+        for plant in plants {
+            grid.insert(
+                dequantize_span(plant.local_x),
+                dequantize_span(plant.local_z),
+                dequantize_span(plant.height),
+                plant.stage,
+                plant.genes,
+            );
+        }
+        grid
+    }
+
+    fn insert(&mut self, x: f32, z: f32, height: f32, stage: u8, genes: PlantGenes) {
+        self.cells[SpacingGrid::cell_of(x, z)].push(CompetitionEntry {
+            x,
+            z,
+            height,
+            stage,
+            genes,
+        });
+    }
+
+    fn pressure(&self, x: f32, z: f32, genes: PlantGenes) -> (f32, f32) {
+        let cx = ((x / SPACING_CELL) as i32).clamp(0, SPACING_GRID_SIDE - 1);
+        let cz = ((z / SPACING_CELL) as i32).clamp(0, SPACING_GRID_SIDE - 1);
+        let mut canopy = 0.0;
+        let mut root = 0.0;
+        let candidate_wet = PlantGenes::unit(genes.wet_pref);
+
+        for dz in -2..=2 {
+            for dx in -2..=2 {
+                let nx = cx + dx;
+                let nz = cz + dz;
+                if nx < 0 || nz < 0 || nx >= SPACING_GRID_SIDE || nz >= SPACING_GRID_SIDE {
+                    continue;
+                }
+                for entry in &self.cells[(nz * SPACING_GRID_SIDE + nx) as usize] {
+                    let ddx = entry.x - x;
+                    let ddz = entry.z - z;
+                    let distance = (ddx * ddx + ddz * ddz).sqrt();
+                    if distance >= COMPETITION_RADIUS {
+                        continue;
+                    }
+                    let falloff = smooth_falloff(distance, COMPETITION_RADIUS);
+                    let stage = stage_competition_weight(entry.stage);
+                    let capture = PlantGenes::unit(entry.genes.capture);
+                    let height_scale = (entry.height / 16.0).clamp(0.25, 1.8);
+                    let wet_similarity =
+                        1.0 - (candidate_wet - PlantGenes::unit(entry.genes.wet_pref)).abs();
+                    canopy += falloff * stage * capture * height_scale;
+                    root += falloff * stage * wet_similarity.clamp(0.0, 1.0);
+                }
+            }
+        }
+
+        (
+            (canopy * COMPETITION_STRENGTH * 0.55).clamp(0.0, 1.0),
+            (root * COMPETITION_STRENGTH * 0.45).clamp(0.0, 1.0),
+        )
+    }
+}
+
+fn stage_competition_weight(stage: u8) -> f32 {
+    match stage_from_u8(stage) {
+        GrowthStage::Seedling => 0.15,
+        GrowthStage::Young => 0.45,
+        GrowthStage::Mature => 1.0,
+        GrowthStage::Dead => 0.05,
+    }
+}
+
+fn smooth_falloff(distance: f32, radius: f32) -> f32 {
+    let t = (1.0 - distance / radius.max(0.001)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Sim-day index for a spread pass, used to salt the per-day reproduction roll.
 /// Rust float→int casts *saturate*, so a direct `f64 as u32` would pin the bucket
 /// at `u32::MAX` once the day count overflows `u32` (~1e5 sim-years — unreachable,
@@ -1373,6 +1892,15 @@ fn spread_seed_count(seed: u32, canon: IVec2, plant_index: u32, bucket: u32) -> 
         bucket_salt(plant_index, bucket),
     ) * 2.0)
         .floor() as u32
+}
+
+fn establishment_roll(seed: u32, order: u64) -> f32 {
+    hash_to_unit_float(hash4(
+        seed.wrapping_add(4401),
+        (order >> 32) as u32,
+        order as u32,
+        0,
+    ))
 }
 
 fn hash_unit(seed: u32, canon: IVec2, sub: u32) -> f32 {
@@ -1580,15 +2108,15 @@ fn biome_from_slot(slot: u8) -> Biome {
 // ---------------------------------------------------------------------------
 
 const SPREAD_MAGIC: u32 = 0x504c_4e54; // "PLNT"
-const SPREAD_VERSION: u32 = 1;
-/// Serialized size of one plant: u16×4 + u8×2 + f32.
-const PLANT_BYTES: usize = 14;
+const SPREAD_VERSION: u32 = 2;
+/// Serialized size of one plant: u16×4 + u8×2 + f32 + eight gene bytes.
+const PLANT_BYTES: usize = 22;
 
 // ---------------------------------------------------------------------------
 // Base-world snapshot — full per-chunk base flora + biome/map, a cache of the
 // expensive `generate_base` pass keyed by the generation inputs.
 //
-// v2 stores plants as three Brotli-compressed columns (meta / position-deltas /
+// v3 stores plants as three Brotli-compressed columns (meta / position-deltas /
 // attributes) instead of a flat 14-byte record. Combined with reduced field
 // precision and Morton-delta positions this takes the default world from
 // ~190 MiB to ~31 MiB. Base plants are snapped to this grid at generation time
@@ -1596,7 +2124,8 @@ const PLANT_BYTES: usize = 14;
 // ---------------------------------------------------------------------------
 
 const BASE_MAGIC: u32 = 0x5742_4153; // "WBAS"
-const BASE_VERSION: u32 = 2;
+const BASE_VERSION: u32 = 3;
+const BASE_ATTR_BYTES: usize = 3 + PlantGenes::BYTE_LEN;
 
 /// Bits of position precision stored per axis, over the 256 m chunk: 10 bits →
 /// a 0.25 m grid. `POS_SHIFT` is how far that sits below the resident `u16`
@@ -2039,6 +2568,7 @@ fn write_plant(buf: &mut Vec<u8>, p: &Plant) {
     buf.push(p.species);
     buf.push(p.stage);
     buf.extend_from_slice(&p.born_hour.to_le_bytes());
+    buf.extend_from_slice(&p.genes.to_bytes());
 }
 
 fn read_plant(cur: &mut Cursor<'_>) -> anyhow::Result<Plant> {
@@ -2050,6 +2580,7 @@ fn read_plant(cur: &mut Cursor<'_>) -> anyhow::Result<Plant> {
         species: cur.read_u8()?,
         stage: cur.read_u8()?,
         born_hour: cur.read_f32()?,
+        genes: PlantGenes::from_bytes(cur.read_array()?),
     })
 }
 
@@ -2085,6 +2616,12 @@ impl<'a> Cursor<'a> {
 
     fn read_u8(&mut self) -> anyhow::Result<u8> {
         Ok(self.take(1)?[0])
+    }
+
+    fn read_array<const N: usize>(&mut self) -> anyhow::Result<[u8; N]> {
+        let mut out = [0u8; N];
+        out.copy_from_slice(self.take(N)?);
+        Ok(out)
     }
 
     fn read_u16(&mut self) -> anyhow::Result<u16> {
@@ -2181,14 +2718,17 @@ fn life_schedule(
     plant: &Plant,
     species: &crate::world_core::herbarium::PlantSpeciesInfo,
     is_base: bool,
+    env: PlantEnvironment,
 ) -> LifeSchedule {
+    let phenotype = evaluate_phenotype(plant.genes, species, env);
+    let maturity_scale = phenotype.maturity_scale as f64;
     let (young_at, mature_at) = if is_base {
         (0.0, 0.0)
     } else {
-        let young_at = species.placement.seedling_hours.max(0.0) as f64;
+        let young_at = species.placement.seedling_hours.max(0.0) as f64 * maturity_scale;
         (
             young_at,
-            young_at + species.placement.young_hours.max(0.0) as f64,
+            young_at + species.placement.young_hours.max(0.0) as f64 * maturity_scale,
         )
     };
     let lifespan = species.placement.lifespan_hours;
@@ -2205,8 +2745,10 @@ fn life_schedule(
     } else {
         0.75 + 0.5 * death_unit(seed, chunk_idx, plant, 4301)
     };
+    let stress_life = (1.0 - phenotype.stress as f64 * 0.35).clamp(0.35, 1.0);
+    let lifespan_scale = (phenotype.lifespan_scale as f64 * stress_life).clamp(0.25, 2.0);
     let snag_factor = 0.75 + 0.5 * death_unit(seed, chunk_idx, plant, 4302);
-    let dead_at = mature_at + (lifespan * life_factor) as f64;
+    let dead_at = mature_at + lifespan as f64 * life_factor as f64 * lifespan_scale;
     LifeSchedule {
         young_at,
         mature_at,
@@ -2296,6 +2838,7 @@ mod tests {
             species: 0,
             stage: stage_to_u8(GrowthStage::Seedling),
             born_hour,
+            genes: PlantGenes::from_bytes([11, 22, 33, 44, 55, 66, 77, 88]),
         }
     }
 
@@ -2313,6 +2856,17 @@ mod tests {
             species,
             stage: MATURE,
             born_hour: 0.0,
+            genes: PlantGenes::from_bytes([species.wrapping_add(1), 21, 42, 63, 84, 105, 126, 147]),
+        }
+    }
+
+    fn neutral_env() -> PlantEnvironment {
+        PlantEnvironment {
+            moisture: 0.5,
+            altitude: 0.5,
+            river_wetness: 0.0,
+            shade: 0.0,
+            root_pressure: 0.0,
         }
     }
 
@@ -2545,24 +3099,14 @@ mod tests {
     }
 
     #[test]
-    fn packed_plant_is_sixteen_bytes() {
-        assert_eq!(std::mem::size_of::<Plant>(), 16);
+    fn packed_plant_is_twenty_four_bytes() {
+        assert_eq!(std::mem::size_of::<Plant>(), 24);
     }
 
     #[test]
     fn pack_round_trips_within_quantization_tolerance() {
         let origin_x = 5.0 * CHUNK_SIZE_METERS;
         let origin_z = 7.0 * CHUNK_SIZE_METERS;
-        let original = PlantInstance {
-            position: Vec3::new(origin_x + 123.4, 88.0, origin_z + 200.1),
-            rotation: 2.0,
-            height: 12.5,
-            species_index: 3,
-            growth_stage: GrowthStage::Mature,
-            decay: 0.0,
-        };
-        let packed = Plant::pack(&original, origin_x, origin_z);
-
         // Reconstruct against flat terrain so y is well-defined.
         let total = crate::world_core::chunk::CHUNK_GRID_RESOLUTION
             * crate::world_core::chunk::CHUNK_GRID_RESOLUTION;
@@ -2577,6 +3121,27 @@ mod tests {
             has_water: false,
             has_river: false,
         };
+        let original = PlantInstance {
+            position: Vec3::new(origin_x + 123.4, 88.0, origin_z + 200.1),
+            rotation: 2.0,
+            height: 12.5,
+            species_index: 3,
+            growth_stage: GrowthStage::Mature,
+            height_scale: 1.0,
+            width_scale: 1.0,
+            stress: 0.0,
+            leaf_tint: [1.0, 1.0, 1.0, 1.0],
+            decay: 0.0,
+        };
+        let packed = Plant::pack(
+            &original,
+            origin_x,
+            origin_z,
+            7,
+            IVec2::new(5, 7),
+            &terrain,
+            0.0,
+        );
         let back = packed.to_instance(IVec2::new(5, 7), &terrain);
 
         // Base plants are snapped to the storage grid in `pack`: 0.25 m per axis
@@ -2588,6 +3153,7 @@ mod tests {
         assert!((back.rotation - original.rotation).abs() < 0.03);
         assert_eq!(back.species_index, original.species_index);
         assert_eq!(back.growth_stage, GrowthStage::Mature);
+        assert_ne!(packed.genes, PlantGenes::default());
     }
 
     #[test]
@@ -2615,6 +3181,7 @@ mod tests {
             species: 0,
             stage: MATURE,
             born_hour: 0.0,
+            genes: PlantGenes::default(),
         };
         let canon = IVec2::new(3, 4);
         let raw = IVec2::new(3 + WORLD_SIZE_CHUNKS, 4);
@@ -2675,23 +3242,68 @@ mod tests {
 
         for i in 0..200u32 {
             let plant = seedling(i as f32, i as f32 * 7.0);
-            let mature_at =
-                (species.placement.seedling_hours + species.placement.young_hours) as f64;
+            let phenotype = evaluate_phenotype(plant.genes, species, neutral_env());
+            let maturity_scale = phenotype.maturity_scale as f64;
+            let expected_mature_at = (species.placement.seedling_hours
+                + species.placement.young_hours) as f64
+                * maturity_scale;
+            let stress_life = (1.0 - phenotype.stress as f64 * 0.35).clamp(0.35, 1.0);
+            let lifespan_scale = (phenotype.lifespan_scale as f64 * stress_life).clamp(0.25, 2.0);
 
-            // Spread plants: ±25% jitter on both phases.
-            let s1 = life_schedule(7, i as usize, &plant, species, false);
-            assert_eq!(s1.mature_at, mature_at);
+            // Spread plants: phenotype-scaled growth, then ±25% lifespan jitter.
+            let s1 = life_schedule(7, i as usize, &plant, species, false, neutral_env());
+            assert!((s1.mature_at - expected_mature_at).abs() < 1e-6);
             let lived = s1.dead_at - s1.mature_at;
-            assert!(lived >= lifespan * 0.75 - 1e-6 && lived <= lifespan * 1.25 + 1e-6);
+            assert!(
+                lived >= lifespan * lifespan_scale * 0.75 - 1e-6
+                    && lived <= lifespan * lifespan_scale * 1.25 + 1e-6
+            );
             let stood = s1.gone_at - s1.dead_at;
             assert!(stood >= snag * 0.75 - 1e-6 && stood <= snag * 1.25 + 1e-6);
 
             // Base plants: a uniform fraction of one lifespan, so the starting
             // forest trickles out instead of dying in a wave.
-            let s2 = life_schedule(7, i as usize, &plant, species, true);
+            let s2 = life_schedule(7, i as usize, &plant, species, true, neutral_env());
             let lived = s2.dead_at - s2.mature_at;
-            assert!(lived >= 0.0 && lived <= lifespan + 1e-6);
+            assert!(lived >= 0.0 && lived <= lifespan * lifespan_scale + 1e-6);
         }
+    }
+
+    #[test]
+    fn life_schedule_scales_with_genes_and_environment() {
+        let reg = registry();
+        let species = &reg.species[0];
+        let mut fast = seedling(20.0, 0.0);
+        fast.genes = PlantGenes {
+            wet_pref: 128,
+            alt_pref: 128,
+            stress_width: 200,
+            capture: 220,
+            fecundity: 30,
+            seed_mass: 30,
+            dispersal: 128,
+            timing: 240,
+        };
+        let mut slow = fast;
+        slow.genes.timing = 20;
+        slow.genes.fecundity = 240;
+
+        let env = neutral_env();
+        let fast_schedule = life_schedule(7, 0, &fast, species, false, env);
+        let slow_schedule = life_schedule(7, 0, &slow, species, false, env);
+        assert!(fast_schedule.mature_at < slow_schedule.mature_at);
+        assert!(
+            fast_schedule.dead_at - fast_schedule.mature_at
+                > slow_schedule.dead_at - slow_schedule.mature_at
+        );
+
+        let harsh_env = PlantEnvironment {
+            moisture: 0.0,
+            altitude: 1.0,
+            ..env
+        };
+        let harsh = life_schedule(7, 0, &fast, species, false, harsh_env);
+        assert!(harsh.dead_at - harsh.mature_at < fast_schedule.dead_at - fast_schedule.mature_at);
     }
 
     #[test]
@@ -2708,7 +3320,20 @@ mod tests {
         }
 
         let plant = world.chunks[idx][0];
-        let schedule = life_schedule(world.seed, idx, &plant, &reg.species[0], true);
+        let schedule = life_schedule(
+            world.seed,
+            idx,
+            &plant,
+            &reg.species[0],
+            true,
+            plant_life_environment(
+                &world.heightmap,
+                &world.rivers,
+                world.sea_level,
+                idx,
+                &plant,
+            ),
+        );
         assert!(schedule.gone_at.is_finite());
 
         // At dead_at the plant flips to a standing snag: still present, not
@@ -2717,7 +3342,15 @@ mod tests {
         assert_eq!(world.chunks[idx][0].stage, DEAD);
         assert_eq!(world.population(), 1);
         assert_eq!(world.immature[idx], 0);
-        assert!(emit_chunk_candidates(idx, &world.chunks, &reg, world.seed, 0).is_empty());
+        let emit_ctx = EmitContext {
+            registry: &reg,
+            heightmap: &world.heightmap,
+            rivers: &world.rivers,
+            sea_level: world.sea_level,
+            seed: world.seed,
+            bucket: 0,
+        };
+        assert!(emit_chunk_candidates(idx, &world.chunks, &emit_ctx).is_empty());
 
         // At gone_at it despawns: record removed, counters adjusted, and the
         // chunk plus its 8 neighbours woken so spread can reclaim the ground.
@@ -2783,7 +3416,14 @@ mod tests {
         let species = &reg.species[0];
         let gone = |pi: usize, is_base: bool| {
             let plant = live.chunks[1][pi];
-            let s = life_schedule(live.seed, 1, &plant, species, is_base);
+            let s = life_schedule(
+                live.seed,
+                1,
+                &plant,
+                species,
+                is_base,
+                plant_life_environment(&live.heightmap, &live.rivers, live.sea_level, 1, &plant),
+            );
             plant.born_hour as f64 + s.gone_at
         };
         let t = gone(0, true).min(gone(1, false)).min(gone(2, false)) + 0.01;
@@ -2808,9 +3448,6 @@ mod tests {
     #[test]
     fn tick_growth_promotes_immature_plants_to_mature() {
         let reg = registry();
-        let species = &reg.species[0];
-        let mature_at = (species.placement.seedling_hours + species.placement.young_hours) as f64;
-
         let mut world = test_world(
             vec![vec![Plant {
                 local_x: 0,
@@ -2820,12 +3457,23 @@ mod tests {
                 species: 0,
                 stage: stage_to_u8(GrowthStage::Seedling),
                 born_hour: 0.0,
+                genes: PlantGenes::default(),
             }]],
             Arc::clone(&reg),
         );
         // The seedling is a spread plant, not part of the mature-from-creation
         // base prefix.
         world.base_count[0] = 0;
+        let plant = world.chunks[0][0];
+        let mature_at = life_schedule(
+            world.seed,
+            0,
+            &plant,
+            &reg.species[0],
+            false,
+            plant_life_environment(&world.heightmap, &world.rivers, world.sea_level, 0, &plant),
+        )
+        .mature_at;
 
         // Before any growth time, it stays a seedling.
         assert!(!world.tick_growth(0.0));
@@ -2869,6 +3517,21 @@ mod tests {
         panic!("no suitable spot found for species {species_idx}");
     }
 
+    fn site_genes(world: &PlantWorld, world_x: f32, world_z: f32) -> PlantGenes {
+        let height = world.heightmap.sample_height(world_x, world_z);
+        let moisture = world.heightmap.sample_moisture(world_x, world_z);
+        PlantGenes {
+            wet_pref: (moisture.clamp(0.0, 1.0) * u8::MAX as f32).round() as u8,
+            alt_pref: (normalize_altitude(height, world.sea_level) * u8::MAX as f32).round() as u8,
+            stress_width: 230,
+            capture: 128,
+            fecundity: 20,
+            seed_mass: 240,
+            dispersal: 20,
+            timing: 128,
+        }
+    }
+
     #[test]
     fn spread_landing_enforces_species_spacing() {
         // Many candidates crowded onto one suitable spot: spacing admits only one.
@@ -2879,8 +3542,10 @@ mod tests {
         let cz = (chunk_idx as i32) / WORLD_SIZE_CHUNKS;
         let wx = cx as f32 * CHUNK_SIZE_METERS + lx;
         let wz = cz as f32 * CHUNK_SIZE_METERS + lz;
+        let good_genes = site_genes(&world, wx, wz);
 
         let ctx = SpreadContext {
+            seed: world.seed,
             heightmap: &world.heightmap,
             rivers: &world.rivers,
             registry: &reg,
@@ -2898,6 +3563,16 @@ mod tests {
             height: 6.0,
             rotation: 0.0,
             species: 0,
+            genes: PlantGenes::from_bytes([
+                good_genes.wet_pref,
+                good_genes.alt_pref,
+                230,
+                128,
+                20,
+                240,
+                20,
+                order as u8,
+            ]),
             order,
         };
         let mut plants = Vec::new();
@@ -2905,12 +3580,104 @@ mod tests {
         let accepted = land_chunk_candidates(&mut plants, &mut crowd, &ctx);
         assert_eq!(accepted, 1, "spacing must reject coincident candidates");
         assert_eq!(plants.len(), 1);
+        assert_eq!(plants[0].genes.wet_pref, good_genes.wet_pref);
+        assert_eq!(plants[0].genes.alt_pref, good_genes.alt_pref);
 
         // A second pass at the very same spot adds nothing — the gate is stable,
         // which is what makes the global spread terminate.
         let mut again = vec![mk(5)];
         assert_eq!(land_chunk_candidates(&mut plants, &mut again, &ctx), 0);
         assert_eq!(plants.len(), 1);
+    }
+
+    #[test]
+    fn competition_pressure_is_stronger_for_similar_neighbours() {
+        let similar = PlantGenes {
+            wet_pref: 120,
+            capture: 220,
+            ..PlantGenes::default()
+        };
+        let dissimilar = PlantGenes {
+            wet_pref: 240,
+            capture: 220,
+            ..PlantGenes::default()
+        };
+        let candidate = PlantGenes {
+            wet_pref: 118,
+            ..PlantGenes::default()
+        };
+
+        let mut similar_grid = CompetitionGrid {
+            cells: vec![Vec::new(); (SPACING_GRID_SIDE * SPACING_GRID_SIDE) as usize],
+        };
+        similar_grid.insert(128.0, 128.0, 12.0, MATURE, similar);
+        let mut dissimilar_grid = CompetitionGrid {
+            cells: vec![Vec::new(); (SPACING_GRID_SIDE * SPACING_GRID_SIDE) as usize],
+        };
+        dissimilar_grid.insert(128.0, 128.0, 12.0, MATURE, dissimilar);
+
+        let (_, similar_root) = similar_grid.pressure(136.0, 128.0, candidate);
+        let (_, dissimilar_root) = dissimilar_grid.pressure(136.0, 128.0, candidate);
+        assert!(similar_root > dissimilar_root);
+    }
+
+    #[test]
+    fn competition_pressure_reduces_establishment() {
+        let species = &registry().species[0];
+        let genes = PlantGenes {
+            wet_pref: 128,
+            alt_pref: 128,
+            stress_width: 200,
+            seed_mass: 200,
+            dispersal: 80,
+            fecundity: 80,
+            ..PlantGenes::default()
+        };
+        let open = evaluate_phenotype(
+            genes,
+            species,
+            PlantEnvironment {
+                moisture: 0.5,
+                altitude: 0.5,
+                river_wetness: 0.0,
+                shade: 0.0,
+                root_pressure: 0.0,
+            },
+        );
+        let crowded = evaluate_phenotype(
+            genes,
+            species,
+            PlantEnvironment {
+                moisture: 0.5,
+                altitude: 0.5,
+                river_wetness: 0.0,
+                shade: 0.6,
+                root_pressure: 0.6,
+            },
+        );
+        assert!(open.establishment_chance > crowded.establishment_chance);
+    }
+
+    #[test]
+    fn evolution_region_inspector_reports_gene_and_stage_summaries() {
+        let reg = registry();
+        let total = (WORLD_SIZE_CHUNKS as usize) * (WORLD_SIZE_CHUNKS as usize);
+        let mut chunks = vec![Vec::new(); total];
+        chunks[0].push(grid_plant(40.0, 40.0, 0));
+        chunks[0].push(Plant {
+            stage: stage_to_u8(GrowthStage::Seedling),
+            genes: PlantGenes::from_bytes([200, 100, 50, 25, 75, 125, 175, 225]),
+            ..grid_plant(46.0, 40.0, 0)
+        });
+        let world = test_world(chunks, reg);
+        let report = world.inspect_evolution_region(42.0, 40.0, 16.0);
+
+        assert_eq!(report["plant_count"].as_u64(), Some(2));
+        assert!(report["genes"]["wet_pref"]["mean"].as_f64().unwrap() > 0.0);
+        assert!(report["phenotype"]["abiotic_fitness"].as_f64().unwrap() >= 0.0);
+        assert_eq!(report["stages"]["mature"].as_u64(), Some(1));
+        assert_eq!(report["stages"]["seedling"].as_u64(), Some(1));
+        assert_eq!(report["top_species"][0]["count"].as_u64(), Some(2));
     }
 
     #[test]
@@ -2928,6 +3695,7 @@ mod tests {
         let wx = cx as f32 * CHUNK_SIZE_METERS + lx;
         let wz = cz as f32 * CHUNK_SIZE_METERS + lz;
         let clearance = house_clearance(&reg.species[0].kind);
+        let good_genes = site_genes(&world, wx, wz);
 
         let candidate =
             |target: usize, world_x: f32, world_z: f32, lx: f32, lz: f32| SpreadCandidate {
@@ -2939,6 +3707,7 @@ mod tests {
                 height: 6.0,
                 rotation: 0.0,
                 species: 0,
+                genes: good_genes,
                 order: 0,
             };
 
@@ -2950,6 +3719,7 @@ mod tests {
             &mut plants,
             &mut blocked,
             &SpreadContext {
+                seed: world.seed,
                 heightmap: &world.heightmap,
                 rivers: &world.rivers,
                 registry: &reg,
@@ -2970,6 +3740,7 @@ mod tests {
             &mut plants,
             &mut allowed,
             &SpreadContext {
+                seed: world.seed,
                 heightmap: &world.heightmap,
                 rivers: &world.rivers,
                 registry: &reg,
@@ -2984,6 +3755,7 @@ mod tests {
             "a seedling beyond the clearance must be accepted"
         );
         assert_eq!(plants.len(), 1);
+        assert_eq!(plants[0].genes, good_genes);
     }
 
     #[test]
@@ -2992,36 +3764,96 @@ mod tests {
         // anchored near it; immature plants emit none.
         let reg = registry();
         let n = WORLD_SIZE_CHUNKS;
-        // Find a chunk+plant_index whose spread roll fires for species 0.
         let species0 = &reg.species[0];
-        let chance = species0.placement.spread_chance.clamp(0.0, 1.0);
-        let canon = (0..n)
-            .flat_map(|z| (0..n).map(move |x| IVec2::new(x, z)))
-            .find(|c| spread_roll(7, *c, 0, 0) < chance)
-            .expect("a chunk whose plant 0 spreads");
-        let idx = (canon.y * n + canon.x) as usize;
-        let mut chunks = vec![Vec::new(); (n * n) as usize];
-        chunks[idx].push(Plant {
-            local_x: quantize_span(128.0),
-            local_z: quantize_span(128.0),
-            height: quantize_span(10.0),
-            rotation: 0,
-            species: 0,
-            stage: MATURE,
-            born_hour: 0.0,
-        });
-        let mature = emit_chunk_candidates(idx, &chunks, &reg, 7, 0);
+        let probe = test_world(vec![Vec::new(); (n * n) as usize], Arc::clone(&reg));
+        let mut found = None;
+        for z in 0..n {
+            for x in 0..n {
+                let canon = IVec2::new(x, z);
+                let idx = (canon.y * n + canon.x) as usize;
+                let src_x = canon.x as f32 * CHUNK_SIZE_METERS + 128.0;
+                let src_z = canon.y as f32 * CHUNK_SIZE_METERS + 128.0;
+                let mut chunks = vec![Vec::new(); (n * n) as usize];
+                chunks[idx].push(Plant {
+                    local_x: quantize_span(128.0),
+                    local_z: quantize_span(128.0),
+                    height: quantize_span(10.0),
+                    rotation: 0,
+                    species: 0,
+                    stage: MATURE,
+                    born_hour: 0.0,
+                    genes: PlantGenes {
+                        fecundity: 240,
+                        ..site_genes(&probe, src_x, src_z)
+                    },
+                });
+                let emit_ctx = EmitContext {
+                    registry: &reg,
+                    heightmap: &probe.heightmap,
+                    rivers: &probe.rivers,
+                    sea_level: probe.sea_level,
+                    seed: 7,
+                    bucket: 0,
+                };
+                let cands = emit_chunk_candidates(idx, &chunks, &emit_ctx);
+                if !cands.is_empty() {
+                    found = Some((canon, idx, chunks, cands));
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        let (canon, idx, mut chunks, mature) =
+            found.expect("a chunk whose phenotype-scaled plant 0 spreads");
         assert!(!mature.is_empty(), "a firing mature plant emits candidates");
+        let emit_ctx = EmitContext {
+            registry: &reg,
+            heightmap: &probe.heightmap,
+            rivers: &probe.rivers,
+            sea_level: probe.sea_level,
+            seed: 7,
+            bucket: 0,
+        };
+        let again = emit_chunk_candidates(idx, &chunks, &emit_ctx);
+        assert_eq!(
+            mature.iter().map(|c| c.genes).collect::<Vec<_>>(),
+            again.iter().map(|c| c.genes).collect::<Vec<_>>()
+        );
+        let parent_pheno = evaluate_phenotype(
+            chunks[idx][0].genes,
+            species0,
+            plant_environment(
+                &probe.heightmap,
+                &probe.rivers,
+                probe.sea_level,
+                canon.x as f32 * CHUNK_SIZE_METERS + 128.0,
+                canon.y as f32 * CHUNK_SIZE_METERS + 128.0,
+            ),
+        );
         for c in &mature {
             // Candidate world position is within spread_radius of the source.
             let dx = c.world_x - (canon.x as f32 * CHUNK_SIZE_METERS + 128.0);
             let dz = c.world_z - (canon.y as f32 * CHUNK_SIZE_METERS + 128.0);
-            assert!((dx * dx + dz * dz).sqrt() <= species0.placement.spread_radius + 0.01);
+            assert!(
+                (dx * dx + dz * dz).sqrt()
+                    <= species0.placement.spread_radius * parent_pheno.spread_radius_scale + 0.01
+            );
+            for (child, parent) in c
+                .genes
+                .to_bytes()
+                .into_iter()
+                .zip(chunks[idx][0].genes.to_bytes())
+            {
+                let delta = child.abs_diff(parent);
+                assert!(delta == 0 || delta <= 10);
+            }
         }
 
         // The same plant as a seedling emits nothing.
         chunks[idx][0].stage = stage_to_u8(GrowthStage::Seedling);
-        assert!(emit_chunk_candidates(idx, &chunks, &reg, 7, 0).is_empty());
+        assert!(emit_chunk_candidates(idx, &chunks, &emit_ctx).is_empty());
     }
 
     // Replays the runtime's growth+spread loop at a coarse per-frame time step
@@ -3046,10 +3878,14 @@ mod tests {
         let mut chunks: Vec<Vec<Plant>> = (0..(n * n)).map(|_| Vec::new()).collect();
         let probe = test_world(vec![Vec::new(); (n * n) as usize], Arc::clone(&reg));
         let (chunk_idx, _, _) = find_suitable_spot(&probe, 0);
+        let cx = (chunk_idx as i32) % WORLD_SIZE_CHUNKS;
+        let cz = (chunk_idx as i32) / WORLD_SIZE_CHUNKS;
         let mut x = 8.0f32;
         while x < 248.0 {
             let mut z = 8.0f32;
             while z < 248.0 {
+                let world_x = cx as f32 * CHUNK_SIZE_METERS + x;
+                let world_z = cz as f32 * CHUNK_SIZE_METERS + z;
                 chunks[chunk_idx].push(Plant {
                     local_x: quantize_span(x),
                     local_z: quantize_span(z),
@@ -3058,6 +3894,12 @@ mod tests {
                     species: 0,
                     stage: MATURE,
                     born_hour: 0.0,
+                    genes: PlantGenes {
+                        fecundity: 220,
+                        seed_mass: 150,
+                        dispersal: 190,
+                        ..site_genes(&probe, world_x, world_z)
+                    },
                 });
                 z += 12.0;
             }

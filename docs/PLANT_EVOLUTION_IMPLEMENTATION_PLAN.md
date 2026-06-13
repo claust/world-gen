@@ -199,8 +199,9 @@ flora. Keep the biology model simple even if the binary snapshot grows.
 
 ## Save Format Plan
 
-Current spread save writes only spread plants with `SPREAD_VERSION = 1` and
-`PLANT_BYTES = 14`. Base snapshots also store compact plant attributes.
+The pre-evolution spread save wrote only spread plants with `SPREAD_VERSION = 1`
+and `PLANT_BYTES = 14`. Base snapshots also stored compact plant attributes
+without genes.
 
 For evolution:
 
@@ -573,27 +574,36 @@ frame, so a simple scan is fine.
 The existing `CommandAppliedEvent.data` field can carry the JSON payload without
 changing the WebSocket event model.
 
-## Technical Sequence
+## Implementation Milestones
 
-These phases are the implementation phases for the first version. Phase 7 is not
-optional polish: lifecycle scaling is part of the first-version promise because
-the design says selection can act through growth and lifespan. It is staged last
-only to reduce risk after storage, inheritance, selection, rendering, and debug
-observability are working.
+These milestones are the implementation sequence for the first version. Each
+milestone combines the work to do with the proof that the milestone is complete.
+Lifecycle scaling is not optional polish: it is part of the first-version
+promise because the design says selection can act through growth and lifespan.
+It is staged last only to reduce risk after storage, inheritance, selection,
+rendering, and debug observability are working.
 
-### Phase 1: Pure Evolution Math
+### Milestone 1: Biology Math Exists
+
+Work:
 
 - Add `world_core::evolution`.
 - Define genes, environment, phenotype, conversion helpers.
 - Implement trade-off mapping.
-- Unit-test:
-  - every gene has at least one measurable upside and downside
-  - specialist beats generalist at ideal site
-  - generalist beats specialist off-niche
-  - high seed mass improves establishment but reduces seed count
-  - high dispersal increases radius but reduces establishment
 
-### Phase 2: Storage And Gene Lookup
+Done when:
+
+- Unit tests prove every gene has at least one measurable upside and downside.
+- A specialist beats a generalist at its ideal site.
+- A generalist beats a specialist off-niche.
+- High seed mass improves establishment but reduces seed count.
+- High dispersal increases radius but reduces establishment.
+- Extreme gene sets such as all-zero, all-255, and mixed values produce bounded,
+  sane phenotype values.
+
+### Milestone 2: Plants Persist Genes
+
+Work:
 
 - Add genes directly to `Plant`.
 - Add helpers:
@@ -602,7 +612,13 @@ observability are working.
   - `initial_genes(...)` during base generation
 - Bump spread save format and base snapshot format.
 - Regenerate base snapshots.
-- Unit-test base snapshot and spread save/load round trips with genes.
+
+Done when:
+
+- Every generated base plant carries stored founder genes.
+- Every spread plant can round-trip through `plants.bin` with genes intact.
+- Base snapshot serialization and parsing round-trip genes.
+- Old spread saves and base snapshots are rejected by version.
 
 Files/functions expected to change:
 
@@ -619,15 +635,22 @@ Files/functions expected to change:
 - `BASE_VERSION`
 - `PLANT_BYTES`
 
-### Phase 3: Inheritance And Mutation
+### Milestone 3: Genes Are Inherited
+
+Work:
 
 - Thread parent genes through `SpreadCandidate`.
 - Add child genes to accepted candidates.
 - Implement deterministic mutation from candidate order/bucket/position.
-- Unit-test:
-  - same world seed and pass produce identical genes
-  - mutation clamps to `0..=255`
-  - child genes remain near parent genes with the default mutation constants
+- Add a minimal inspection path through tests or debug output so inherited genes
+  can be observed before fitness selection is tuned.
+
+Done when:
+
+- The same world seed and spread pass produce identical child genes.
+- Mutation clamps to `0..=255`.
+- Child genes remain near parent genes with the default mutation constants.
+- Accepted seedlings store their inherited/mutated genes directly on `Plant`.
 
 Implementation notes:
 
@@ -638,60 +661,75 @@ Implementation notes:
 - Mutation constants are internal biology/tuning constants, not user-facing
   speed controls.
 
-### Phase 4: Selection In Spread Landing
+### Milestone 4: Selection Shapes Establishment
+
+Work:
 
 - Evaluate parent phenotype for spread chance/seed count/radius.
 - Evaluate candidate phenotype for establishment.
 - Add local competition pressure.
-- Unit-test:
-  - bad moisture/altitude sites reject more candidates
-  - high competition reduces establishment
-  - dissimilar neighbours suppress less than similar neighbours
+
+Done when:
+
+- Bad moisture/altitude sites reject more candidates than good sites.
+- High competition reduces establishment.
+- Dissimilar neighbours suppress less than similar neighbours.
+- Parent phenotype affects spread roll, seed count, and spread radius.
+- Candidate phenotype affects establishment.
 
 Implementation notes:
 
-- Parent phenotype affects spread roll, seed count, and spread radius.
-- Candidate phenotype affects establishment.
-- Competition is evaluated during landing only in this phase.
+- Competition is evaluated during landing only in this milestone.
 - The existing terrain/biome/houses/slope hard rejects should remain as hard
   ecological constraints; phenotype-based establishment is an additional
   probabilistic gate.
 
-### Phase 5: Render Phenotype
+### Milestone 5: Evolution Is Visible
+
+Work:
 
 - Extend `PlantInstance` with render phenotype fields.
 - Compute visible phenotype in `instances_for()`.
 - Apply scale/tint in `build_plant_instances()`.
-- Screenshot-check at high day speed with the debug CLI.
+- Add the first evolution overlay mode.
+- Add the region inspector debug command.
+- Add telemetry summary fields only if cheap; otherwise keep it command-based.
+
+Done when:
+
+- Phenotype changes visible plant scale and tint.
+- The overlay can show at least one gene or fitness mode.
+- The region inspector reports gene and phenotype summaries.
+- Debug CLI screenshots can compare normal rendering and overlay rendering.
 
 Files/functions expected to change:
 
 - `src/world_core/chunk.rs` (`PlantInstance`)
 - `src/world_runtime/plant_world.rs` (`instances_for`)
 - `src/renderer_wgpu/instancing.rs` (`build_plant_instances`)
-- shader changes only if current instance color/scale channels are insufficient
-
-### Phase 6: Debug Observability
-
-- Add region inspector debug command.
-- Add telemetry summary fields only if cheap; otherwise keep it command-based.
-- Add first evolution overlay mode.
-- Use screenshots to compare normal rendering and overlay rendering.
-
-Files/functions expected to change:
-
 - `src/debug_api/types.rs`
 - `src/app/debug_commands.rs`
 - `tools/debug-cli/cli.ts`
 - app state for overlay mode
 - render/update path that passes overlay mode into plant instance construction
+- shader changes only if current instance color/scale channels are insufficient
 
-### Phase 7: Lifecycle Scaling
+### Milestone 6: Lifecycle Participates
+
+Work:
 
 - Thread enough environment into lifecycle evaluation to scale maturity/lifespan.
 - Keep analytic determinism: a reloaded world must transition stages at the same
   sim-hour as a live world.
 - Unit-test stage transitions with gene-scaled schedules.
+
+Done when:
+
+- `timing`, `capture`, `abiotic_fitness`, and stress influence at least maturity
+  timing or lifespan.
+- Reloaded worlds and continuously simulated worlds transition plant stages at
+  the same sim-hours.
+- Lifecycle calculations depend only on stable, deterministic inputs.
 
 Implementation notes:
 
@@ -700,8 +738,6 @@ Implementation notes:
 - Avoid dependence on loaded chunk terrain or per-frame state. Use retained
   `Heightmap`/`RiverField` sampling so loaded and reloaded worlds agree.
 - Cache nothing that can diverge from save/load unless it is purely derived.
-- After this phase, `timing`, `capture`, `abiotic_fitness`, and stress should
-  influence at least maturity timing or lifespan.
 
 ## Risks And Mitigations
 

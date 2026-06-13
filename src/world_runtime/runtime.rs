@@ -11,6 +11,7 @@ use glam::{IVec2, Vec3};
 use super::plant_world::PlantWorld;
 use crate::world_core::chunk::ChunkData;
 use crate::world_core::config::GameConfig;
+use crate::world_core::evolution::EvolutionOverlayMode;
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::GrowthStage;
 use crate::world_core::save::SaveData;
@@ -68,6 +69,7 @@ pub struct WorldRuntime {
     /// thread; `None` when the base was loaded from an existing cache or this is
     /// a resume (the cache is only authored from a New Game).
     pending_base_snapshot: Option<Vec<u8>>,
+    evolution_overlay: EvolutionOverlayMode,
 }
 
 /// Sim-hours between global growth ticks. Growth is analytic, so a coarse
@@ -302,6 +304,7 @@ impl WorldRuntime {
             last_spread_hour: total_hours,
             last_tick_ms: 0.0,
             pending_base_snapshot,
+            evolution_overlay: EvolutionOverlayMode::Off,
         })
     }
 
@@ -335,13 +338,37 @@ impl WorldRuntime {
 
         // Stream chunks around the camera; newly loaded chunks read their plants
         // from the resident PlantWorld.
-        self.streaming.update(camera_position, &self.plant_world);
+        self.streaming
+            .update(camera_position, &self.plant_world, self.evolution_overlay);
         // If the global sim changed the world, refresh the already-loaded chunks
         // so growth stage changes and new seedlings show up.
         if changed {
             self.streaming
-                .refresh_loaded_from_plant_world(&self.plant_world);
+                .refresh_loaded_from_plant_world(&self.plant_world, self.evolution_overlay);
         }
+    }
+
+    pub fn evolution_overlay(&self) -> EvolutionOverlayMode {
+        self.evolution_overlay
+    }
+
+    pub fn set_evolution_overlay(&mut self, mode: EvolutionOverlayMode) {
+        if self.evolution_overlay == mode {
+            return;
+        }
+        self.evolution_overlay = mode;
+        self.streaming
+            .refresh_loaded_from_plant_world(&self.plant_world, self.evolution_overlay);
+    }
+
+    pub fn cycle_evolution_overlay(&mut self) -> EvolutionOverlayMode {
+        let mode = self.evolution_overlay.next();
+        self.set_evolution_overlay(mode);
+        mode
+    }
+
+    pub fn inspect_evolution_region(&self, x: f32, z: f32, radius: f32) -> serde_json::Value {
+        self.plant_world.inspect_evolution_region(x, z, radius)
     }
 
     /// Advance global growth, rate-limited to [`GROWTH_TICK_HOURS`] of sim time
@@ -667,6 +694,7 @@ impl WebWorldBuilder {
             // The browser never persists the base (localStorage can't hold it); the
             // HTTP cache covers repeat downloads, so nothing is staged here.
             pending_base_snapshot: None,
+            evolution_overlay: EvolutionOverlayMode::Off,
         })
     }
 }

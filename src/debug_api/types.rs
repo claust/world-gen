@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::world_core::evolution::EvolutionOverlayMode;
+
 pub const API_VERSION: &str = "v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +167,14 @@ pub enum CommandKind {
     },
     TakeScreenshot,
     SaveWorld,
+    SetEvolutionOverlay {
+        mode: EvolutionOverlayMode,
+    },
+    InspectEvolutionRegion {
+        x: f32,
+        z: f32,
+        radius: f32,
+    },
     PressKey {
         key: PressableKey,
     },
@@ -184,6 +194,7 @@ pub enum PressableKey {
     F1,
     Escape,
     M,
+    E,
     P,
     H,
 }
@@ -422,6 +433,48 @@ mod tests {
             super::CommandKind::PressKey {
                 key: super::PressableKey::Escape
             }
+        ));
+    }
+
+    #[test]
+    fn deserializes_press_key_e() {
+        let raw = r#"{"id":"pk-3","type":"press_key","key":"e"}"#;
+        let command: CommandRequest = serde_json::from_str(raw).expect("valid press_key e payload");
+        assert_eq!(command.id, "pk-3");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::PressKey {
+                key: super::PressableKey::E
+            }
+        ));
+    }
+
+    #[test]
+    fn deserializes_set_evolution_overlay() {
+        let raw = r#"{"id":"evo-1","type":"set_evolution_overlay","mode":"wet_preference"}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid set_evolution_overlay payload");
+        assert_eq!(command.id, "evo-1");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::SetEvolutionOverlay {
+                mode: crate::world_core::evolution::EvolutionOverlayMode::WetPreference
+            }
+        ));
+    }
+
+    #[test]
+    fn deserializes_inspect_evolution_region() {
+        let raw = r#"{"id":"evo-2","type":"inspect_evolution_region","x":1200.0,"z":900.0,"radius":128.0}"#;
+        let command: CommandRequest =
+            serde_json::from_str(raw).expect("valid inspect_evolution_region payload");
+        assert_eq!(command.id, "evo-2");
+        assert!(matches!(
+            command.command,
+            super::CommandKind::InspectEvolutionRegion { x, z, radius }
+            if (x - 1200.0).abs() < f32::EPSILON
+                && (z - 900.0).abs() < f32::EPSILON
+                && (radius - 128.0).abs() < f32::EPSILON
         ));
     }
 
