@@ -137,7 +137,10 @@ function launcherEnv(): Record<string, string | undefined> {
   const hasWorldGenTarget =
     rustLog
       ?.split(",")
-      .some((part) => part.trim().startsWith(`${WORLD_GEN_LOG_TARGET}=`)) ?? false;
+      .some((part) => {
+        const target = part.trim().split("=", 1)[0]?.trim() ?? "";
+        return target === WORLD_GEN_LOG_TARGET || target.startsWith(`${WORLD_GEN_LOG_TARGET}::`);
+      }) ?? false;
 
   if (!hasWorldGenTarget) {
     env.RUST_LOG = rustLog ? `${rustLog},${WORLD_GEN_LOG_TARGET}=info` : `${WORLD_GEN_LOG_TARGET}=info`;
