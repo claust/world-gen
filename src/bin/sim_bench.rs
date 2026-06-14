@@ -180,7 +180,8 @@ impl Report {
         stats: RuntimeStats,
     ) -> Self {
         let simulated_hours = args.steps as f64 * args.dt_seconds as f64 * args.day_speed as f64;
-        let steps_per_second = args.steps as f64 / (run_ms / 1000.0);
+        let run_seconds = (run_ms / 1000.0).max(f64::EPSILON);
+        let steps_per_second = args.steps as f64 / run_seconds;
         let average_step_ms = run_ms / args.steps as f64;
         let checksum = checksum(args, final_total_hours, &stats);
 
