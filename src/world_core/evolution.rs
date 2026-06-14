@@ -151,13 +151,14 @@ pub fn inherit_and_mutate(parent: PlantGenes, seed: u32, key: MutationKey) -> Pl
 
     let mut bytes = parent.to_bytes();
     for (idx, byte) in bytes.iter_mut().enumerate() {
-        let roll = mutation_hash(seed, key, idx as u32 * 2);
+        let salt = idx as u32 * 3;
+        let roll = mutation_hash(seed, key, salt);
         if roll >= MUTATION_CHANCE {
             continue;
         }
-        let step_unit = mutation_hash(seed, key, idx as u32 * 2 + 1);
+        let step_unit = mutation_hash(seed, key, salt + 1);
         let magnitude = 1 + (step_unit * MAX_STEP as f32).floor() as i16;
-        let sign = if mutation_hash(seed, key, idx as u32 * 2 + 2) < 0.5 {
+        let sign = if mutation_hash(seed, key, salt + 2) < 0.5 {
             -1
         } else {
             1
