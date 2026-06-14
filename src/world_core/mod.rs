@@ -5,6 +5,7 @@ pub mod chunk_generator;
 pub mod color;
 pub mod config;
 pub mod content;
+pub mod evolution;
 pub mod heightmap;
 pub mod herbarium;
 pub mod layer;

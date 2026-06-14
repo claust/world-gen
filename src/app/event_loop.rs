@@ -127,6 +127,27 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     }
                 }
 
+                // E cycles the evolution overlay
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::KeyE))
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && !app.map_open
+                        && !app.show_help
+                    {
+                        app.cycle_evolution_overlay();
+                        return;
+                    }
+                }
+
                 // 1–5 recall a favorite position; double-tap saves the current
                 // one. Guarded like `M` so the digits stay free for egui text
                 // fields (menu seed input, config panel, editor, herbarium).
@@ -515,6 +536,27 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                         {
                             app.toggle_help();
                         }
+                        return;
+                    }
+                }
+
+                // E cycles the evolution overlay
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::KeyE))
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && !app.map_open
+                        && !app.show_help
+                    {
+                        app.cycle_evolution_overlay();
                         return;
                     }
                 }

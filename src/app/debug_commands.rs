@@ -334,6 +334,41 @@ impl AppState {
                         format!("save failed: {e}"),
                     ),
                 },
+                CommandKind::SetEvolutionOverlay { mode } => {
+                    if let Some(world) = self.world.as_mut() {
+                        world.set_evolution_overlay(mode);
+                        let mut evt = CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!("evolution overlay set to {mode:?}"),
+                        );
+                        evt.data = Some(serde_json::json!({ "mode": mode }));
+                        evt
+                    } else {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            "evolution overlay failed: world is not running".to_string(),
+                        )
+                    }
+                }
+                CommandKind::InspectEvolutionRegion { x, z, radius } => {
+                    if let Some(world) = self.world.as_ref() {
+                        let mut evt = CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            "evolution region inspected".to_string(),
+                        );
+                        evt.data = Some(world.inspect_evolution_region(x, z, radius));
+                        evt
+                    } else {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            "evolution region inspection failed: world is not running".to_string(),
+                        )
+                    }
+                }
                 CommandKind::UiSnapshot => {
                     let snapshot = self.ui_registry.take_snapshot(self.screen_name());
                     let data = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
@@ -425,6 +460,10 @@ impl AppState {
                                 "map overlay closed".to_string()
                             }
                         }
+                        PressableKey::E => match self.cycle_evolution_overlay() {
+                            Some(mode) => format!("evolution overlay cycled to {mode:?}"),
+                            None => "evolution overlay unavailable".to_string(),
+                        },
                         // Mirrors the in-app `P` shortcut: capture a screenshot
                         // and copy it to the clipboard. The applied event is
                         // deferred (via `continue`) until the render loop

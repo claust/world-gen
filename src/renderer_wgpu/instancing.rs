@@ -310,6 +310,16 @@ pub fn build_plant_instances(
         if dead {
             scale *= 1.0 - DEAD_DECAY_SHRINK * p.decay.clamp(0.0, 1.0);
         }
+        let width_scale = if dead {
+            1.0
+        } else {
+            p.width_scale.clamp(0.25, 2.5)
+        };
+        let height_scale = if dead {
+            1.0
+        } else {
+            p.height_scale.clamp(0.25, 2.5)
+        };
 
         // Procedural meshes bake their colours in (white tint). Billboards are a
         // flat untextured card, so they carry the species leaf colour as a tint.
@@ -317,7 +327,7 @@ pub fn build_plant_instances(
         // but a billboard's tint IS its albedo (not a multiplier over baked
         // colours), so dead shrubs take a darkened tint or they'd glow nearly
         // white next to their dark-green living neighbours.
-        let color = if dead {
+        let mut color = if dead {
             let t = crate::world_core::lifecycle::DEAD_TINT;
             if species[idx].kind == "shrub" {
                 [t[0] * 0.45, t[1] * 0.45, t[2] * 0.45, t[3]]
@@ -330,11 +340,23 @@ pub fn build_plant_instances(
         } else {
             [1.0, 1.0, 1.0, 1.0]
         };
+        if !dead {
+            color = [
+                (color[0] * p.leaf_tint[0]).clamp(0.0, 2.0),
+                (color[1] * p.leaf_tint[1]).clamp(0.0, 2.0),
+                (color[2] * p.leaf_tint[2]).clamp(0.0, 2.0),
+                (color[3] * p.leaf_tint[3]).clamp(0.0, 1.0),
+            ];
+        }
 
         let instance = InstanceData {
             position: [p.position.x, p.position.y, p.position.z],
             rotation_y: p.rotation,
-            scale: [scale, scale, scale],
+            scale: [
+                scale * width_scale,
+                scale * height_scale,
+                scale * width_scale,
+            ],
             tilt: if dead { dead_tilt(p) } else { 0.0 },
             color,
         };
@@ -390,34 +412,32 @@ mod tests {
     use crate::world_core::herbarium::{Herbarium, PlantRegistry};
     use crate::world_core::lifecycle::GrowthStage;
 
+    fn plant(x: f32, stage: GrowthStage) -> PlantInstance {
+        PlantInstance {
+            position: Vec3::new(x, 0.0, 0.0),
+            rotation: 0.0,
+            height: 10.0,
+            species_index: 0,
+            growth_stage: stage,
+            height_scale: 1.0,
+            width_scale: 1.0,
+            stress: 0.0,
+            leaf_tint: [1.0, 1.0, 1.0, 1.0],
+            decay: 0.0,
+        }
+    }
+
     #[test]
     fn build_plant_instances_scales_from_growth_stage_and_splits_lod_groups() {
         let registry = PlantRegistry::from_herbarium(&Herbarium::default_seeded());
         let plants = vec![
             PlantInstance {
-                position: Vec3::new(0.0, 0.0, 0.0),
-                rotation: 0.0,
-                height: 10.0,
-                species_index: 0,
-                growth_stage: GrowthStage::Mature,
-                decay: 0.0,
+                width_scale: 1.2,
+                height_scale: 0.8,
+                ..plant(0.0, GrowthStage::Mature)
             },
-            PlantInstance {
-                position: Vec3::new(1.0, 0.0, 0.0),
-                rotation: 0.0,
-                height: 10.0,
-                species_index: 0,
-                growth_stage: GrowthStage::Seedling,
-                decay: 0.0,
-            },
-            PlantInstance {
-                position: Vec3::new(2.0, 0.0, 0.0),
-                rotation: 0.0,
-                height: 10.0,
-                species_index: 0,
-                growth_stage: GrowthStage::Young,
-                decay: 0.0,
-            },
+            plant(1.0, GrowthStage::Seedling),
+            plant(2.0, GrowthStage::Young),
         ];
 
         let per_species = build_plant_instances(&plants, &registry.species);
@@ -428,7 +448,8 @@ mod tests {
 
         assert_eq!(per_species[0].mature.len(), 1);
         assert_eq!(per_species[0].lod.len(), 2);
-        assert!((per_species[0].mature[0].scale[0] - mature_scale).abs() < 1e-5);
+        assert!((per_species[0].mature[0].scale[0] - mature_scale * 1.2).abs() < 1e-5);
+        assert!((per_species[0].mature[0].scale[1] - mature_scale * 0.8).abs() < 1e-5);
         assert!((per_species[0].lod[0].scale[0] - mature_scale * 0.15).abs() < 1e-5);
         assert!((per_species[0].lod[1].scale[0] - mature_scale * 0.5).abs() < 1e-5);
     }
@@ -442,6 +463,10 @@ mod tests {
             height: 10.0,
             species_index: 0,
             growth_stage: GrowthStage::Dead,
+            height_scale: 1.0,
+            width_scale: 1.0,
+            stress: 0.0,
+            leaf_tint: [1.0, 1.0, 1.0, 1.0],
             decay,
         };
         let per_species = build_plant_instances(&[mk(0.0), mk(1.0)], &registry.species);

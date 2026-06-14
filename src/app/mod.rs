@@ -563,6 +563,14 @@ impl AppState {
         }
     }
 
+    fn cycle_evolution_overlay(
+        &mut self,
+    ) -> Option<crate::world_core::evolution::EvolutionOverlayMode> {
+        self.world
+            .as_mut()
+            .map(crate::world_runtime::WorldRuntime::cycle_evolution_overlay)
+    }
+
     fn teleport_camera_to_map_position(&mut self, x: f32, z: f32) {
         let ground_y = self
             .world

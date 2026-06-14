@@ -44,6 +44,7 @@ const BIN =
 // tuned state instead of the game's built-in defaults. Keys match storage keys.
 const SEED_ASSETS = ["herbarium.json", "config.json"];
 const PORT_LINE = /debug api listening on [\d.]+:(\d+)/;
+const WORLD_GEN_LOG_TARGET = "world_gen";
 
 // --- discovery helpers ---
 
@@ -130,6 +131,24 @@ function seedAssets(instanceDir: string): void {
   }
 }
 
+function launcherEnv(): Record<string, string | undefined> {
+  const env = { ...process.env };
+  const rustLog = env.RUST_LOG;
+  const hasWorldGenTarget =
+    rustLog
+      ?.split(",")
+      .some((part) => {
+        const target = part.trim().split("=", 1)[0]?.trim() ?? "";
+        return target === WORLD_GEN_LOG_TARGET || target.startsWith(`${WORLD_GEN_LOG_TARGET}::`);
+      }) ?? false;
+
+  if (!hasWorldGenTarget) {
+    env.RUST_LOG = rustLog ? `${rustLog},${WORLD_GEN_LOG_TARGET}=info` : `${WORLD_GEN_LOG_TARGET}=info`;
+  }
+
+  return env;
+}
+
 /** Tees a process stream to our own stdio while scanning each line. */
 async function tee(
   stream: ReadableStream<Uint8Array>,
@@ -184,7 +203,7 @@ async function cmdLaunch(name: string, noBuild: boolean, extra: string[]): Promi
     cmd: [BIN, "--debug-api-bind", "127.0.0.1:0", "--instance-name", name, ...extra],
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env },
+    env: launcherEnv(),
   });
 
   let resolvePort!: (port: number) => void;

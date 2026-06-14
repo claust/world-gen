@@ -100,6 +100,10 @@ pub struct PlantInstance {
     pub height: f32,
     pub species_index: usize,
     pub growth_stage: GrowthStage,
+    pub height_scale: f32,
+    pub width_scale: f32,
+    pub stress: f32,
+    pub leaf_tint: [f32; 4],
     /// For `Dead` snags: fraction of the snag phase elapsed (0 freshly dead →
     /// 1 about to despawn). Eases the render scale down as the snag rots.
     /// Always 0 for living plants.
