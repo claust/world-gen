@@ -46,6 +46,15 @@ cargo run --release
 cargo check
 ```
 
+## Simulation Benchmark
+Run the fixed-step CPU simulation benchmark without creating a window, renderer, GPU device, or wgpu resources:
+
+```bash
+cargo run --release --bin sim_bench -- --json
+```
+
+The default run uses a fixed seed, one worker thread, 60 fixed updates, and a day speed that advances exactly one simulated day. Setup time is reported separately from the measured update loop. Use `--steps`, `--dt`, `--day-speed`, `--threads`, `--seed`, and `--load-radius` to pin a different regression scenario.
+
 ## Debugging
 ### Debug API + CLI
 Run the game with the debug API enabled:
