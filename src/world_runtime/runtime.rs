@@ -343,8 +343,12 @@ impl WorldRuntime {
         // If the global sim changed the world, refresh the already-loaded chunks
         // so growth stage changes and new seedlings show up.
         if changed {
-            self.streaming
-                .refresh_loaded_from_plant_world(&self.plant_world, self.evolution_overlay);
+            let changed_chunks = self.plant_world.take_dirty_chunks();
+            self.streaming.refresh_changed_from_plant_world(
+                &self.plant_world,
+                self.evolution_overlay,
+                &changed_chunks,
+            );
         }
     }
 

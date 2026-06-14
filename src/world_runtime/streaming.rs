@@ -113,6 +113,27 @@ impl StreamingWorld {
         }
     }
 
+    pub fn refresh_changed_from_plant_world(
+        &mut self,
+        plant_world: &PlantWorld,
+        overlay: EvolutionOverlayMode,
+        changed_chunks: &[usize],
+    ) {
+        if changed_chunks.is_empty() {
+            return;
+        }
+
+        let changed: HashSet<usize> = changed_chunks.iter().copied().collect();
+        for (coord, chunk) in self.loaded.iter_mut() {
+            let canon = crate::world_core::chunk::canonical_chunk(*coord);
+            let idx = (canon.y * crate::world_core::chunk::WORLD_SIZE_CHUNKS + canon.x) as usize;
+            if changed.contains(&idx) {
+                let plants = plant_world.instances_for(*coord, &chunk.terrain, overlay);
+                chunk.content.set_plants(plants);
+            }
+        }
+    }
+
     pub fn seed(&self) -> u32 {
         self.seed
     }

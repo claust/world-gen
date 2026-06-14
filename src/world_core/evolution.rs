@@ -157,7 +157,11 @@ pub fn inherit_and_mutate(parent: PlantGenes, seed: u32, key: MutationKey) -> Pl
         }
         let step_unit = mutation_hash(seed, key, idx as u32 * 2 + 1);
         let magnitude = 1 + (step_unit * MAX_STEP as f32).floor() as i16;
-        let sign = if step_unit < 0.5 { -1 } else { 1 };
+        let sign = if mutation_hash(seed, key, idx as u32 * 2 + 2) < 0.5 {
+            -1
+        } else {
+            1
+        };
         *byte = (*byte as i16 + sign * magnitude).clamp(0, u8::MAX as i16) as u8;
     }
     PlantGenes::from_bytes(bytes)
@@ -501,5 +505,40 @@ mod tests {
             let delta = child.abs_diff(parent);
             assert!(delta == 0 || delta <= 10);
         }
+    }
+
+    #[test]
+    fn mutation_steps_are_not_directionally_biased() {
+        let parent = PlantGenes::from_bytes([128; PlantGenes::BYTE_LEN]);
+        let mut delta_sum = 0i64;
+        let mut mutations = 0i64;
+
+        for seed in 0..256 {
+            for parent_index in 0u32..64 {
+                let child = inherit_and_mutate(
+                    parent,
+                    seed,
+                    MutationKey {
+                        chunk: IVec2::new((parent_index % 16) as i32, (parent_index / 16) as i32),
+                        parent_index,
+                        bucket: seed ^ 0x5eed,
+                        seed_index: parent_index.rotate_left(3),
+                    },
+                );
+                for (child, parent) in child.to_bytes().into_iter().zip(parent.to_bytes()) {
+                    let delta = child as i16 - parent as i16;
+                    if delta != 0 {
+                        delta_sum += delta as i64;
+                        mutations += 1;
+                    }
+                }
+            }
+        }
+
+        let mean_delta = delta_sum as f64 / mutations.max(1) as f64;
+        assert!(
+            mean_delta.abs() < 0.25,
+            "mean mutation delta {mean_delta:.3} across {mutations} mutated genes"
+        );
     }
 }

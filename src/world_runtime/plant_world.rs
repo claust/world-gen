@@ -407,6 +407,9 @@ pub struct PlantWorld {
     /// Cached per-biome fill, refreshed only when saturation changes — `stats()`
     /// reads it every frame, so it must not rescan the world each call.
     biome_fill: Vec<(&'static str, f32, usize)>,
+    /// Canonical chunk indices whose visible plant list changed since the last
+    /// render refresh. This is transient and never persisted.
+    dirty_chunks: Vec<usize>,
 }
 
 fn chunk_index(canon: IVec2) -> usize {
@@ -566,6 +569,7 @@ impl PlantWorld {
             populated_chunks,
             last_spread_added: 0,
             biome_fill: Vec::new(),
+            dirty_chunks: Vec::new(),
         };
         world.recompute_biome_fill();
         world
@@ -715,6 +719,17 @@ impl PlantWorld {
         self.population
     }
 
+    pub fn take_dirty_chunks(&mut self) -> Vec<usize> {
+        let mut dirty = std::mem::take(&mut self.dirty_chunks);
+        dirty.sort_unstable();
+        dirty.dedup();
+        dirty
+    }
+
+    fn mark_dirty(&mut self, idx: usize) {
+        self.dirty_chunks.push(idx);
+    }
+
     /// Number of canonical chunks holding at least one plant. O(1).
     pub fn populated_chunks(&self) -> usize {
         self.populated_chunks
@@ -796,6 +811,7 @@ impl PlantWorld {
         let sea_level = self.sea_level;
         let mut changed = false;
         let mut reaped_chunks: Vec<usize> = Vec::new();
+        let mut dirty_chunks: Vec<usize> = Vec::new();
         for idx in 0..self.chunks.len() {
             if total_hours < self.next_event[idx] {
                 continue;
@@ -810,6 +826,7 @@ impl PlantWorld {
             let mut next_event = f64::INFINITY;
             let mut removed_base = 0u32;
             let mut write = 0usize;
+            let mut chunk_changed = false;
             for read in 0..chunk.len() {
                 let mut plant = chunk[read];
                 let Some(species) = registry.species.get(plant.species as usize) else {
@@ -827,11 +844,13 @@ impl PlantWorld {
                         removed_base += 1;
                     }
                     changed = true;
+                    chunk_changed = true;
                     continue;
                 };
                 if stage != plant.stage {
                     plant.stage = stage;
                     changed = true;
+                    chunk_changed = true;
                 }
                 if plant.stage < MATURE {
                     immature += 1;
@@ -842,6 +861,9 @@ impl PlantWorld {
             }
             let removed = chunk.len() - write;
             chunk.truncate(write);
+            if chunk_changed {
+                dirty_chunks.push(idx);
+            }
             self.immature[idx] = immature;
             self.next_event[idx] = next_event;
             if removed > 0 {
@@ -853,6 +875,7 @@ impl PlantWorld {
                 reaped_chunks.push(idx);
             }
         }
+        self.dirty_chunks.extend(dirty_chunks);
         if !reaped_chunks.is_empty() {
             // Freed ground is reachable by the 8-neighbourhood's spread radius,
             // so the whole block must wake up or the gap never refills.
@@ -974,6 +997,7 @@ impl PlantWorld {
         for (idx, &count) in accepted.iter().enumerate() {
             if count > 0 {
                 added += count as usize;
+                self.mark_dirty(idx);
                 // It gained plants, so it is not saturated and may spread once
                 // those seedlings mature.
                 self.saturated[idx] = false;
@@ -1382,6 +1406,7 @@ impl PlantWorld {
             populated_chunks,
             last_spread_added: 0,
             biome_fill: Vec::new(),
+            dirty_chunks: Vec::new(),
         };
         world.recompute_biome_fill();
         world
@@ -1611,7 +1636,6 @@ fn land_chunk_candidates(
     // only a 3×3 cell neighbourhood instead of every plant — without it the pass
     // is O(candidates × plants) and chokes as chunks densify.
     let mut grid = SpacingGrid::build(plants);
-    let mut competition = CompetitionGrid::build(plants);
 
     let mut accepted = 0u32;
     for candidate in candidates.iter() {
@@ -1671,7 +1695,7 @@ fn land_chunk_candidates(
         }
 
         let (shade, root_pressure) =
-            competition.pressure(candidate.local_x, candidate.local_z, candidate.genes);
+            grid.competition_pressure(candidate.local_x, candidate.local_z, candidate.genes);
         let candidate_env = PlantEnvironment {
             moisture,
             altitude: normalize_altitude(height, ctx.sea_level),
@@ -1684,8 +1708,7 @@ fn land_chunk_candidates(
             continue;
         }
 
-        grid.insert(candidate.local_x, candidate.local_z);
-        competition.insert(
+        grid.insert(
             candidate.local_x,
             candidate.local_z,
             candidate.height,
@@ -1707,17 +1730,25 @@ fn land_chunk_candidates(
     accepted
 }
 
-/// Uniform spatial grid of plant positions within one chunk, for O(1) spacing
-/// queries. Cell size ≥ the largest spacing (8 m) so any plant within `spacing`
-/// of a point lies in the point's 3×3 cell neighbourhood.
-struct SpacingGrid {
-    cells: Vec<Vec<(f32, f32)>>,
-}
-
 // Cell size ≥ the largest spacing (8 m) keeps the 3×3 neighbourhood correct;
 // 16 m keeps the per-chunk grid small (16×16) to limit allocation churn.
 const SPACING_CELL: f32 = 16.0;
 const SPACING_GRID_SIDE: i32 = (CHUNK_SIZE_METERS / SPACING_CELL) as i32; // 16
+
+#[derive(Clone, Copy)]
+struct SpacingEntry {
+    x: f32,
+    z: f32,
+    height: f32,
+    stage: u8,
+    genes: PlantGenes,
+}
+
+/// Uniform spatial grid of plants within one chunk, shared by spacing and
+/// competition queries so a spread pass builds only one per-cell structure.
+struct SpacingGrid {
+    cells: Vec<Vec<SpacingEntry>>,
+}
 
 impl SpacingGrid {
     fn cell_of(x: f32, z: f32) -> usize {
@@ -1731,13 +1762,25 @@ impl SpacingGrid {
         for plant in plants {
             let x = dequantize_span(plant.local_x);
             let z = dequantize_span(plant.local_z);
-            cells[Self::cell_of(x, z)].push((x, z));
+            cells[Self::cell_of(x, z)].push(SpacingEntry {
+                x,
+                z,
+                height: dequantize_span(plant.height),
+                stage: plant.stage,
+                genes: plant.genes,
+            });
         }
         Self { cells }
     }
 
-    fn insert(&mut self, x: f32, z: f32) {
-        self.cells[Self::cell_of(x, z)].push((x, z));
+    fn insert(&mut self, x: f32, z: f32, height: f32, stage: u8, genes: PlantGenes) {
+        self.cells[Self::cell_of(x, z)].push(SpacingEntry {
+            x,
+            z,
+            height,
+            stage,
+            genes,
+        });
     }
 
     fn any_within(&self, x: f32, z: f32, spacing: f32) -> bool {
@@ -1751,9 +1794,9 @@ impl SpacingGrid {
                 if nx < 0 || nz < 0 || nx >= SPACING_GRID_SIDE || nz >= SPACING_GRID_SIDE {
                     continue;
                 }
-                for &(px, pz) in &self.cells[(nz * SPACING_GRID_SIDE + nx) as usize] {
-                    let ddx = px - x;
-                    let ddz = pz - z;
+                for entry in &self.cells[(nz * SPACING_GRID_SIDE + nx) as usize] {
+                    let ddx = entry.x - x;
+                    let ddz = entry.z - z;
                     if ddx * ddx + ddz * ddz < spacing_sq {
                         return true;
                     }
@@ -1762,52 +1805,8 @@ impl SpacingGrid {
         }
         false
     }
-}
 
-#[derive(Clone, Copy)]
-struct CompetitionEntry {
-    x: f32,
-    z: f32,
-    height: f32,
-    stage: u8,
-    genes: PlantGenes,
-}
-
-struct CompetitionGrid {
-    cells: Vec<Vec<CompetitionEntry>>,
-}
-
-const COMPETITION_RADIUS: f32 = 24.0;
-const COMPETITION_STRENGTH: f32 = 0.55;
-
-impl CompetitionGrid {
-    fn build(plants: &[Plant]) -> Self {
-        let mut grid = Self {
-            cells: vec![Vec::new(); (SPACING_GRID_SIDE * SPACING_GRID_SIDE) as usize],
-        };
-        for plant in plants {
-            grid.insert(
-                dequantize_span(plant.local_x),
-                dequantize_span(plant.local_z),
-                dequantize_span(plant.height),
-                plant.stage,
-                plant.genes,
-            );
-        }
-        grid
-    }
-
-    fn insert(&mut self, x: f32, z: f32, height: f32, stage: u8, genes: PlantGenes) {
-        self.cells[SpacingGrid::cell_of(x, z)].push(CompetitionEntry {
-            x,
-            z,
-            height,
-            stage,
-            genes,
-        });
-    }
-
-    fn pressure(&self, x: f32, z: f32, genes: PlantGenes) -> (f32, f32) {
+    fn competition_pressure(&self, x: f32, z: f32, genes: PlantGenes) -> (f32, f32) {
         let cx = ((x / SPACING_CELL) as i32).clamp(0, SPACING_GRID_SIDE - 1);
         let cz = ((z / SPACING_CELL) as i32).clamp(0, SPACING_GRID_SIDE - 1);
         let mut canopy = 0.0;
@@ -1846,6 +1845,9 @@ impl CompetitionGrid {
         )
     }
 }
+
+const COMPETITION_RADIUS: f32 = 24.0;
+const COMPETITION_STRENGTH: f32 = 0.55;
 
 fn stage_competition_weight(stage: u8) -> f32 {
     match stage_from_u8(stage) {
@@ -2803,6 +2805,7 @@ mod tests {
             populated_chunks,
             last_spread_added: 0,
             biome_fill: Vec::new(),
+            dirty_chunks: Vec::new(),
         }
     }
 
@@ -3607,17 +3610,17 @@ mod tests {
             ..PlantGenes::default()
         };
 
-        let mut similar_grid = CompetitionGrid {
+        let mut similar_grid = SpacingGrid {
             cells: vec![Vec::new(); (SPACING_GRID_SIDE * SPACING_GRID_SIDE) as usize],
         };
         similar_grid.insert(128.0, 128.0, 12.0, MATURE, similar);
-        let mut dissimilar_grid = CompetitionGrid {
+        let mut dissimilar_grid = SpacingGrid {
             cells: vec![Vec::new(); (SPACING_GRID_SIDE * SPACING_GRID_SIDE) as usize],
         };
         dissimilar_grid.insert(128.0, 128.0, 12.0, MATURE, dissimilar);
 
-        let (_, similar_root) = similar_grid.pressure(136.0, 128.0, candidate);
-        let (_, dissimilar_root) = dissimilar_grid.pressure(136.0, 128.0, candidate);
+        let (_, similar_root) = similar_grid.competition_pressure(136.0, 128.0, candidate);
+        let (_, dissimilar_root) = dissimilar_grid.competition_pressure(136.0, 128.0, candidate);
         assert!(similar_root > dissimilar_root);
     }
 
