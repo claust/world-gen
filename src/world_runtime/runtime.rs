@@ -371,8 +371,14 @@ impl WorldRuntime {
         mode
     }
 
-    pub fn inspect_evolution_region(&self, x: f32, z: f32, radius: f32) -> serde_json::Value {
-        self.plant_world.inspect_evolution_region(x, z, radius)
+    pub fn inspect_evolution_region(
+        &self,
+        x: f32,
+        z: f32,
+        radius: f32,
+    ) -> crate::world_core::evolution::EvolutionRegionReport {
+        self.plant_world
+            .inspect_evolution_region(x, z, radius, self.clock.total_hours())
     }
 
     /// Advance global growth, rate-limited to [`GROWTH_TICK_HOURS`] of sim time

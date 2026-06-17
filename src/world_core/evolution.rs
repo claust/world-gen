@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use glam::IVec2;
 use serde::{Deserialize, Serialize};
 
@@ -108,6 +110,89 @@ pub struct PlantEnvironment {
     pub river_wetness: f32,
     pub shade: f32,
     pub root_pressure: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EvolutionRegionCenter {
+    pub x: f32,
+    pub z: f32,
+    pub wrapped_x: f32,
+    pub wrapped_z: f32,
+    pub radius: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvolutionRegionCounts {
+    pub total_plants_considered: usize,
+    pub plants_included: usize,
+    pub chunks_touched: usize,
+    pub empty: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EvolutionGeneStats {
+    pub mean: f64,
+    pub stddev: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EvolutionPhenotypeSummary {
+    pub abiotic_fitness: f64,
+    pub competition_room: f64,
+    pub stress: f64,
+    pub height_scale: f64,
+    pub width_scale: f64,
+    pub maturity_scale: f64,
+    pub lifespan_scale: f64,
+    pub seed_count_scale: f64,
+    pub spread_radius_scale: f64,
+    pub establishment_chance: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EvolutionEnvironmentSummary {
+    pub moisture: f64,
+    pub altitude: f64,
+    pub river_wetness: f64,
+    pub shade: f64,
+    pub root_pressure: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvolutionStageCounts {
+    pub seedling: usize,
+    pub young: usize,
+    pub mature: usize,
+    pub dead: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvolutionSpeciesCount {
+    pub species: u8,
+    pub name: String,
+    pub count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EvolutionRegionReport {
+    pub center: EvolutionRegionCenter,
+    pub sample_hour: f64,
+    pub counts: EvolutionRegionCounts,
+    /// Compatibility alias for the pre-typed debug API response.
+    pub plant_count: usize,
+    pub genes: BTreeMap<String, EvolutionGeneStats>,
+    /// Mean phenotype values expressed by this region's plants in this region.
+    pub phenotype: EvolutionPhenotypeSummary,
+    pub phenotype_stddev: EvolutionPhenotypeSummary,
+    pub environment: EvolutionEnvironmentSummary,
+    /// Compatibility alias for `phenotype.abiotic_fitness`.
+    pub mean_abiotic_fitness: f64,
+    /// Compatibility alias for `phenotype.stress`.
+    pub mean_competition_stress: f64,
+    pub stages: EvolutionStageCounts,
+    pub top_species: Vec<EvolutionSpeciesCount>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

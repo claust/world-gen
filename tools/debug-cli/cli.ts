@@ -312,7 +312,7 @@ async function cmdSetEvolutionOverlay(apiBase: string, flags: Record<string, str
 async function cmdInspectEvolutionRegion(apiBase: string, flags: Record<string, string>) {
   const x = requireFloat(flags, "x");
   const z = requireFloat(flags, "z");
-  const radius = optionalFloat(flags, "radius") ?? 128;
+  const radius = optionalFloat(flags, "radius") ?? 256;
   const result = await sendAndWait(apiBase, { type: "inspect_evolution_region", x, z, radius });
   console.log(JSON.stringify(result, null, 2));
 }

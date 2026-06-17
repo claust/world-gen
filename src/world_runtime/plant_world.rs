@@ -25,7 +25,10 @@ use crate::world_core::content::place_houses;
 use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
 use crate::world_core::evolution::{
     evaluate_phenotype, inherit_and_mutate, initial_genes, normalize_altitude,
-    EvolutionOverlayMode, FounderKey, MutationKey, PlantEnvironment, PlantGenes,
+    EvolutionEnvironmentSummary, EvolutionGeneStats, EvolutionOverlayMode,
+    EvolutionPhenotypeSummary, EvolutionRegionCenter, EvolutionRegionCounts, EvolutionRegionReport,
+    EvolutionSpeciesCount, EvolutionStageCounts, FounderKey, MutationKey, PlantEnvironment,
+    PlantGenes,
 };
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::herbarium::PlantRegistry;
@@ -193,56 +196,137 @@ fn stress_tint(value: f32) -> [f32; 4] {
 }
 
 #[derive(Default)]
-struct PhenotypeSums {
-    abiotic_fitness: f64,
-    competition_room: f64,
-    stress: f64,
-    height_scale: f64,
-    width_scale: f64,
-    maturity_scale: f64,
-    lifespan_scale: f64,
-    seed_count_scale: f64,
-    spread_radius_scale: f64,
-    establishment_chance: f64,
+struct PhenotypeMoments {
+    sum: EvolutionPhenotypeSummary,
+    sum_sq: EvolutionPhenotypeSummary,
 }
 
-impl PhenotypeSums {
+impl PhenotypeMoments {
     fn add(&mut self, p: crate::world_core::evolution::PlantPhenotype) {
-        self.abiotic_fitness += p.abiotic_fitness as f64;
-        self.competition_room += p.competition_room as f64;
-        self.stress += p.stress as f64;
-        self.height_scale += p.height_scale as f64;
-        self.width_scale += p.width_scale as f64;
-        self.maturity_scale += p.maturity_scale as f64;
-        self.lifespan_scale += p.lifespan_scale as f64;
-        self.seed_count_scale += p.seed_count_scale as f64;
-        self.spread_radius_scale += p.spread_radius_scale as f64;
-        self.establishment_chance += p.establishment_chance as f64;
+        let values = phenotype_summary_from_values(p);
+        add_summary(&mut self.sum, &values);
+        add_summary_sq(&mut self.sum_sq, &values);
     }
 
-    fn mean_json(&self, count: usize) -> serde_json::Value {
+    fn mean(&self, count: usize) -> EvolutionPhenotypeSummary {
         let n = count.max(1) as f64;
-        serde_json::json!({
-            "abiotic_fitness": self.abiotic_fitness / n,
-            "competition_room": self.competition_room / n,
-            "stress": self.stress / n,
-            "height_scale": self.height_scale / n,
-            "width_scale": self.width_scale / n,
-            "maturity_scale": self.maturity_scale / n,
-            "lifespan_scale": self.lifespan_scale / n,
-            "seed_count_scale": self.seed_count_scale / n,
-            "spread_radius_scale": self.spread_radius_scale / n,
-            "establishment_chance": self.establishment_chance / n,
-        })
+        scale_summary(&self.sum, 1.0 / n)
     }
 
-    fn mean_abiotic_fitness(&self, count: usize) -> f64 {
-        self.abiotic_fitness / count.max(1) as f64
+    fn stddev(&self, count: usize) -> EvolutionPhenotypeSummary {
+        let n = count.max(1) as f64;
+        let mean = self.mean(count);
+        EvolutionPhenotypeSummary {
+            abiotic_fitness: stddev(self.sum_sq.abiotic_fitness / n, mean.abiotic_fitness),
+            competition_room: stddev(self.sum_sq.competition_room / n, mean.competition_room),
+            stress: stddev(self.sum_sq.stress / n, mean.stress),
+            height_scale: stddev(self.sum_sq.height_scale / n, mean.height_scale),
+            width_scale: stddev(self.sum_sq.width_scale / n, mean.width_scale),
+            maturity_scale: stddev(self.sum_sq.maturity_scale / n, mean.maturity_scale),
+            lifespan_scale: stddev(self.sum_sq.lifespan_scale / n, mean.lifespan_scale),
+            seed_count_scale: stddev(self.sum_sq.seed_count_scale / n, mean.seed_count_scale),
+            spread_radius_scale: stddev(
+                self.sum_sq.spread_radius_scale / n,
+                mean.spread_radius_scale,
+            ),
+            establishment_chance: stddev(
+                self.sum_sq.establishment_chance / n,
+                mean.establishment_chance,
+            ),
+        }
+    }
+}
+
+#[derive(Default)]
+struct EnvironmentSums {
+    moisture: f64,
+    altitude: f64,
+    river_wetness: f64,
+    shade: f64,
+    root_pressure: f64,
+}
+
+impl EnvironmentSums {
+    fn add(&mut self, env: PlantEnvironment) {
+        self.moisture += env.moisture as f64;
+        self.altitude += env.altitude as f64;
+        self.river_wetness += env.river_wetness as f64;
+        self.shade += env.shade as f64;
+        self.root_pressure += env.root_pressure as f64;
     }
 
-    fn mean_stress(&self, count: usize) -> f64 {
-        self.stress / count.max(1) as f64
+    fn mean(&self, count: usize) -> EvolutionEnvironmentSummary {
+        let n = count.max(1) as f64;
+        EvolutionEnvironmentSummary {
+            moisture: self.moisture / n,
+            altitude: self.altitude / n,
+            river_wetness: self.river_wetness / n,
+            shade: self.shade / n,
+            root_pressure: self.root_pressure / n,
+        }
     }
+}
+
+fn phenotype_summary_from_values(
+    p: crate::world_core::evolution::PlantPhenotype,
+) -> EvolutionPhenotypeSummary {
+    EvolutionPhenotypeSummary {
+        abiotic_fitness: p.abiotic_fitness as f64,
+        competition_room: p.competition_room as f64,
+        stress: p.stress as f64,
+        height_scale: p.height_scale as f64,
+        width_scale: p.width_scale as f64,
+        maturity_scale: p.maturity_scale as f64,
+        lifespan_scale: p.lifespan_scale as f64,
+        seed_count_scale: p.seed_count_scale as f64,
+        spread_radius_scale: p.spread_radius_scale as f64,
+        establishment_chance: p.establishment_chance as f64,
+    }
+}
+
+fn add_summary(dst: &mut EvolutionPhenotypeSummary, src: &EvolutionPhenotypeSummary) {
+    dst.abiotic_fitness += src.abiotic_fitness;
+    dst.competition_room += src.competition_room;
+    dst.stress += src.stress;
+    dst.height_scale += src.height_scale;
+    dst.width_scale += src.width_scale;
+    dst.maturity_scale += src.maturity_scale;
+    dst.lifespan_scale += src.lifespan_scale;
+    dst.seed_count_scale += src.seed_count_scale;
+    dst.spread_radius_scale += src.spread_radius_scale;
+    dst.establishment_chance += src.establishment_chance;
+}
+
+fn add_summary_sq(dst: &mut EvolutionPhenotypeSummary, src: &EvolutionPhenotypeSummary) {
+    dst.abiotic_fitness += src.abiotic_fitness * src.abiotic_fitness;
+    dst.competition_room += src.competition_room * src.competition_room;
+    dst.stress += src.stress * src.stress;
+    dst.height_scale += src.height_scale * src.height_scale;
+    dst.width_scale += src.width_scale * src.width_scale;
+    dst.maturity_scale += src.maturity_scale * src.maturity_scale;
+    dst.lifespan_scale += src.lifespan_scale * src.lifespan_scale;
+    dst.seed_count_scale += src.seed_count_scale * src.seed_count_scale;
+    dst.spread_radius_scale += src.spread_radius_scale * src.spread_radius_scale;
+    dst.establishment_chance += src.establishment_chance * src.establishment_chance;
+}
+
+fn scale_summary(src: &EvolutionPhenotypeSummary, scale: f64) -> EvolutionPhenotypeSummary {
+    EvolutionPhenotypeSummary {
+        abiotic_fitness: src.abiotic_fitness * scale,
+        competition_room: src.competition_room * scale,
+        stress: src.stress * scale,
+        height_scale: src.height_scale * scale,
+        width_scale: src.width_scale * scale,
+        maturity_scale: src.maturity_scale * scale,
+        lifespan_scale: src.lifespan_scale * scale,
+        seed_count_scale: src.seed_count_scale * scale,
+        spread_radius_scale: src.spread_radius_scale * scale,
+        establishment_chance: src.establishment_chance * scale,
+    }
+}
+
+fn stddev(mean_square: f64, mean: f64) -> f64 {
+    (mean_square - mean * mean).max(0.0).sqrt()
 }
 
 fn torus_delta(a: f32, b: f32, world: f32) -> f32 {
@@ -254,6 +338,33 @@ fn torus_delta(a: f32, b: f32, world: f32) -> f32 {
     } else {
         d
     }
+}
+
+fn torus_distance_to_interval(target: f32, start: f32, end: f32, world: f32) -> f32 {
+    [-world, 0.0, world]
+        .into_iter()
+        .map(|shift| {
+            let shifted = target + shift;
+            if shifted < start {
+                start - shifted
+            } else if shifted > end {
+                shifted - end
+            } else {
+                0.0
+            }
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+fn chunk_intersects_region(cx: i32, cz: i32, target_x: f32, target_z: f32, radius: f32) -> bool {
+    let world = WORLD_SIZE_METERS as f32;
+    let start_x = cx as f32 * CHUNK_SIZE_METERS;
+    let start_z = cz as f32 * CHUNK_SIZE_METERS;
+    let end_x = start_x + CHUNK_SIZE_METERS;
+    let end_z = start_z + CHUNK_SIZE_METERS;
+    let dx = torus_distance_to_interval(target_x, start_x, end_x, world);
+    let dz = torus_distance_to_interval(target_z, start_z, end_z, world);
+    dx * dx + dz * dz <= radius * radius
 }
 
 fn quantize_rotation(radians: f32) -> u16 {
@@ -604,22 +715,38 @@ impl PlantWorld {
         self.heightmap.sample_height(x, z)
     }
 
-    pub fn inspect_evolution_region(&self, x: f32, z: f32, radius: f32) -> serde_json::Value {
+    pub fn inspect_evolution_region(
+        &self,
+        x: f32,
+        z: f32,
+        radius: f32,
+        sample_hour: f64,
+    ) -> EvolutionRegionReport {
         let radius = radius.max(0.0);
         let radius_sq = radius * radius;
         let world = WORLD_SIZE_METERS as f32;
         let target_x = x.rem_euclid(world);
         let target_z = z.rem_euclid(world);
         let mut count = 0usize;
+        let mut total_plants_considered = 0usize;
+        let mut chunks_touched = 0usize;
         let mut gene_sum = [0.0f64; PlantGenes::BYTE_LEN];
         let mut gene_sq = [0.0f64; PlantGenes::BYTE_LEN];
-        let mut phenotype_sum = PhenotypeSums::default();
+        let mut gene_min = [f64::INFINITY; PlantGenes::BYTE_LEN];
+        let mut gene_max = [f64::NEG_INFINITY; PlantGenes::BYTE_LEN];
+        let mut phenotype_moments = PhenotypeMoments::default();
+        let mut environment_sums = EnvironmentSums::default();
         let mut stage_counts = [0usize; 4];
         let mut species_counts = std::collections::HashMap::<u8, usize>::new();
 
         for (idx, plants) in self.chunks.iter().enumerate() {
             let cx = (idx as i32) % WORLD_SIZE_CHUNKS;
             let cz = (idx as i32) / WORLD_SIZE_CHUNKS;
+            if !chunk_intersects_region(cx, cz, target_x, target_z, radius) {
+                continue;
+            }
+            chunks_touched += 1;
+            total_plants_considered += plants.len();
             let origin_x = cx as f32 * CHUNK_SIZE_METERS;
             let origin_z = cz as f32 * CHUNK_SIZE_METERS;
             for plant in plants {
@@ -639,6 +766,8 @@ impl PlantWorld {
                     let v = *byte as f64;
                     gene_sum[i] += v;
                     gene_sq[i] += v * v;
+                    gene_min[i] = gene_min[i].min(v);
+                    gene_max[i] = gene_max[i].max(v);
                 }
                 let env = plant_environment(
                     &self.heightmap,
@@ -647,7 +776,8 @@ impl PlantWorld {
                     world_x,
                     world_z,
                 );
-                phenotype_sum.add(evaluate_phenotype(plant.genes, species, env));
+                environment_sums.add(env);
+                phenotype_moments.add(evaluate_phenotype(plant.genes, species, env));
                 stage_counts[plant.stage.min(DEAD) as usize] += 1;
                 *species_counts.entry(plant.species).or_default() += 1;
             }
@@ -663,7 +793,7 @@ impl PlantWorld {
             "dispersal",
             "timing",
         ];
-        let mut genes = serde_json::Map::new();
+        let mut genes = std::collections::BTreeMap::new();
         for (i, name) in gene_names.iter().enumerate() {
             let mean = if count == 0 {
                 0.0
@@ -677,7 +807,12 @@ impl PlantWorld {
             };
             genes.insert(
                 (*name).to_string(),
-                serde_json::json!({ "mean": mean, "stddev": variance.sqrt() }),
+                EvolutionGeneStats {
+                    mean,
+                    stddev: variance.sqrt(),
+                    min: if count == 0 { 0.0 } else { gene_min[i] },
+                    max: if count == 0 { 0.0 } else { gene_max[i] },
+                },
             );
         }
 
@@ -693,25 +828,45 @@ impl PlantWorld {
                     .get(idx as usize)
                     .map(|s| s.name.as_str())
                     .unwrap_or("unknown");
-                serde_json::json!({ "species": idx, "name": name, "count": count })
+                EvolutionSpeciesCount {
+                    species: idx,
+                    name: name.to_string(),
+                    count,
+                }
             })
             .collect();
 
-        serde_json::json!({
-            "center": { "x": x, "z": z, "radius": radius },
-            "plant_count": count,
-            "genes": genes,
-            "phenotype": phenotype_sum.mean_json(count),
-            "mean_abiotic_fitness": phenotype_sum.mean_abiotic_fitness(count),
-            "mean_competition_stress": phenotype_sum.mean_stress(count),
-            "stages": {
-                "seedling": stage_counts[stage_to_u8(GrowthStage::Seedling) as usize],
-                "young": stage_counts[stage_to_u8(GrowthStage::Young) as usize],
-                "mature": stage_counts[MATURE as usize],
-                "dead": stage_counts[DEAD as usize],
+        let phenotype = phenotype_moments.mean(count);
+        EvolutionRegionReport {
+            center: EvolutionRegionCenter {
+                x,
+                z,
+                wrapped_x: target_x,
+                wrapped_z: target_z,
+                radius,
             },
-            "top_species": top_species,
-        })
+            sample_hour,
+            counts: EvolutionRegionCounts {
+                total_plants_considered,
+                plants_included: count,
+                chunks_touched,
+                empty: count == 0,
+            },
+            plant_count: count,
+            genes,
+            phenotype_stddev: phenotype_moments.stddev(count),
+            environment: environment_sums.mean(count),
+            mean_abiotic_fitness: phenotype.abiotic_fitness,
+            mean_competition_stress: phenotype.stress,
+            phenotype,
+            stages: EvolutionStageCounts {
+                seedling: stage_counts[stage_to_u8(GrowthStage::Seedling) as usize],
+                young: stage_counts[stage_to_u8(GrowthStage::Young) as usize],
+                mature: stage_counts[MATURE as usize],
+                dead: stage_counts[DEAD as usize],
+            },
+            top_species,
+        }
     }
 
     /// Total plants across the whole world (loaded or not). O(1).
@@ -3673,14 +3828,47 @@ mod tests {
             ..grid_plant(46.0, 40.0, 0)
         });
         let world = test_world(chunks, reg);
-        let report = world.inspect_evolution_region(42.0, 40.0, 16.0);
+        let report = world.inspect_evolution_region(42.0, 40.0, 16.0, 123.0);
 
-        assert_eq!(report["plant_count"].as_u64(), Some(2));
-        assert!(report["genes"]["wet_pref"]["mean"].as_f64().unwrap() > 0.0);
-        assert!(report["phenotype"]["abiotic_fitness"].as_f64().unwrap() >= 0.0);
-        assert_eq!(report["stages"]["mature"].as_u64(), Some(1));
-        assert_eq!(report["stages"]["seedling"].as_u64(), Some(1));
-        assert_eq!(report["top_species"][0]["count"].as_u64(), Some(2));
+        assert_eq!(report.sample_hour, 123.0);
+        assert_eq!(report.plant_count, 2);
+        assert_eq!(report.counts.plants_included, 2);
+        assert!(!report.counts.empty);
+        assert!(report.counts.total_plants_considered >= 2);
+        assert!(report.counts.chunks_touched > 0);
+        let wet_pref = report.genes.get("wet_pref").expect("wet_pref stats");
+        assert!(wet_pref.mean > 0.0);
+        assert!(wet_pref.min <= wet_pref.mean);
+        assert!(wet_pref.max >= wet_pref.mean);
+        assert!(report.phenotype.abiotic_fitness >= 0.0);
+        assert!(report.phenotype_stddev.abiotic_fitness >= 0.0);
+        assert!(report.environment.moisture >= 0.0);
+        assert_eq!(report.stages.mature, 1);
+        assert_eq!(report.stages.seedling, 1);
+        assert_eq!(report.top_species[0].count, 2);
+    }
+
+    #[test]
+    fn evolution_region_inspector_reports_empty_regions() {
+        let reg = registry();
+        let total = (WORLD_SIZE_CHUNKS as usize) * (WORLD_SIZE_CHUNKS as usize);
+        let world = test_world(vec![Vec::new(); total], reg);
+        let report = world.inspect_evolution_region(-1.0, -2.0, 0.0, 456.0);
+
+        assert_eq!(report.center.wrapped_x, WORLD_SIZE_METERS as f32 - 1.0);
+        assert_eq!(report.center.wrapped_z, WORLD_SIZE_METERS as f32 - 2.0);
+        assert_eq!(report.sample_hour, 456.0);
+        assert_eq!(report.plant_count, 0);
+        assert_eq!(report.counts.plants_included, 0);
+        assert!(report.counts.empty);
+        assert_eq!(report.genes["wet_pref"].mean, 0.0);
+        assert_eq!(report.genes["wet_pref"].min, 0.0);
+        assert_eq!(report.genes["wet_pref"].max, 0.0);
+        assert_eq!(report.phenotype.abiotic_fitness, 0.0);
+        assert_eq!(report.phenotype_stddev.abiotic_fitness, 0.0);
+        assert_eq!(report.environment.moisture, 0.0);
+        assert_eq!(report.stages, EvolutionStageCounts::default());
+        assert!(report.top_species.is_empty());
     }
 
     #[test]
