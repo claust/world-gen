@@ -27,10 +27,52 @@ pub struct FoliageBlob {
     pub light_shift: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SdfFoliageKind {
+    Broadleaf,
+    NeedleFallback,
+    ScaleLeafFallback,
+    PalmFrond,
+}
+
+impl SdfFoliageKind {
+    pub fn from_leaf_type(leaf_type: LeafType) -> Option<Self> {
+        match leaf_type {
+            LeafType::None => None,
+            LeafType::Broadleaf => Some(SdfFoliageKind::Broadleaf),
+            LeafType::Needle => Some(SdfFoliageKind::NeedleFallback),
+            LeafType::ScaleLeaf => Some(SdfFoliageKind::ScaleLeafFallback),
+            LeafType::PalmFrond => Some(SdfFoliageKind::PalmFrond),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum FoliageElement {
+    SdfBlob {
+        kind: SdfFoliageKind,
+        blob: FoliageBlob,
+    },
+}
+
 pub struct TreeData {
     pub segments: Vec<BranchSegment>,
-    pub foliage: Vec<FoliageBlob>,
+    pub foliage: Vec<FoliageElement>,
     pub height: f32,
+}
+
+impl TreeData {
+    pub fn sdf_blobs(&self) -> impl Iterator<Item = &FoliageBlob> {
+        self.foliage.iter().map(|element| match element {
+            FoliageElement::SdfBlob { blob, .. } => blob,
+        })
+    }
+
+    pub fn sdf_foliage_kinds(&self) -> impl Iterator<Item = SdfFoliageKind> + '_ {
+        self.foliage.iter().map(|element| match element {
+            FoliageElement::SdfBlob { kind, .. } => *kind,
+        })
+    }
 }
 
 /// Remove foliage blobs completely enclosed inside another blob.
@@ -38,7 +80,40 @@ pub struct TreeData {
 ///
 /// For pathologically large inputs (>500 blobs), the O(n²) enclosure test is
 /// skipped and we fall back to keeping only the largest blobs by radius.
-pub fn compact_foliage(blobs: &mut Vec<FoliageBlob>) {
+pub fn compact_foliage(foliage: &mut Vec<FoliageElement>) {
+    compact_sdf_foliage_kind(foliage, SdfFoliageKind::Broadleaf);
+    compact_sdf_foliage_kind(foliage, SdfFoliageKind::NeedleFallback);
+    compact_sdf_foliage_kind(foliage, SdfFoliageKind::ScaleLeafFallback);
+    compact_sdf_foliage_kind(foliage, SdfFoliageKind::PalmFrond);
+}
+
+fn compact_sdf_foliage_kind(foliage: &mut Vec<FoliageElement>, kind: SdfFoliageKind) {
+    let mut blobs: Vec<FoliageBlob> = foliage
+        .iter()
+        .filter_map(|element| match element {
+            FoliageElement::SdfBlob {
+                kind: element_kind,
+                blob,
+            } if *element_kind == kind => Some(blob.clone()),
+            _ => None,
+        })
+        .collect();
+
+    compact_foliage_blobs(&mut blobs);
+
+    foliage.retain(|element| match element {
+        FoliageElement::SdfBlob {
+            kind: element_kind, ..
+        } => *element_kind != kind,
+    });
+    foliage.extend(
+        blobs
+            .into_iter()
+            .map(|blob| FoliageElement::SdfBlob { kind, blob }),
+    );
+}
+
+fn compact_foliage_blobs(blobs: &mut Vec<FoliageBlob>) {
     const MAX_FOR_QUADRATIC: usize = 500;
 
     let n = blobs.len();
@@ -76,6 +151,12 @@ pub fn compact_foliage(blobs: &mut Vec<FoliageBlob>) {
         // Too many blobs for O(n²) — keep the largest ones
         blobs.sort_by(|a, b| b.radius.partial_cmp(&a.radius).unwrap());
         blobs.truncate(MAX_FOR_QUADRATIC);
+    }
+}
+
+fn push_sdf_foliage(spec: &SpeciesConfig, foliage: &mut Vec<FoliageElement>, blob: FoliageBlob) {
+    if let Some(kind) = SdfFoliageKind::from_leaf_type(spec.foliage.leaf_type) {
+        foliage.push(FoliageElement::SdfBlob { kind, blob });
     }
 }
 
@@ -231,7 +312,7 @@ fn generate_stem(
     height: f32,
     base_radius: f32,
     segments: &mut Vec<BranchSegment>,
-    foliage: &mut Vec<FoliageBlob>,
+    foliage: &mut Vec<FoliageElement>,
 ) {
     let n_seg = 6;
     let top_radius = base_radius * (1.0 - spec.trunk.taper);
@@ -371,7 +452,7 @@ fn generate_branch(
     depth: u32,
     tree_height: f32,
     segments: &mut Vec<BranchSegment>,
-    foliage: &mut Vec<FoliageBlob>,
+    foliage: &mut Vec<FoliageElement>,
 ) {
     if length < 0.08 || thickness < 0.005 {
         return;
@@ -393,12 +474,16 @@ fn generate_branch(
             let r = rng.random_range(spec.foliage.leaf_size[0]..spec.foliage.leaf_size[1])
                 * tree_height
                 * 0.06;
-            foliage.push(FoliageBlob {
-                center: mid,
-                radius: r.max(0.2),
-                hue_shift: rng.random_range(-15.0..15.0),
-                light_shift: rng.random_range(-0.08..0.08),
-            });
+            push_sdf_foliage(
+                spec,
+                foliage,
+                FoliageBlob {
+                    center: mid,
+                    radius: r.max(0.2),
+                    hue_shift: rng.random_range(-15.0..15.0),
+                    light_shift: rng.random_range(-0.08..0.08),
+                },
+            );
         }
         return;
     }
@@ -478,7 +563,7 @@ fn add_foliage(
     rng: &mut StdRng,
     pos: Vec3,
     tree_height: f32,
-    foliage: &mut Vec<FoliageBlob>,
+    foliage: &mut Vec<FoliageElement>,
 ) {
     let variance = spec.color.leaf_variance.unwrap_or(0.15);
     let size_base = tree_height * 0.045 * (1.0 + spec.crown.density * 0.5);
@@ -497,16 +582,20 @@ fn add_foliage(
     };
 
     for _i in 0..blob_count {
-        foliage.push(FoliageBlob {
-            center: Vec3::new(
-                pos.x + rng.random_range(-spread..spread),
-                pos.y + rng.random_range(-spread * 0.5..spread * 0.6),
-                pos.z + rng.random_range(-spread..spread),
-            ),
-            radius: (size_base * rng.random_range(0.5..1.3)).max(0.15),
-            hue_shift: rng.random_range(-1.0..1.0) * variance * 100.0,
-            light_shift: rng.random_range(-1.0..1.0) * variance,
-        });
+        push_sdf_foliage(
+            spec,
+            foliage,
+            FoliageBlob {
+                center: Vec3::new(
+                    pos.x + rng.random_range(-spread..spread),
+                    pos.y + rng.random_range(-spread * 0.5..spread * 0.6),
+                    pos.z + rng.random_range(-spread..spread),
+                ),
+                radius: (size_base * rng.random_range(0.5..1.3)).max(0.15),
+                hue_shift: rng.random_range(-1.0..1.0) * variance * 100.0,
+                light_shift: rng.random_range(-1.0..1.0) * variance,
+            },
+        );
     }
 }
 
@@ -518,7 +607,7 @@ fn generate_fronds(
     tree_height: f32,
     top_radius: f32,
     segments: &mut Vec<BranchSegment>,
-    foliage: &mut Vec<FoliageBlob>,
+    foliage: &mut Vec<FoliageElement>,
 ) {
     let frond_count = if spec.foliage.cluster_strategy.kind == "ring" {
         spec.foliage.cluster_strategy.count.unwrap_or(16)
@@ -552,16 +641,20 @@ fn generate_fronds(
         }
         for j in 0..5 {
             let ft = 0.25 + j as f32 * 0.15;
-            foliage.push(FoliageBlob {
-                center: Vec3::new(
-                    apex.x + dx * ft + rng.random_range(-0.3..0.3),
-                    apex.y + dy * ft,
-                    apex.z + dz * ft + rng.random_range(-0.3..0.3),
-                ),
-                radius: tree_height * 0.03 * (1.2 - ft * 0.5),
-                hue_shift: rng.random_range(-1.0..1.0) * variance * 80.0,
-                light_shift: rng.random_range(-1.0..1.0) * variance * 0.8,
-            });
+            push_sdf_foliage(
+                spec,
+                foliage,
+                FoliageBlob {
+                    center: Vec3::new(
+                        apex.x + dx * ft + rng.random_range(-0.3..0.3),
+                        apex.y + dy * ft,
+                        apex.z + dz * ft + rng.random_range(-0.3..0.3),
+                    ),
+                    radius: tree_height * 0.03 * (1.2 - ft * 0.5),
+                    hue_shift: rng.random_range(-1.0..1.0) * variance * 80.0,
+                    light_shift: rng.random_range(-1.0..1.0) * variance * 0.8,
+                },
+            );
         }
     }
 }

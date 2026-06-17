@@ -18,11 +18,87 @@ pub struct PlantVertex {
 pub struct PlantMesh {
     pub vertices: Vec<PlantVertex>,
     pub indices: Vec<u32>,
+    pub parts: Vec<PlantMeshPart>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlantMeshPartKind {
+    Opaque,
+    FoliageCards,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlantMeshPart {
+    pub kind: PlantMeshPartKind,
+    pub vertex_start: u32,
+    pub vertex_count: u32,
+    pub index_start: u32,
+    pub index_count: u32,
 }
 
 pub fn generate_plant_mesh(spec: &SpeciesConfig, seed: u32) -> PlantMesh {
     let mut tree_data = generate_tree(spec, seed);
     compact_foliage(&mut tree_data.foliage);
-    let (vertices, indices) = build_mesh(spec, &tree_data);
-    PlantMesh { vertices, indices }
+    build_mesh(spec, &tree_data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config::SpeciesConfig;
+    use super::tree::{compact_foliage, generate_tree, SdfFoliageKind};
+    use super::{generate_plant_mesh, PlantMeshPartKind};
+
+    fn species(json: &str) -> SpeciesConfig {
+        serde_json::from_str(json).expect("species preset should deserialize")
+    }
+
+    #[test]
+    fn broadleaf_and_needle_route_to_distinct_sdf_kinds() {
+        let oak = species(include_str!("species/oak.json"));
+        let spruce = species(include_str!("species/spruce.json"));
+
+        let mut oak_tree = generate_tree(&oak, 7);
+        compact_foliage(&mut oak_tree.foliage);
+        assert!(!oak_tree.foliage.is_empty());
+        assert!(oak_tree
+            .sdf_foliage_kinds()
+            .all(|kind| kind == SdfFoliageKind::Broadleaf));
+
+        let mut spruce_tree = generate_tree(&spruce, 7);
+        compact_foliage(&mut spruce_tree.foliage);
+        assert!(!spruce_tree.foliage.is_empty());
+        assert!(spruce_tree
+            .sdf_foliage_kinds()
+            .all(|kind| kind == SdfFoliageKind::NeedleFallback));
+    }
+
+    #[test]
+    fn leafless_species_produce_no_foliage_elements() {
+        let oak = species(include_str!("species/oak.json"));
+        let dead_oak = oak.deadify();
+
+        let dead_tree = generate_tree(&dead_oak, 11);
+        assert!(dead_tree.foliage.is_empty());
+
+        let dead_mesh = generate_plant_mesh(&dead_oak, 11);
+        assert!(dead_mesh
+            .parts
+            .iter()
+            .all(|part| part.kind != PlantMeshPartKind::FoliageCards));
+    }
+
+    #[test]
+    fn generated_mesh_records_single_opaque_part_for_phase_two() {
+        let spruce = species(include_str!("species/spruce.json"));
+        let mesh = generate_plant_mesh(&spruce, 13);
+
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+        assert_eq!(mesh.parts.len(), 1);
+        assert_eq!(mesh.parts[0].kind, PlantMeshPartKind::Opaque);
+        assert_eq!(mesh.parts[0].vertex_start, 0);
+        assert_eq!(mesh.parts[0].vertex_count, mesh.vertices.len() as u32);
+        assert_eq!(mesh.parts[0].index_start, 0);
+        assert_eq!(mesh.parts[0].index_count, mesh.indices.len() as u32);
+    }
 }
