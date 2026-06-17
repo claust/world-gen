@@ -291,7 +291,7 @@ impl PopulationLens {
     }
 
     fn phenotype_section(&self, ui: &mut egui::Ui, report: &EvolutionRegionReport) {
-        ui.label(theme::section_header("Phenotype here"));
+        ui.label(theme::section_header("Phenotype"));
         let p = &report.phenotype;
         // Unit-range traits get a bar; the scale traits centre on 1.0 so a plain
         // number reads more clearly than a 0..1 bar would.

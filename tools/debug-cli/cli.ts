@@ -362,8 +362,8 @@ Commands:
   set_evolution_overlay --mode <off|wet_preference|altitude_preference|abiotic_fitness|competition_stress|generation>
                                            Set plant evolution overlay mode
   inspect_evolution_region --x <n> --z <n> [--radius <n>]
-  set_population_lens --open <true|false>
                                            Summarize genes/phenotypes around a world position
+  set_population_lens --open <true|false>  Open/close the in-game Population Lens
   ui_snapshot                              Get all interactive UI elements
   ui_click        --element <id>           Click a button or toggle checkbox
   ui_set_value    --element <id> --value <v>  Set slider/combo/checkbox value
