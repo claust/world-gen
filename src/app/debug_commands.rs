@@ -359,7 +359,10 @@ impl AppState {
                             self.frame_index,
                             "evolution region inspected".to_string(),
                         );
-                        evt.data = Some(world.inspect_evolution_region(x, z, radius));
+                        evt.data = Some(
+                            serde_json::to_value(world.inspect_evolution_region(x, z, radius))
+                                .expect("evolution region report serializes"),
+                        );
                         evt
                     } else {
                         CommandAppliedEvent::err(

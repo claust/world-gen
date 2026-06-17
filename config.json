@@ -1,0 +1,63 @@
+{
+  "world": {
+    "seed": 42,
+    "load_radius": 3,
+    "start_hour": 5.5,
+    "day_speed": 0.04
+  },
+  "sea_level": 40.0,
+  "biome": {
+    "snow_height": 165.0,
+    "rock_height": 120.0,
+    "desert_moisture": 0.3,
+    "forest_moisture": 0.62
+  },
+  "heightmap": {
+    "continental": {
+      "frequency": 0.0001,
+      "amplitude": 180.0
+    },
+    "ridge": {
+      "frequency": 0.0009,
+      "amplitude": 45.0
+    },
+    "detail": {
+      "frequency": 0.018,
+      "amplitude": 6.0
+    },
+    "moisture_base_frequency": 0.0019,
+    "moisture_variation_frequency": 0.0095,
+    "moisture_base_weight": 0.75,
+    "moisture_variation_weight": 0.25,
+    "moisture_variation_offset_x": 31.0,
+    "moisture_variation_offset_z": -11.0,
+    "low_freq_field_resolution": 2048
+  },
+  "rivers": {
+    "enabled": true,
+    "grid_resolution": 2048,
+    "smooth_radius": 2,
+    "smooth_iters": 2,
+    "min_drainage_area_m2": 150000.0,
+    "max_carve_depth": 20.0
+  },
+  "houses": {
+    "grid_spacing": 40.0,
+    "grassland_density": 0.01,
+    "max_slope": 0.3,
+    "height_min": 0.0,
+    "height_max": 100.0,
+    "hamlet_spacing": 100.0,
+    "hamlet_density": 0.03,
+    "hamlet_house_min": 3,
+    "hamlet_house_max": 5,
+    "hamlet_radius": 15.0
+  },
+  "audio": {
+    "enabled": true,
+    "master_volume": 0.14,
+    "bird_volume": 1.0,
+    "sea_volume": 1.0,
+    "underwater_volume": 1.0
+  }
+}
