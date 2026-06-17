@@ -372,6 +372,14 @@ impl AppState {
                         )
                     }
                 }
+                CommandKind::SetPopulationLens { open } => {
+                    self.set_population_lens(open);
+                    CommandAppliedEvent::ok(
+                        command.id,
+                        self.frame_index,
+                        format!("population lens {}", if open { "opened" } else { "closed" }),
+                    )
+                }
                 CommandKind::UiSnapshot => {
                     let snapshot = self.ui_registry.take_snapshot(self.screen_name());
                     let data = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);

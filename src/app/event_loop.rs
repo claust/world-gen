@@ -148,6 +148,27 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     }
                 }
 
+                // L toggles the Population Lens (live evolution readout)
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::KeyL))
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && !app.map_open
+                        && !app.show_help
+                    {
+                        app.toggle_population_lens();
+                        return;
+                    }
+                }
+
                 // 1–5 recall a favorite position; double-tap saves the current
                 // one. Guarded like `M` so the digits stay free for egui text
                 // fields (menu seed input, config panel, editor, herbarium).
@@ -209,6 +230,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     || app.is_on_editor()
                     || app.map_open
                     || app.show_help
+                    || app.population_lens.is_visible()
                 {
                     app.egui_bridge.on_window_event(&event)
                 } else {
@@ -299,8 +321,9 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             || app.is_on_editor()
                             || app.map_open
                             || app.show_help
+                            || app.population_lens.is_visible()
                         {
-                            // Don't capture cursor on menu, loading, herbarium, config panel, plant editor, map overlay, or help overlay
+                            // Don't capture cursor on menu, loading, herbarium, config panel, plant editor, map overlay, help overlay, or population lens
                         } else {
                             app.capture_cursor();
                         }
@@ -561,6 +584,27 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                     }
                 }
 
+                // L toggles the Population Lens (live evolution readout)
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::KeyL))
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && !app.map_open
+                        && !app.show_help
+                    {
+                        app.toggle_population_lens();
+                        return;
+                    }
+                }
+
                 // 1–5 recall a favorite position; double-tap saves the current
                 // one. Guarded like `M` so the digits stay free for egui text
                 // fields (menu seed input, config panel, editor, herbarium).
@@ -597,6 +641,7 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                     || app.is_on_editor()
                     || app.map_open
                     || app.show_help
+                    || app.population_lens.is_visible()
                 {
                     app.egui_bridge.on_window_event(&event)
                 } else {
@@ -659,8 +704,9 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             || app.is_on_editor()
                             || app.map_open
                             || app.show_help
+                            || app.population_lens.is_visible()
                         {
-                            // Don't capture cursor on menu, loading, herbarium, config panel, plant editor, map overlay, or help overlay
+                            // Don't capture cursor on menu, loading, herbarium, config panel, plant editor, map overlay, help overlay, or population lens
                         } else {
                             app.capture_cursor();
                         }

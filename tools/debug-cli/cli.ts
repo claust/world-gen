@@ -309,6 +309,13 @@ async function cmdSetEvolutionOverlay(apiBase: string, flags: Record<string, str
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdSetPopulationLens(apiBase: string, flags: Record<string, string>) {
+  const open = requireFlag(flags, "open");
+  if (open !== "true" && open !== "false") die(`--open must be true or false`);
+  const result = await sendAndWait(apiBase, { type: "set_population_lens", open: open === "true" });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdInspectEvolutionRegion(apiBase: string, flags: Record<string, string>) {
   const x = requireFloat(flags, "x");
   const z = requireFloat(flags, "z");
@@ -355,6 +362,7 @@ Commands:
   set_evolution_overlay --mode <off|wet_preference|altitude_preference|abiotic_fitness|competition_stress|generation>
                                            Set plant evolution overlay mode
   inspect_evolution_region --x <n> --z <n> [--radius <n>]
+  set_population_lens --open <true|false>
                                            Summarize genes/phenotypes around a world position
   ui_snapshot                              Get all interactive UI elements
   ui_click        --element <id>           Click a button or toggle checkbox
@@ -468,6 +476,9 @@ async function main() {
         break;
       case "inspect_evolution_region":
         await cmdInspectEvolutionRegion(apiBase, flags);
+        break;
+      case "set_population_lens":
+        await cmdSetPopulationLens(apiBase, flags);
         break;
       case "ui_snapshot":
         await cmdUiSnapshot(apiBase);
