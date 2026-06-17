@@ -11,12 +11,13 @@ species, is built identically:
 2. `extract_foliage_surface` (`src/world_core/plant_gen/sdf.rs`) packs those
    spheres into a signed-distance field, `smooth_min`-unions them, and
    surface-nets a mesh. Smooth-unioned spheres → blobby globules.
-3. A `foliage.style` string (`"needle"` / `"broadleaf"` / `"palm_frond"`) already
-   exists in the config (`src/world_core/plant_gen/config.rs`) and spruce is set
-   to `"needle"` (`species/spruce.json`) — but it is only ever checked for
-   `"none"` and palm routing. It has **zero effect on geometry**.
+3. A `foliage.style` string (`"needle"` / `"broadleaf"` / `"palm_frond"`) used to
+   exist in the config and was set to `"needle"` for spruce, but it was only ever
+   checked for `"none"` and palm routing — it had **zero effect on geometry**.
+   (Phase 1, now landed, replaced this string with a typed `foliage.leaf_type:
+   LeafType`; it still doesn't drive geometry yet — that's Phase 2.)
 
-So the data hook is half-present; nothing consumes it for shape.
+So the data hook was half-present; nothing consumes it for shape yet.
 
 ## Terminology
 

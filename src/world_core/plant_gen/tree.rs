@@ -546,7 +546,7 @@ fn generate_fronds(
         });
 
         // Dead palms keep their frond stubs but drop the leaf mass, matching
-        // how every other body plan honours `style == "none"`.
+        // how every other body plan honours `LeafType::None`.
         if !spec.foliage.leaf_type.has_foliage() {
             continue;
         }

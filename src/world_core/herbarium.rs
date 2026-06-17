@@ -38,6 +38,7 @@ pub struct PlacementConfig {
 mod tests {
     use super::{Herbarium, PlacementConfig};
     use crate::world_core::config::GameConfig;
+    use crate::world_core::plant_gen::config::LeafType;
 
     #[test]
     fn placement_config_deserializes_missing_lifecycle_fields_with_defaults() {
@@ -121,6 +122,15 @@ mod tests {
         changed.plants[0].species.color.leaf.h += 30.0;
         changed.plants[0].species.trunk.taper *= 0.5;
         changed.plants[0].species.crown.density *= 0.75;
+        // leaf_type drives mesh geometry only, never base-world generation, so
+        // flipping it must not move the key (Phase 1 of FOLIAGE_LEAF_TYPES.md
+        // relies on this).
+        let flipped = if changed.plants[0].species.foliage.leaf_type == LeafType::Needle {
+            LeafType::Broadleaf
+        } else {
+            LeafType::Needle
+        };
+        changed.plants[0].species.foliage.leaf_type = flipped;
 
         assert_eq!(key, changed.generation_key(&GameConfig::default()));
     }
