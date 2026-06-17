@@ -14,7 +14,8 @@ use crate::renderer_wgpu::thumbnail::ThumbnailRenderer;
 use crate::renderer_wgpu::world::WorldRenderer;
 use crate::ui::plant_editor_panel::PlantParams;
 use crate::ui::{
-    ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, SettingsPanel, StartMenu, UiRegistry,
+    ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, PopulationLens, SettingsPanel,
+    StartMenu, UiRegistry,
 };
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::Herbarium;
@@ -143,6 +144,7 @@ pub struct AppState {
     egui_pass: EguiPass,
     config_panel: ConfigPanel,
     settings_panel: SettingsPanel,
+    population_lens: PopulationLens,
     plant_editor_panel: PlantEditorPanel,
     plant_editor: Option<plant_editor::PlantEditorState>,
     screen: Screen,
@@ -317,6 +319,7 @@ impl AppState {
             egui_pass,
             config_panel,
             settings_panel: SettingsPanel::new(),
+            population_lens: PopulationLens::new(),
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
@@ -431,6 +434,7 @@ impl AppState {
             egui_pass,
             config_panel,
             settings_panel: SettingsPanel::new(),
+            population_lens: PopulationLens::new(),
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
@@ -536,6 +540,7 @@ impl AppState {
             && !self.config_panel.is_visible()
             && !self.map_open
             && !self.show_help
+            && !self.population_lens.is_visible()
     }
 
     /// Toggle the full-world map overlay (`M`). Releases the cursor while open and
@@ -561,6 +566,23 @@ impl AppState {
         } else if self.gameplay_wants_cursor() {
             self.capture_cursor();
         }
+    }
+
+    /// Show or hide the Population Lens dialogue. Releases the cursor while open
+    /// so the radius/overlay controls are clickable, but unlike the map/help
+    /// overlays it does not freeze movement: the lens stays a live,
+    /// camera-following readout you can keep open while flying with the keyboard.
+    fn set_population_lens(&mut self, open: bool) {
+        self.population_lens.set_visible(open);
+        if open {
+            self.release_cursor();
+        } else if self.gameplay_wants_cursor() {
+            self.capture_cursor();
+        }
+    }
+
+    fn toggle_population_lens(&mut self) {
+        self.set_population_lens(!self.population_lens.is_visible());
     }
 
     fn cycle_evolution_overlay(
@@ -1940,7 +1962,8 @@ impl AppState {
                 || self.config_panel.is_visible()
                 || is_editor
                 || self.map_open
-                || self.show_help;
+                || self.show_help
+                || self.population_lens.is_visible();
             // The confirmation toast renders during plain gameplay, when egui
             // would otherwise be skipped, so keep the pass alive while it shows.
             #[cfg(not(target_arch = "wasm32"))]
@@ -2014,6 +2037,36 @@ impl AppState {
                         }
                         Screen::Playing => {
                             self.config_panel.ui(ctx, &mut self.ui_registry);
+                            // Population Lens: a live region readout around the
+                            // camera. Sampling the report only while open keeps
+                            // the per-chunk scan off the hot path during plain
+                            // flight; the same `inspect_evolution_region` call
+                            // backs the debug CLI, so the numbers match.
+                            if self.population_lens.is_visible() {
+                                let radius = self.population_lens.radius();
+                                let cam = self.camera.position;
+                                let overlay = self
+                                    .world
+                                    .as_ref()
+                                    .map(crate::world_runtime::WorldRuntime::evolution_overlay)
+                                    .unwrap_or_default();
+                                let report = self
+                                    .world
+                                    .as_ref()
+                                    .map(|w| w.inspect_evolution_region(cam.x, cam.z, radius));
+                                if let Some(report) = report {
+                                    if let Some(mode) = self.population_lens.ui(
+                                        ctx,
+                                        &mut self.ui_registry,
+                                        &report,
+                                        overlay,
+                                    ) {
+                                        if let Some(w) = self.world.as_mut() {
+                                            w.set_evolution_overlay(mode);
+                                        }
+                                    }
+                                }
+                            }
                             if self.map_open {
                                 if let Some((x, z)) = render_map_ui(
                                     ctx,
@@ -2661,6 +2714,8 @@ fn render_help_ui(ctx: &egui::Context) {
                 ("M", "Toggle world map (right-click map to teleport)"),
                 ("1 - 5", "Recall a favorite position (double-tap to save)"),
                 ("F1", "Toggle config panel"),
+                ("E", "Cycle evolution overlay"),
+                ("L", "Toggle population lens"),
                 ("P", "Screenshot to clipboard"),
             ],
         ),
