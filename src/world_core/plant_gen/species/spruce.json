@@ -34,7 +34,7 @@
     "asymmetry": 0.05
   },
   "foliage": {
-    "style": "needle",
+    "leaf_type": "needle",
     "leaf_size": [0.01, 0.02],
     "cluster_strategy": { "type": "dense_mass" },
     "droop": 0.15,

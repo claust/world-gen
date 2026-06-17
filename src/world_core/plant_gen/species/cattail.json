@@ -34,7 +34,7 @@
     "asymmetry": 0.0
   },
   "foliage": {
-    "style": "none",
+    "leaf_type": "none",
     "leaf_size": [0.1, 0.2],
     "cluster_strategy": { "type": "none" },
     "droop": 0.0,

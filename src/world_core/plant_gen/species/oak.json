@@ -34,7 +34,7 @@
     "asymmetry": 0.2
   },
   "foliage": {
-    "style": "broadleaf",
+    "leaf_type": "broadleaf",
     "leaf_size": [0.02, 0.05],
     "cluster_strategy": { "type": "clusters", "count": 5 },
     "droop": 0.3,

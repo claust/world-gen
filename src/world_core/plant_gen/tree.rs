@@ -2,7 +2,7 @@ use glam::Vec3;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use super::config::SpeciesConfig;
+use super::config::{LeafType, SpeciesConfig};
 use super::crown::{is_inside_crown, length_profile};
 use crate::world_core::content::sampling::hash4;
 
@@ -275,7 +275,7 @@ fn generate_stem(
         trunk_dirs.push(dir);
     }
 
-    if spec.crown.shape == "fan_top" || spec.foliage.style == "palm_frond" {
+    if spec.crown.shape == "fan_top" || spec.foliage.leaf_type == LeafType::PalmFrond {
         generate_fronds(spec, rng, pos, height, top_radius, segments, foliage);
         return;
     }
@@ -388,7 +388,7 @@ fn generate_branch(
         spec.crown.crown_base,
         spec.crown.aspect_ratio,
     ) {
-        if spec.foliage.style != "none" {
+        if spec.foliage.leaf_type.has_foliage() {
             let mid = (origin + end) * 0.5;
             let r = rng.random_range(spec.foliage.leaf_size[0]..spec.foliage.leaf_size[1])
                 * tree_height
@@ -414,7 +414,7 @@ fn generate_branch(
     });
 
     if depth >= spec.branching.max_depth {
-        if spec.foliage.style != "none" {
+        if spec.foliage.leaf_type.has_foliage() {
             add_foliage(spec, rng, end, tree_height, foliage);
         }
         return;
@@ -547,7 +547,7 @@ fn generate_fronds(
 
         // Dead palms keep their frond stubs but drop the leaf mass, matching
         // how every other body plan honours `style == "none"`.
-        if spec.foliage.style == "none" {
+        if !spec.foliage.leaf_type.has_foliage() {
             continue;
         }
         for j in 0..5 {
