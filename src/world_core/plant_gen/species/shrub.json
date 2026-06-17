@@ -34,7 +34,7 @@
     "asymmetry": 0.1
   },
   "foliage": {
-    "style": "broadleaf",
+    "leaf_type": "broadleaf",
     "leaf_size": [0.01, 0.025],
     "cluster_strategy": { "type": "dense_mass" },
     "droop": 0.1,

@@ -65,11 +65,57 @@ pub struct Crown {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Foliage {
-    pub style: String,
+    pub leaf_type: LeafType,
     pub leaf_size: [f32; 2],
     pub cluster_strategy: ClusterStrategy,
     pub droop: f32,
     pub coverage: f32,
+}
+
+/// The kind of foliage a species grows. This is a *rendering* trait — it drives
+/// how the crown mesh is built (see `plant_gen`), not base-world generation, so
+/// it is intentionally excluded from the `generation_key` (see `herbarium`).
+///
+/// `None` means a leafless skeleton (dead snags, bare reeds); every other
+/// variant grows a crown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeafType {
+    None,
+    Broadleaf,
+    Needle,
+    ScaleLeaf,
+    PalmFrond,
+}
+
+impl LeafType {
+    /// Whether this species grows a crown at all.
+    pub fn has_foliage(self) -> bool {
+        self != LeafType::None
+    }
+
+    /// The lowercase label used in species JSON and the plant-editor dropdown.
+    pub fn label(self) -> &'static str {
+        match self {
+            LeafType::None => "none",
+            LeafType::Broadleaf => "broadleaf",
+            LeafType::Needle => "needle",
+            LeafType::ScaleLeaf => "scale_leaf",
+            LeafType::PalmFrond => "palm_frond",
+        }
+    }
+
+    /// Parse a label back into a variant, falling back to `Broadleaf` for any
+    /// unrecognised string (the editor only ever feeds known labels).
+    pub fn from_label(s: &str) -> LeafType {
+        match s {
+            "none" => LeafType::None,
+            "needle" => LeafType::Needle,
+            "scale_leaf" => LeafType::ScaleLeaf,
+            "palm_frond" => LeafType::PalmFrond,
+            _ => LeafType::Broadleaf,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -113,7 +159,7 @@ impl SpeciesConfig {
     /// so one snag prototype serves every render distance.
     pub fn deadify(&self) -> Self {
         let mut c = self.clone();
-        c.foliage.style = "none".to_string();
+        c.foliage.leaf_type = LeafType::None;
         c.branching.max_depth = c.branching.max_depth.saturating_sub(1).max(1);
         c.branching.branches_per_node = [
             c.branching.branches_per_node[0].saturating_sub(1).max(1),

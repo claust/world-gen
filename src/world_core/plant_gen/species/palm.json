@@ -34,7 +34,7 @@
     "asymmetry": 0.1
   },
   "foliage": {
-    "style": "palm_frond",
+    "leaf_type": "palm_frond",
     "leaf_size": [1.5, 3.0],
     "cluster_strategy": { "type": "ring", "count": 16 },
     "droop": 0.6,

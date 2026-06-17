@@ -4,7 +4,7 @@ use crate::renderer_wgpu::instancing::{
 };
 use crate::ui::plant_editor_panel::PlantParams;
 use crate::world_core::lifecycle::{GrowthStage, DEAD_TINT};
-use crate::world_core::plant_gen::config::SpeciesConfig;
+use crate::world_core::plant_gen::config::{LeafType, SpeciesConfig};
 use crate::world_core::plant_gen::{generate_plant_mesh, PlantMesh};
 
 /// Orbit camera constants for the plant editor.
@@ -317,7 +317,7 @@ fn merge_params(base: &SpeciesConfig, params: &PlantParams) -> SpeciesConfig {
     spec.branching.randomness = params.randomness;
 
     // Foliage
-    spec.foliage.style = params.foliage_style.clone();
+    spec.foliage.leaf_type = LeafType::from_label(&params.foliage_style);
     let (ls_min, ls_max) = min_max_f32(params.leaf_size_min, params.leaf_size_max);
     spec.foliage.leaf_size = [ls_min, ls_max];
     spec.foliage.cluster_strategy.kind = params.cluster_type.clone();

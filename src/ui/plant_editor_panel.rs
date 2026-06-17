@@ -135,7 +135,7 @@ impl PlantParams {
         Self {
             crown_shape: spec.crown.shape.clone(),
             length_profile: spec.branching.length_profile.clone(),
-            foliage_style: spec.foliage.style.clone(),
+            foliage_style: spec.foliage.leaf_type.label().to_string(),
             apical_dominance: spec.branching.apical_dominance,
             gravity_response: spec.branching.gravity_response,
             crown_base: spec.crown.crown_base,
