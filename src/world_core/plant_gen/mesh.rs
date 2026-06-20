@@ -40,7 +40,7 @@ pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> PlantMesh {
     }
 
     // Foliage via SDF smooth union + surface nets
-    let foliage_blobs: Vec<_> = data.sdf_blobs().cloned().collect();
+    let foliage_blobs: Vec<_> = data.sdf_blobs().collect();
     if !foliage_blobs.is_empty() {
         let base_idx = vertices.len() as u32;
         let (foliage_verts, foliage_idx) =

@@ -75,8 +75,9 @@ impl TreeData {
     }
 }
 
-/// Remove foliage blobs completely enclosed inside another blob.
-/// Blob A is inside blob B when `distance(A.center, B.center) + A.radius <= B.radius`.
+/// Remove same-kind SDF foliage blobs completely enclosed inside another blob.
+/// Blob A is inside blob B when `distance(A.center, B.center) + A.radius <= B.radius`;
+/// blobs of different foliage kinds are compacted independently.
 ///
 /// For pathologically large inputs (>500 blobs), the O(n²) enclosure test is
 /// skipped and we fall back to keeping only the largest blobs by radius.

@@ -55,7 +55,7 @@ The new property is named **`leaf_type`**.
 
 A needle conifer is **opaque bark geometry + alpha-tested foliage cards** within
 the *same* species. Today a tree mesh is entirely opaque (one pipeline) and only
-shrubs use the billboard pipeline. The renderer phase therefore needs to draw a
+shrubs use the billboard pipeline. Therefore, the renderer needs to draw a
 single species across **two pipelines** — an opaque bark submesh + an
 alpha-tested foliage-card submesh. The instanced pass already switches pipelines
 per-species for shrubs (`instanced_pass.rs`); extend that to a per-submesh split
