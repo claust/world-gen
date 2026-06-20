@@ -138,7 +138,7 @@ Success signals:
 Check progress by reading reviews, review comments, issue comments, status checks, and issue events:
 
 ```bash
-gh pr view <pr-number-or-url> --json latestReviews,comments,reviewDecision,statusCheckRollup,mergeStateStatus,reviewRequests
+gh pr view <pr-number-or-url> --json latestReviews,comments,reviewDecision,statusCheckRollup,mergeStateStatus,reviewRequests,baseRefName,headRefName
 gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews
 gh api repos/<owner>/<repo>/pulls/<pr-number>/comments
 gh api repos/<owner>/<repo>/issues/<pr-number>/events --paginate
@@ -151,6 +151,47 @@ Treat Copilot as done when it submits a review from `copilot-pull-request-review
 - inline comments with file paths and comment URLs
 - CI status
 - whether the branch is behind the base branch
+
+## Keep The PR Branch Updated
+
+While monitoring or addressing a PR, keep the PR branch current with the base branch. This is the local equivalent of clicking GitHub's "Update branch" button.
+
+When `gh pr view` reports that the branch is behind, the merge state is blocked by needing an update, or new commits land on the base branch during review:
+
+1. Fetch the base branch:
+
+   ```bash
+   git fetch origin <base-branch>
+   ```
+
+2. Merge the fetched base branch into the PR branch:
+
+   ```bash
+   git merge origin/<base-branch>
+   ```
+
+3. If there are merge conflicts, resolve them locally. Do not leave conflict markers. After resolving conflicts:
+
+   ```bash
+   git status -sb
+   git diff
+   git add <resolved-files>
+   git commit
+   ```
+
+   Use the merge commit message unless a clearer conflict-resolution message is needed.
+
+4. Run relevant validation after the merge or conflict resolution.
+
+5. Push the updated PR branch:
+
+   ```bash
+   git push
+   ```
+
+6. Wait for CI to run again on the updated branch. Monitor the new check run until it finishes. If CI fails, inspect logs, fix the failure, push again, and keep monitoring.
+
+7. If the update or conflict resolution changes code that Copilot previously reviewed, re-request Copilot review with the GraphQL bot-review path.
 
 ## Address Review Feedback
 
@@ -213,10 +254,13 @@ When a review comment has been addressed, resolve the corresponding GitHub revie
 
 6. Re-request Copilot review with the GraphQL bot-review path above after every push that addresses Copilot feedback.
 
-7. Repeat monitoring, fixing, pushing, replying, resolving, and re-requesting until:
+7. Keep the branch updated with the base branch while this loop is running. If the base branch changes, merge it into the PR branch, resolve any conflicts, push, and wait for CI to rerun.
+
+8. Repeat monitoring, updating from base, fixing, pushing, replying, resolving, and re-requesting until:
 
    - all CI checks pass,
    - merge state is clean or mergeable,
+   - the branch is not behind the base branch,
    - there are no unresolved actionable threads,
    - any remaining unresolved comments are clearly nits or non-actionable,
    - Copilot has either submitted a post-fix review or the latest re-request is visibly pending/started.
