@@ -7,7 +7,7 @@ description: Commit local changes, push a branch, create a GitHub pull request, 
 
 ## Overview
 
-Publish local work to GitHub end to end: inspect scope, branch, stage, commit, push, create a PR, request reviewer `Copilot`, verify the request through GitHub issue events, and monitor Copilot review output.
+Publish local work to GitHub end to end: inspect scope, branch, stage, commit, push, create a PR, request GitHub Copilot code review, verify the request through GitHub issue events, monitor Copilot review output, address substantive feedback, push fixes, re-request Copilot review, and continue until unresolved feedback is only nits or non-actionable.
 
 Codex does not receive passive GitHub callbacks in an ordinary thread. For follow-up progress, actively poll GitHub or create a Codex heartbeat/automation when the user asks to keep watching.
 
@@ -49,27 +49,89 @@ When the user invokes this skill, execute the workflow automatically when the in
 7. Create the PR. Default to the remote default branch unless the user specifies a target:
 
    ```bash
-   gh pr create --base <base> --head "$(git branch --show-current)" --title "<title>" --body "<body>" --reviewer Copilot
+   gh pr create --base <base> --head "$(git branch --show-current)" --title "<title>" --body "<body>"
    ```
 
-   If PR creation fails only because reviewer `Copilot` could not be requested, create the PR without a reviewer, then request Copilot with `gh pr edit`.
+8. Request Copilot review using the GraphQL bot-review path below. Use this for both initial review requests and re-review requests after pushing fixes. Do not rely on `gh pr edit --add-reviewer Copilot` or `gh pr edit --add-reviewer @copilot`; those commands can return success without creating a visible pending Copilot request or a new `copilot_work_started` event.
 
-8. Request Copilot exactly, using the reviewer name `Copilot`:
+## Request Or Re-Request Copilot Review
 
-   ```bash
-   gh pr edit <pr-number-or-url> --add-reviewer Copilot
-   ```
+Use GraphQL `requestReviewsByLogin` with `botLogins:["copilot-pull-request-reviewer"]`. This is the reliable programmatic equivalent of the GitHub web UI's Copilot review/re-review request.
 
-9. Verify Copilot through issue events, not only `reviewRequests`. GitHub may leave `reviewRequests` empty for Copilot even when the request succeeded:
+```bash
+PR_NUMBER=<pr-number>
+OWNER=<owner>
+REPO=<repo>
 
-   ```bash
-   gh api repos/<owner>/<repo>/issues/<pr-number>/events --paginate
-   ```
+PR_ID=$(
+  gh api graphql \
+    -f query='query($owner:String!, $repo:String!, $number:Int!) {
+      repository(owner:$owner, name:$repo) {
+        pullRequest(number:$number) { id }
+      }
+    }' \
+    -F owner="$OWNER" \
+    -F repo="$REPO" \
+    -F number="$PR_NUMBER" \
+    --jq '.data.repository.pullRequest.id'
+)
 
-   Success signals:
+gh api graphql \
+  -f query='mutation($pr:ID!) {
+    requestReviewsByLogin(input:{
+      pullRequestId:$pr,
+      botLogins:["copilot-pull-request-reviewer"],
+      union:true
+    }) {
+      pullRequest { id }
+    }
+  }' \
+  -F pr="$PR_ID"
+```
 
-   - `event: review_requested` with `requested_reviewer.login: Copilot`
-   - `event: copilot_work_started` with `performed_via_github_app.slug: copilot-pull-request-reviewer`
+Notes:
+
+- `union:true` preserves existing requested reviewers while adding Copilot.
+- `Copilot` appears in REST review requests as a bot/user-like reviewer with login `Copilot`, but the GraphQL bot login to request is `copilot-pull-request-reviewer`.
+- If the GraphQL bot-login request unexpectedly fails, inspect the current requested reviewer payload for the Copilot `node_id` and fall back to `requestReviews(input:{pullRequestId:$pr, botIds:["<BOT_ID>"], union:true})`.
+
+Fallback example:
+
+```bash
+gh api graphql \
+  -f query='mutation($pr:ID!, $bot:ID!) {
+    requestReviews(input:{
+      pullRequestId:$pr,
+      botIds:[$bot],
+      union:true
+    }) {
+      pullRequest { id }
+    }
+  }' \
+  -F pr="$PR_ID" \
+  -F bot="<copilot-bot-node-id>"
+```
+
+## Verify Copilot Request
+
+Verify Copilot through issue events and requested reviewers. GitHub may leave `reviewRequests` empty in `gh pr view`, and submitted Copilot reviews remove Copilot from the pending requested-reviewer list.
+
+```bash
+gh api repos/<owner>/<repo>/issues/<pr-number>/events --paginate \
+  --jq '.[] | select(.event=="review_requested" or .event=="copilot_work_started") | {event, actor:.actor.login, requested:(.requested_reviewer.login // null), app:(.performed_via_github_app.slug // null), created_at}'
+
+gh api repos/<owner>/<repo>/pulls/<pr-number>/requested_reviewers
+
+gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
+  --jq '.[] | {user:.user.login, state, submitted_at}'
+```
+
+Success signals:
+
+- A fresh `review_requested` event with `requested_reviewer.login: Copilot`.
+- A fresh `copilot_work_started` event with `performed_via_github_app.slug: copilot-pull-request-reviewer`.
+- A pending requested reviewer with login `Copilot`.
+- A new submitted review from `copilot-pull-request-reviewer[bot]` or `Copilot` after the latest commit.
 
 ## Monitor Copilot Review
 
@@ -90,6 +152,75 @@ Treat Copilot as done when it submits a review from `copilot-pull-request-review
 - CI status
 - whether the branch is behind the base branch
 
+## Address Review Feedback
+
+When Copilot or another reviewer leaves comments, keep working until substantive feedback is addressed and review threads are resolved. Do not stop after replying to comments if code changes are still needed.
+
+When a review comment has been addressed, resolve the corresponding GitHub review thread yourself. A reply saying "fixed" is not enough; the thread should be marked resolved through GraphQL or the GitHub UI unless it is intentionally left open as a nit, disagreement, or follow-up decision for the user.
+
+1. Read reviews, flat comments, and thread-aware state:
+
+   ```bash
+   gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews
+   gh api repos/<owner>/<repo>/pulls/<pr-number>/comments
+   gh api graphql -f query='query($owner:String!, $repo:String!, $number:Int!) {
+     repository(owner:$owner, name:$repo) {
+       pullRequest(number:$number) {
+         reviewThreads(first:100) {
+           nodes {
+             id
+             isResolved
+             isOutdated
+             comments(first:50) {
+               nodes {
+                 id
+                 databaseId
+                 author { login }
+                 body
+                 path
+                 line
+                 url
+               }
+             }
+           }
+         }
+       }
+     }
+   }' -F owner=<owner> -F repo=<repo> -F number=<pr-number>
+   ```
+
+2. Classify each unresolved thread:
+
+   - **Actionable:** correctness, regression, missing test, broken behavior, security, performance, or maintainability issue.
+   - **Nit:** style preference, naming preference, wording tweak, optional micro-refactor, or low-risk polish.
+   - **Non-actionable:** duplicate, already fixed by later commits, outdated, incorrect, or informational.
+
+3. Implement all actionable feedback. For nits, either fix them when cheap or leave a concise reply explaining why they are optional.
+
+4. Run relevant validation, commit, and push fixes.
+
+5. Reply to each addressed thread with the fix commit or reasoning, then resolve threads that are fixed, outdated, duplicate, or non-actionable. Do this yourself as part of the review loop:
+
+   ```bash
+   gh api graphql \
+     -f query='mutation($thread:ID!) {
+       resolveReviewThread(input:{threadId:$thread}) {
+         thread { id isResolved }
+       }
+     }' \
+     -F thread=<review-thread-id>
+   ```
+
+6. Re-request Copilot review with the GraphQL bot-review path above after every push that addresses Copilot feedback.
+
+7. Repeat monitoring, fixing, pushing, replying, resolving, and re-requesting until:
+
+   - all CI checks pass,
+   - merge state is clean or mergeable,
+   - there are no unresolved actionable threads,
+   - any remaining unresolved comments are clearly nits or non-actionable,
+   - Copilot has either submitted a post-fix review or the latest re-request is visibly pending/started.
+
 ## Periodic Follow-Up
 
 If the user asks to watch, monitor, check back, notify them, or get callbacks, create a Codex automation rather than claiming passive callbacks exist.
@@ -100,8 +231,9 @@ If the user asks to watch, monitor, check back, notify them, or get callbacks, c
 
 ## Important Details
 
-- Use reviewer `Copilot`, capitalized exactly. The app slug observed in PR events is `copilot-pull-request-reviewer`.
-- `gh pr edit --add-reviewer copilot` can return success without a visible `reviewRequests` entry. Always verify through issue events.
+- Programmatic Copilot review requests should use GraphQL `requestReviewsByLogin` with `botLogins:["copilot-pull-request-reviewer"]`.
+- `gh pr edit --add-reviewer Copilot` and `gh pr edit --add-reviewer @copilot` can return success without a new visible request. Treat them as insufficient unless verification shows a fresh Copilot event, pending reviewer, or review.
+- The app slug observed in PR events is `copilot-pull-request-reviewer`.
 - A submitted Copilot review may appear as `copilot-pull-request-reviewer[bot]` in PR reviews and as `Copilot` in review comments.
 - Keep PRs draft only when the user asks for draft or the local workflow requires it. Otherwise follow the user's requested PR state.
 - Include GitHub Copilot review status in the final handoff after creating the PR.
