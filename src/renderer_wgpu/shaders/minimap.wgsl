@@ -82,7 +82,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let dist = length(in.uv);
         let circle_w = max(fwidth(dist) * 0.5, 1e-5);
         let outer = 1.0 - smoothstep(1.0 - circle_w, 1.0 + circle_w, dist);
-        let inner = smoothstep(in.sdf.y - circle_w, in.sdf.y + circle_w, dist);
+        let inner = select(
+            smoothstep(in.sdf.y - circle_w, in.sdf.y + circle_w, dist),
+            1.0,
+            in.sdf.y <= 0.0,
+        );
         return vec4<f32>(in.color.rgb, in.color.a * outer * inner * rect_clip);
     }
     // Solid-color vertices use negative UV as sentinel
