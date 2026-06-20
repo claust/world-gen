@@ -175,6 +175,9 @@ pub enum CommandKind {
         z: f32,
         radius: f32,
     },
+    SetPopulationLens {
+        open: bool,
+    },
     PressKey {
         key: PressableKey,
     },

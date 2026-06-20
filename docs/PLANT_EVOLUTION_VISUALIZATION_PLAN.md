@@ -143,6 +143,12 @@ EvolutionRegionReport
 
 ## Phase 2: Basic In-Game Population Dialogue
 
+> Status: implemented. The **Population Lens** lives in `src/ui/population_lens.rs`,
+> toggled with `L` (or the `set_population_lens` debug command). It reads the
+> Phase 1 `EvolutionRegionReport` sampled around the camera each frame, so its
+> numbers match `inspect_evolution_region` for the same center/radius. History,
+> map aggregation, and clustering remain future phases.
+
 ### Purpose
 
 Make the simulation legible in-game with a minimal dialogue that reads the
