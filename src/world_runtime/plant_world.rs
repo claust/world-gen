@@ -33,6 +33,7 @@ use crate::world_core::evolution::{
 use crate::world_core::heightmap::Heightmap;
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::GrowthStage;
+use crate::world_core::population_history;
 use crate::world_core::rivers::{RiverField, MAX_PLANTABLE_WETNESS};
 
 /// Packed per-plant record — **24 bytes** (`repr(C)`), validated against the
@@ -872,6 +873,65 @@ impl PlantWorld {
     /// Total plants across the whole world (loaded or not). O(1).
     pub fn population(&self) -> usize {
         self.population
+    }
+
+    /// Worldwide per-species × per-stage census. `row[s]` is species id `s`'s
+    /// `[seedling, young, mature, dead]` counts; every registered species gets a
+    /// row (zeros if absent) so the row index is a stable species handle. O(world
+    /// population); parallel across chunks on native, where the whole world is
+    /// resident. Feeds the population-history time series, so it is taken at the
+    /// throttled census cadence, not every frame.
+    pub fn census(&self) -> Vec<[u32; population_history::STAGE_COUNT]> {
+        let species_count = self.registry.species.len();
+        let tally = |plants: &[Plant], acc: &mut [[u32; population_history::STAGE_COUNT]]| {
+            for plant in plants {
+                if let Some(row) = acc.get_mut(plant.species as usize) {
+                    row[plant.stage.min(DEAD) as usize] += 1;
+                }
+            }
+        };
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.chunks
+                .par_iter()
+                .fold(
+                    || vec![[0u32; population_history::STAGE_COUNT]; species_count],
+                    |mut acc, plants| {
+                        tally(plants, &mut acc);
+                        acc
+                    },
+                )
+                .reduce(
+                    || vec![[0u32; population_history::STAGE_COUNT]; species_count],
+                    |mut a, b| {
+                        for (lhs, rhs) in a.iter_mut().zip(b) {
+                            for (l, r) in lhs.iter_mut().zip(rhs) {
+                                *l += r;
+                            }
+                        }
+                        a
+                    },
+                )
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut acc = vec![[0u32; population_history::STAGE_COUNT]; species_count];
+            for plants in &self.chunks {
+                tally(plants, &mut acc);
+            }
+            acc
+        }
+    }
+
+    /// Display names of every registered species, indexed by species id — the
+    /// same index the [`census`](Self::census) rows use.
+    pub fn species_names(&self) -> Vec<String> {
+        self.registry
+            .species
+            .iter()
+            .map(|s| s.name.clone())
+            .collect()
     }
 
     pub fn take_dirty_chunks(&mut self) -> Vec<usize> {
