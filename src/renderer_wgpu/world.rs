@@ -316,26 +316,29 @@ impl WorldRenderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn update_hud(
         &mut self,
         queue: &wgpu::Queue,
         device: &wgpu::Device,
-        camera_pos: Vec3,
         camera_yaw: f32,
         hour: f32,
         fps: f32,
         plant_count: usize,
+        day_number: u64,
+        weekly_delta: i64,
         screen_w: f32,
         screen_h: f32,
     ) {
         self.hud.update(
             queue,
             device,
-            camera_pos,
             camera_yaw,
             hour,
             fps,
             plant_count,
+            day_number,
+            weekly_delta,
             screen_w,
             screen_h,
         );

@@ -1491,11 +1491,12 @@ impl AppState {
         self.world_renderer.update_hud(
             &self.gpu.queue,
             &self.gpu.device,
-            self.camera.position,
             self.camera.yaw,
             stats.hour,
             1000.0 / self.frame_time_ms.max(0.01),
             stats.world_population,
+            stats.day_number,
+            stats.weekly_population_delta,
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );
