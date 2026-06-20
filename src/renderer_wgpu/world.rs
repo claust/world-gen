@@ -316,7 +316,6 @@ impl WorldRenderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn update_hud(
         &mut self,
         queue: &wgpu::Queue,
