@@ -73,21 +73,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let fog = 1.0 - smoothstep(0.0, 1.0, length(in.uv));
     let rect_clip = minimap_rect_coverage(in.clip_position.xy);
 
+    // Circle/annulus coverage — computed unconditionally so derivative builtins
+    // stay in uniform control flow for WebGPU/Tint validation.
+    let circle_dist = length(in.uv);
+    let circle_w = max(fwidth(circle_dist) * 0.5, 1e-5);
+    let circle_outer = 1.0 - smoothstep(1.0 - circle_w, 1.0 + circle_w, circle_dist);
+    let circle_inner = select(
+        smoothstep(in.sdf.y - circle_w, in.sdf.y + circle_w, circle_dist),
+        1.0,
+        in.sdf.y <= 0.0,
+    );
+
     // FOV sector: alpha-masked by the anti-aliased coverage and fogged by range.
     if (in.sdf.x > 0.5 && in.sdf.x < 1.5) {
         return vec4<f32>(in.color.rgb, in.color.a * coverage * fog * rect_clip);
     }
     // Circle or annulus: used for the population-lens radius marker.
     if (in.sdf.x > 1.5) {
-        let dist = length(in.uv);
-        let circle_w = max(fwidth(dist) * 0.5, 1e-5);
-        let outer = 1.0 - smoothstep(1.0 - circle_w, 1.0 + circle_w, dist);
-        let inner = select(
-            smoothstep(in.sdf.y - circle_w, in.sdf.y + circle_w, dist),
-            1.0,
-            in.sdf.y <= 0.0,
-        );
-        return vec4<f32>(in.color.rgb, in.color.a * outer * inner * rect_clip);
+        return vec4<f32>(in.color.rgb, in.color.a * circle_outer * circle_inner * rect_clip);
     }
     // Solid-color vertices use negative UV as sentinel
     if (in.uv.x < 0.0) {
