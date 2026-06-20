@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
@@ -14,6 +15,7 @@ use crate::world_core::config::GameConfig;
 use crate::world_core::evolution::EvolutionOverlayMode;
 use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::GrowthStage;
+use crate::world_core::population_history::PopulationHistory;
 use crate::world_core::save::SaveData;
 use crate::world_core::storage::Storage;
 use crate::world_core::time::WorldClock;
@@ -70,7 +72,19 @@ pub struct WorldRuntime {
     /// a resume (the cache is only authored from a New Game).
     pending_base_snapshot: Option<Vec<u8>>,
     evolution_overlay: EvolutionOverlayMode,
+    /// Worldwide plant-count time series, sampled at the throttled census cadence
+    /// as sim-time advances. Backs the Population Lens's evolution graph.
+    population_history: PopulationHistory,
+    /// Wall-clock time of the last census, so the full-world scan can't run every
+    /// frame at high `day_speed` (where many sim-hours, and thus many sample
+    /// intervals, elapse per frame). The sim-time cadence still gates it at normal
+    /// speeds; this is purely a per-frame-cost ceiling.
+    last_census_at: Instant,
 }
+
+/// Minimum wall-clock spacing between worldwide censuses. Caps the scan to a few
+/// per second regardless of `day_speed`; well below human-visible graph latency.
+const CENSUS_MIN_WALL: Duration = Duration::from_millis(250);
 
 /// Sim-hours between global growth ticks. Growth is analytic, so a coarse
 /// cadence is plenty and keeps the per-frame cost off the hot path.
@@ -289,6 +303,11 @@ impl WorldRuntime {
             plant_world.populated_chunks(),
         );
 
+        // Seed the time series with the world's starting census so the graph has
+        // a t0 point the moment the lens is first opened.
+        let mut population_history = PopulationHistory::new();
+        population_history.record(total_hours, plant_world.census());
+
         Ok(Self {
             streaming: StreamingWorld::new(
                 seed,
@@ -305,6 +324,8 @@ impl WorldRuntime {
             last_tick_ms: 0.0,
             pending_base_snapshot,
             evolution_overlay: EvolutionOverlayMode::Off,
+            population_history,
+            last_census_at: Instant::now(),
         })
     }
 
@@ -350,6 +371,28 @@ impl WorldRuntime {
                 &changed_chunks,
             );
         }
+
+        // Sample the worldwide census for the population graph. Gated on both the
+        // history's sim-time cadence (so it's rare during plain flight) and a
+        // wall-clock floor (so an extreme day_speed can't trigger a full-world
+        // scan every frame).
+        let now = self.clock.total_hours();
+        if self.population_history.is_due(now) && self.last_census_at.elapsed() >= CENSUS_MIN_WALL {
+            self.last_census_at = Instant::now();
+            self.population_history
+                .record(now, self.plant_world.census());
+        }
+    }
+
+    /// The worldwide plant-count time series, for the population graph panel.
+    pub fn population_history(&self) -> &PopulationHistory {
+        &self.population_history
+    }
+
+    /// Display names of every species, indexed by the species id used in the
+    /// census rows of [`population_history`](Self::population_history).
+    pub fn species_names(&self) -> Vec<String> {
+        self.plant_world.species_names()
     }
 
     pub fn evolution_overlay(&self) -> EvolutionOverlayMode {
@@ -687,6 +730,8 @@ impl WebWorldBuilder {
 
     fn finish(&mut self, plant_world: PlantWorld) -> anyhow::Result<WorldRuntime> {
         let rivers = self.rivers.take().expect("rivers solved before finish");
+        let mut population_history = PopulationHistory::new();
+        population_history.record(self.total_hours, plant_world.census());
         Ok(WorldRuntime {
             streaming: StreamingWorld::new(
                 self.seed,
@@ -705,6 +750,8 @@ impl WebWorldBuilder {
             // HTTP cache covers repeat downloads, so nothing is staged here.
             pending_base_snapshot: None,
             evolution_overlay: EvolutionOverlayMode::Off,
+            population_history,
+            last_census_at: Instant::now(),
         })
     }
 }
