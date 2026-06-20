@@ -217,6 +217,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // angles, so shallow edges stay sheer and the deep middle reads as water.
     let alpha = edge * mix(0.62, 0.95, fresnel * fresnel);
 
-    let final_color = scene_fog(lit, input.world_position);
+    let lens_color = population_lens_overlay(lit, input.world_position);
+    let final_color = scene_fog(lens_color, input.world_position);
     return vec4<f32>(final_color, alpha);
 }

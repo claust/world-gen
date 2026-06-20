@@ -110,7 +110,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         + material.sun_color.rgb * spec * shadow * 0.6;
 
     // Apply fog to RGB only, preserve alpha.
-    let final_color = scene_fog(water_color, input.world_position);
+    let lens_color = population_lens_overlay(water_color, input.world_position);
+    let final_color = scene_fog(lens_color, input.world_position);
 
     return vec4<f32>(final_color, alpha);
 }
