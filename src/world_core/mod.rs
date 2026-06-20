@@ -12,6 +12,7 @@ pub mod layer;
 pub mod lifecycle;
 pub mod noise4;
 pub mod plant_gen;
+pub mod population_history;
 pub mod rivers;
 pub mod save;
 pub mod storage;

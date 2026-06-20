@@ -14,8 +14,8 @@ use crate::renderer_wgpu::thumbnail::ThumbnailRenderer;
 use crate::renderer_wgpu::world::WorldRenderer;
 use crate::ui::plant_editor_panel::PlantParams;
 use crate::ui::{
-    ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, PopulationLens, SettingsPanel,
-    StartMenu, UiRegistry,
+    ConfigPanel, HerbariumUi, MenuAction, PlantEditorPanel, PopulationGraph, PopulationLens,
+    SettingsPanel, StartMenu, UiRegistry,
 };
 use crate::world_core::config::GameConfig;
 use crate::world_core::herbarium::Herbarium;
@@ -145,6 +145,7 @@ pub struct AppState {
     config_panel: ConfigPanel,
     settings_panel: SettingsPanel,
     population_lens: PopulationLens,
+    population_graph: PopulationGraph,
     plant_editor_panel: PlantEditorPanel,
     plant_editor: Option<plant_editor::PlantEditorState>,
     screen: Screen,
@@ -320,6 +321,7 @@ impl AppState {
             config_panel,
             settings_panel: SettingsPanel::new(),
             population_lens: PopulationLens::new(),
+            population_graph: PopulationGraph::new(),
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
@@ -435,6 +437,7 @@ impl AppState {
             config_panel,
             settings_panel: SettingsPanel::new(),
             population_lens: PopulationLens::new(),
+            population_graph: PopulationGraph::new(),
             plant_editor_panel: PlantEditorPanel::default(),
             plant_editor: None,
             screen: Screen::StartMenu,
@@ -2066,6 +2069,19 @@ impl AppState {
                                         }
                                     }
                                 }
+                                // Companion time-series panel: worldwide plant
+                                // counts per stage over the run, with a species
+                                // filter. Shown beside the lens whenever it's open.
+                                if let Some(w) = self.world.as_ref() {
+                                    let history = w.population_history();
+                                    let names = w.species_names();
+                                    self.population_graph.ui(
+                                        ctx,
+                                        &mut self.ui_registry,
+                                        history,
+                                        &names,
+                                    );
+                                }
                             }
                             if self.map_open {
                                 if let Some((x, z)) = render_map_ui(
@@ -2715,7 +2731,7 @@ fn render_help_ui(ctx: &egui::Context) {
                 ("1 - 5", "Recall a favorite position (double-tap to save)"),
                 ("F1", "Toggle config panel"),
                 ("E", "Cycle evolution overlay"),
-                ("L", "Toggle population lens"),
+                ("L", "Toggle population lens + history graph"),
                 ("P", "Screenshot to clipboard"),
             ],
         ),
