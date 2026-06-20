@@ -306,7 +306,7 @@ impl WorldRuntime {
         // Seed the time series with the world's starting census so the graph has
         // a t0 point the moment the lens is first opened.
         let mut population_history = PopulationHistory::new();
-        population_history.record(total_hours, plant_world.census());
+        population_history.record(total_hours, plant_world.census(total_hours));
 
         Ok(Self {
             streaming: StreamingWorld::new(
@@ -380,7 +380,7 @@ impl WorldRuntime {
         if self.population_history.is_due(now) && self.last_census_at.elapsed() >= CENSUS_MIN_WALL {
             self.last_census_at = Instant::now();
             self.population_history
-                .record(now, self.plant_world.census());
+                .record(now, self.plant_world.census(now));
         }
     }
 
@@ -731,7 +731,7 @@ impl WebWorldBuilder {
     fn finish(&mut self, plant_world: PlantWorld) -> anyhow::Result<WorldRuntime> {
         let rivers = self.rivers.take().expect("rivers solved before finish");
         let mut population_history = PopulationHistory::new();
-        population_history.record(self.total_hours, plant_world.census());
+        population_history.record(self.total_hours, plant_world.census(self.total_hours));
         Ok(WorldRuntime {
             streaming: StreamingWorld::new(
                 self.seed,
