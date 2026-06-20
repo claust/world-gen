@@ -147,7 +147,21 @@ Done:
 part with sane vertex/index counts, broadleaf still uses SDF blobs, and dead
 snags remain bark-only.
 
-**Status:** not started
+**Status:** complete
+
+Done:
+
+- Added a `NeedleCard` foliage element carrying center, local half-axes, tint
+  jitter, and stable per-card random data.
+- Routed `LeafType::Needle` generation to branch-tip card clusters instead of
+  `FoliageBlob` SDF fallback elements; broadleaf, palm frond, and scale-leaf
+  fallback paths remain on SDF blobs.
+- Mesh assembly now appends fixed-orientation quad geometry for needle cards and
+  records it as a separate `PlantMeshPartKind::FoliageCards` part after the
+  opaque bark/SDF part. Card vertices pack UV in `color.xy` and the per-card
+  random in `color.z` for the future alpha-tested shader path.
+- Added focused tests for broadleaf SDF output, spruce card output, split mesh
+  parts, and dead snag bark-only output.
 
 ### Phase 4 — Draw mixed opaque/card plant submeshes
 

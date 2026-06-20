@@ -214,6 +214,7 @@ impl PlantEditorState {
     /// offset to the side of the living plant.
     pub fn load_plant_meshes(&mut self, device: &wgpu::Device, generated: &GeneratedMeshes) {
         let upload = |mesh: &PlantMesh, label: &str| {
+            let indices = mesh.opaque_indices();
             let vertices: Vec<Vertex> = mesh
                 .vertices
                 .iter()
@@ -223,7 +224,7 @@ impl PlantEditorState {
                     color: v.color,
                 })
                 .collect();
-            upload_prototype(device, &vertices, &mesh.indices, label)
+            upload_prototype(device, &vertices, &indices, label)
         };
         let mesh = upload(&generated.living, "plant-editor-tree");
         self.set_tree_mesh(device, mesh);

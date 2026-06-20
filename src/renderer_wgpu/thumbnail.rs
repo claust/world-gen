@@ -362,6 +362,10 @@ fn prepare_plant(
     if plant_mesh.vertices.is_empty() {
         return None;
     }
+    let indices = plant_mesh.opaque_indices();
+    if indices.is_empty() {
+        return None;
+    }
 
     let verts: Vec<Vertex> = plant_mesh
         .vertices
@@ -373,11 +377,12 @@ fn prepare_plant(
         })
         .collect();
 
-    let prototype = upload_prototype(device, &verts, &plant_mesh.indices, "thumb-proto");
+    let prototype = upload_prototype(device, &verts, &indices, "thumb-proto");
 
     // Compute AABB for camera framing
     let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-    for v in &verts {
+    for index in &indices {
+        let v = &verts[*index as usize];
         let p = Vec3::from(v.position);
         min = min.min(p);
         max = max.max(p);
