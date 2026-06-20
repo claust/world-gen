@@ -238,24 +238,26 @@ impl PopulationGraph {
             }
         }
 
-        // X axis labels: elapsed days at the start and end of the window.
-        painter.text(
+        // X axis labels: elapsed days at the start and end of the window. These
+        // sit just *below* the plot rect, so they must use the ui's unclipped
+        // painter — `painter` is clipped to `rect` and would swallow them. Reserve
+        // the row first so the layout accounts for it.
+        ui.allocate_space(egui::vec2(width, 12.0));
+        let axis = ui.painter();
+        axis.text(
             Pos2::new(rect.left() + 2.0, rect.bottom() + 1.0),
             egui::Align2::LEFT_TOP,
             format!("day {:.0}", hmin / 24.0),
             FontId::proportional(10.0),
             TEXT,
         );
-        painter.text(
+        axis.text(
             Pos2::new(rect.right() - 2.0, rect.bottom() + 1.0),
             egui::Align2::RIGHT_TOP,
             format!("day {:.0}", hmax / 24.0),
             FontId::proportional(10.0),
             TEXT,
         );
-        // Reserve the row the x labels are painted into so they don't overlap the
-        // separator below.
-        ui.allocate_space(egui::vec2(width, 12.0));
     }
 
     fn legend(&self, ui: &mut egui::Ui, history: &PopulationHistory) {

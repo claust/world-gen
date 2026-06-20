@@ -215,9 +215,11 @@ mod tests {
     }
 
     #[test]
-    fn decimation_bounds_length_keeps_latest_and_widens_interval() {
+    fn decimation_bounds_length_and_keeps_latest() {
         let mut h = PopulationHistory::new();
-        // Force the interval to zero so every record is due regardless of spacing.
+        // Force the interval to zero so every record lands regardless of spacing;
+        // this test only checks the length cap and latest-retention. The interval
+        // widening is covered by `decimation_widens_interval_from_nonzero_base`.
         h.interval_hours = 0.0;
         for i in 0..(MAX_SAMPLES + 1) {
             let hour = i as f64;
@@ -226,8 +228,6 @@ mod tests {
         assert!(h.len() <= MAX_SAMPLES);
         // The newest sample survives decimation.
         assert_eq!(h.latest().unwrap().hour, MAX_SAMPLES as f64);
-        // The interval doubled from the (forced) base.
-        assert_eq!(h.interval_hours, 0.0);
     }
 
     #[test]
