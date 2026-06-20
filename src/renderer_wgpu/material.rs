@@ -216,14 +216,16 @@ impl MaterialBindGroup {
         light_dir: Vec3,
         ambient: f32,
         fog: [f32; 4],
+        lens_radius_meters: Option<f32>,
         palette: &super::sky::SkyPalette,
     ) {
         let p = palette;
+        let lens_radius = lens_radius_meters.unwrap_or(0.0).max(0.0);
         let data = TerrainMaterialUniform {
             light_direction: [light_dir.x, light_dir.y, light_dir.z, 0.0],
             ambient: [ambient, ambient, ambient, 0.0],
             fog_color: [p.horizon[0], p.horizon[1], p.horizon[2], 1.0],
-            fog_params: fog,
+            fog_params: [fog[0], fog[1], lens_radius, fog[3]],
             sun_color: [p.sun_color[0], p.sun_color[1], p.sun_color[2], 0.0],
             sky_zenith: [p.zenith[0], p.zenith[1], p.zenith[2], 0.0],
             sky_horizon: [p.horizon[0], p.horizon[1], p.horizon[2], 0.0],

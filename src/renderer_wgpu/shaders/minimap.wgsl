@@ -1,6 +1,7 @@
 struct MinimapUniform {
     screen_size: vec2<f32>,
     _pad: vec2<f32>,
+    map_rect: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> hud: MinimapUniform;
@@ -12,9 +13,10 @@ struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
-    // [mode, param]: mode > 0.5 selects the FOV-sector fragment path, where the
-    // param is the sector half-angle and `uv` is the local position (forward = +Y,
-    // radius normalized to 1). Otherwise an ordinary solid/textured vertex.
+    // [mode, param]: mode 1 selects the FOV-sector fragment path, where the param
+    // is the sector half-angle and `uv` is the local position (forward = +Y,
+    // radius normalized to 1). Mode 2 selects a circle/annulus where the param is
+    // the normalized inner radius. Otherwise an ordinary solid/textured vertex.
     @location(3) sdf: vec2<f32>,
 };
 
@@ -47,6 +49,15 @@ fn sd_sector(p_in: vec2<f32>, c: vec2<f32>) -> f32 {
     return max(l, m * sign(c.y * p.x - c.x * p.y));
 }
 
+fn minimap_rect_coverage(p: vec2<f32>) -> f32 {
+    let rect_min = hud.map_rect.xy;
+    let rect_max = hud.map_rect.xy + hud.map_rect.zw;
+    if (p.x < rect_min.x || p.y < rect_min.y || p.x > rect_max.x || p.y > rect_max.y) {
+        return 0.0;
+    }
+    return 1.0;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Sample unconditionally (uniform control flow required by WebGPU)
@@ -60,10 +71,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let coverage = 1.0 - smoothstep(-w, w, d);
     // Distance fog: opaque near the camera (apex), dissolving toward the far arc.
     let fog = 1.0 - smoothstep(0.0, 1.0, length(in.uv));
+    let rect_clip = minimap_rect_coverage(in.clip_position.xy);
+
+    // Circle/annulus coverage — computed unconditionally so derivative builtins
+    // stay in uniform control flow for WebGPU/Tint validation.
+    let circle_dist = length(in.uv);
+    let circle_w = max(fwidth(circle_dist) * 0.5, 1e-5);
+    let circle_outer = 1.0 - smoothstep(1.0 - circle_w, 1.0 + circle_w, circle_dist);
+    let circle_inner = select(
+        smoothstep(in.sdf.y - circle_w, in.sdf.y + circle_w, circle_dist),
+        1.0,
+        in.sdf.y <= 0.0,
+    );
 
     // FOV sector: alpha-masked by the anti-aliased coverage and fogged by range.
-    if (in.sdf.x > 0.5) {
-        return vec4<f32>(in.color.rgb, in.color.a * coverage * fog);
+    if (in.sdf.x > 0.5 && in.sdf.x < 1.5) {
+        return vec4<f32>(in.color.rgb, in.color.a * coverage * fog * rect_clip);
+    }
+    // Circle or annulus: used for the population-lens radius marker.
+    if (in.sdf.x > 1.5) {
+        return vec4<f32>(in.color.rgb, in.color.a * circle_outer * circle_inner * rect_clip);
     }
     // Solid-color vertices use negative UV as sentinel
     if (in.uv.x < 0.0) {

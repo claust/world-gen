@@ -65,6 +65,28 @@ fn ground_macro_variation(world_xz: vec2<f32>) -> vec3<f32> {
     );
 }
 
+// Population Lens world marker. `material.fog_params.z` carries the active lens
+// radius in metres (0 when hidden). Fragments inside that horizontal camera-
+// centred circle pick up a translucent green wash; the exact sampled boundary
+// gets a brighter ring so the selected stats region has a clear real-world edge.
+fn population_lens_overlay(color: vec3<f32>, world_pos: vec3<f32>) -> vec3<f32> {
+    let radius = material.fog_params.z;
+    if (radius <= 0.0) {
+        return color;
+    }
+
+    let dist = distance(world_pos.xz, frame.camera_position.xz);
+    let aa = max(fwidth(dist), 0.75);
+    let inside = 1.0 - smoothstep(radius - aa, radius + aa, dist);
+    let ring_half_width = 5.0;
+    let ring = 1.0 - smoothstep(ring_half_width, ring_half_width + aa, abs(dist - radius));
+
+    let lens_green = vec3<f32>(0.20, 1.0, 0.42);
+    let filled = mix(color, lens_green, inside * 0.18);
+    let rimmed = mix(filled, lens_green, ring * 0.58);
+    return rimmed + lens_green * ring * 0.18;
+}
+
 // Distance fog shared by terrain, water, and instanced/billboard fragments.
 //
 // Like the hemisphere helpers above this reads the `material` uniform, and it

@@ -132,7 +132,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = albedo * hemisphere_ambient(n)
         + albedo * direct * shadow * 0.82 * material.sun_color.rgb;
 
-    let final_color = scene_fog(color, input.world_position);
+    let lens_color = population_lens_overlay(color, input.world_position);
+    let final_color = scene_fog(lens_color, input.world_position);
 
     return vec4<f32>(final_color, 1.0);
 }

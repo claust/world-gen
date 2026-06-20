@@ -28,6 +28,7 @@ const NO_UV: [f32; 2] = [-1.0, -1.0];
 struct MinimapUniform {
     screen_size: [f32; 2],
     _pad: [f32; 2],
+    map_rect: [f32; 4],
 }
 
 pub struct MinimapPass {
@@ -61,7 +62,7 @@ impl MinimapPass {
             label: Some("minimap-uniform-layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -76,6 +77,7 @@ impl MinimapPass {
             contents: bytemuck::cast_slice(&[MinimapUniform {
                 screen_size: [1.0, 1.0],
                 _pad: [0.0; 2],
+                map_rect: [0.0, 0.0, 1.0, 1.0],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -351,6 +353,7 @@ impl MinimapPass {
         camera_pos: glam::Vec3,
         camera_yaw: f32,
         camera_fov: f32,
+        lens_radius_meters: Option<f32>,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -361,21 +364,22 @@ impl MinimapPass {
             self.display_extent[i] += (self.tex_extent[i] - self.display_extent[i]) * t;
         }
 
-        // Update screen-size uniform
+        let mut verts: Vec<HudVertex> = Vec::with_capacity(64);
+
+        // Minimap placement: bottom-left corner
+        let map_x = MINIMAP_MARGIN;
+        let map_y = screen_h - MINIMAP_MARGIN - MINIMAP_PX;
+
+        // Update screen-size and minimap clipping uniforms.
         queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::cast_slice(&[MinimapUniform {
                 screen_size: [screen_w, screen_h],
                 _pad: [0.0; 2],
+                map_rect: [map_x, map_y, MINIMAP_PX, MINIMAP_PX],
             }]),
         );
-
-        let mut verts: Vec<HudVertex> = Vec::with_capacity(64);
-
-        // Minimap placement: bottom-left corner
-        let map_x = MINIMAP_MARGIN;
-        let map_y = screen_h - MINIMAP_MARGIN - MINIMAP_PX;
 
         // --- Dark border background ---
         let border_color = [0.1, 0.1, 0.12, 0.85];
@@ -424,6 +428,27 @@ impl MinimapPass {
 
             let cam_map_x = map_x + cam_u.clamp(0.0, 1.0) * MINIMAP_PX;
             let cam_map_y = map_y + cam_v.clamp(0.0, 1.0) * MINIMAP_PX;
+
+            if let Some(radius_meters) = lens_radius_meters {
+                let radius_meters = radius_meters.max(0.0);
+                let rx = radius_meters / de[1] * MINIMAP_PX;
+                let ry = radius_meters / de[0] * MINIMAP_PX;
+                if rx.is_finite() && ry.is_finite() && rx > 0.5 && ry > 0.5 {
+                    let lens_fill = [0.26, 0.92, 0.58, 0.16];
+                    let lens_ring = [0.66, 1.0, 0.72, 0.95];
+                    push_circle_sdf(&mut verts, [cam_map_x, cam_map_y], [rx, ry], 0.0, lens_fill);
+
+                    let ring_width_px = 3.0;
+                    let inner = (1.0 - ring_width_px / rx.min(ry).max(1.0)).clamp(0.0, 0.98);
+                    push_circle_sdf(
+                        &mut verts,
+                        [cam_map_x, cam_map_y],
+                        [rx, ry],
+                        inner,
+                        lens_ring,
+                    );
+                }
+            }
 
             // --- FOV sector ---
             // Drawn as a single quad bounding the sector's circle; the fragment
@@ -627,6 +652,34 @@ fn push_sector(
     let tr = corner(radius, -radius);
     let bl = corner(-radius, radius);
     let br = corner(radius, radius);
+
+    verts.extend_from_slice(&[tl, tr, bl, bl, tr, br]);
+}
+
+/// Push a filled circle or annulus centered on the minimap. `radii` may be
+/// non-square so the screen-space ellipse still represents a true world-space
+/// circle when the minimap viewport is not square in metres.
+fn push_circle_sdf(
+    verts: &mut Vec<HudVertex>,
+    center: [f32; 2],
+    radii: [f32; 2],
+    inner_radius: f32,
+    color: [f32; 4],
+) {
+    let sdf = [2.0, inner_radius];
+    let corner = |ox: f32, oy: f32| -> HudVertex {
+        HudVertex {
+            position: [center[0] + ox, center[1] + oy],
+            uv: [ox / radii[0], oy / radii[1]],
+            color,
+            sdf,
+        }
+    };
+
+    let tl = corner(-radii[0], -radii[1]);
+    let tr = corner(radii[0], -radii[1]);
+    let bl = corner(-radii[0], radii[1]);
+    let br = corner(radii[0], radii[1]);
 
     verts.extend_from_slice(&[tl, tr, bl, bl, tr, br]);
 }
