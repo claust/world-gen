@@ -27,10 +27,21 @@ pub struct FoliageBlob {
     pub light_shift: f32,
 }
 
+#[derive(Clone, Debug)]
+pub struct NeedleCard {
+    pub center: Vec3,
+    /// Half-width axis in local plant space.
+    pub axis_u: Vec3,
+    /// Half-height axis in local plant space.
+    pub axis_v: Vec3,
+    pub hue_shift: f32,
+    pub light_shift: f32,
+    pub random: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SdfFoliageKind {
     Broadleaf,
-    NeedleFallback,
     ScaleLeafFallback,
     PalmFrond,
 }
@@ -40,7 +51,7 @@ impl SdfFoliageKind {
         match leaf_type {
             LeafType::None => None,
             LeafType::Broadleaf => Some(SdfFoliageKind::Broadleaf),
-            LeafType::Needle => Some(SdfFoliageKind::NeedleFallback),
+            LeafType::Needle => None,
             LeafType::ScaleLeaf => Some(SdfFoliageKind::ScaleLeafFallback),
             LeafType::PalmFrond => Some(SdfFoliageKind::PalmFrond),
         }
@@ -53,6 +64,7 @@ pub enum FoliageElement {
         kind: SdfFoliageKind,
         blob: FoliageBlob,
     },
+    NeedleCard(NeedleCard),
 }
 
 pub struct TreeData {
@@ -63,14 +75,23 @@ pub struct TreeData {
 
 impl TreeData {
     pub fn sdf_blobs(&self) -> impl Iterator<Item = &FoliageBlob> {
-        self.foliage.iter().map(|element| match element {
-            FoliageElement::SdfBlob { blob, .. } => blob,
+        self.foliage.iter().filter_map(|element| match element {
+            FoliageElement::SdfBlob { blob, .. } => Some(blob),
+            FoliageElement::NeedleCard(_) => None,
         })
     }
 
     pub fn sdf_foliage_kinds(&self) -> impl Iterator<Item = SdfFoliageKind> + '_ {
-        self.foliage.iter().map(|element| match element {
-            FoliageElement::SdfBlob { kind, .. } => *kind,
+        self.foliage.iter().filter_map(|element| match element {
+            FoliageElement::SdfBlob { kind, .. } => Some(*kind),
+            FoliageElement::NeedleCard(_) => None,
+        })
+    }
+
+    pub fn needle_cards(&self) -> impl Iterator<Item = &NeedleCard> {
+        self.foliage.iter().filter_map(|element| match element {
+            FoliageElement::SdfBlob { .. } => None,
+            FoliageElement::NeedleCard(card) => Some(card),
         })
     }
 }
@@ -83,7 +104,6 @@ impl TreeData {
 /// skipped and we fall back to keeping only the largest blobs by radius.
 pub fn compact_foliage(foliage: &mut Vec<FoliageElement>) {
     compact_sdf_foliage_kind(foliage, SdfFoliageKind::Broadleaf);
-    compact_sdf_foliage_kind(foliage, SdfFoliageKind::NeedleFallback);
     compact_sdf_foliage_kind(foliage, SdfFoliageKind::ScaleLeafFallback);
     compact_sdf_foliage_kind(foliage, SdfFoliageKind::PalmFrond);
 }
@@ -106,6 +126,7 @@ fn compact_sdf_foliage_kind(foliage: &mut Vec<FoliageElement>, kind: SdfFoliageK
         FoliageElement::SdfBlob {
             kind: element_kind, ..
         } => *element_kind != kind,
+        FoliageElement::NeedleCard(_) => true,
     });
     foliage.extend(
         blobs
@@ -158,6 +179,65 @@ fn compact_foliage_blobs(blobs: &mut Vec<FoliageBlob>) {
 fn push_sdf_foliage(spec: &SpeciesConfig, foliage: &mut Vec<FoliageElement>, blob: FoliageBlob) {
     if let Some(kind) = SdfFoliageKind::from_leaf_type(spec.foliage.leaf_type) {
         foliage.push(FoliageElement::SdfBlob { kind, blob });
+    }
+}
+
+fn push_needle_foliage(
+    spec: &SpeciesConfig,
+    rng: &mut StdRng,
+    foliage: &mut Vec<FoliageElement>,
+    pos: Vec3,
+    branch_dir: Vec3,
+    tree_height: f32,
+) {
+    if spec.foliage.leaf_type != LeafType::Needle {
+        return;
+    }
+
+    let variance = spec.color.leaf_variance.unwrap_or(0.10);
+    let strategy = &spec.foliage.cluster_strategy;
+    let card_count = if strategy.kind == "dense_mass" {
+        (6.0 * spec.crown.density).ceil() as u32
+    } else if strategy.kind == "clusters" {
+        strategy.count.unwrap_or(4)
+    } else {
+        3
+    };
+    let branch_dir = branch_dir.try_normalize().unwrap_or(Vec3::Y);
+    let base_height = (tree_height * 0.055).clamp(0.35, 1.2);
+    let base_width = (base_height * 0.32).max(0.12);
+    let spread = base_height * 0.35;
+
+    for _ in 0..card_count {
+        let rot = rng.random::<f32>() * std::f32::consts::TAU;
+        let tilted_dir = branch_dir_3d(branch_dir, rng.random_range(0.10..0.42), rot);
+        let center = pos - branch_dir * rng.random_range(0.0..spread * 0.7)
+            + Vec3::new(
+                rng.random_range(-spread..spread) * 0.35,
+                rng.random_range(-spread..spread) * 0.15,
+                rng.random_range(-spread..spread) * 0.35,
+            );
+        let droop = spec.foliage.droop.clamp(0.0, 1.0);
+        let long_axis = (tilted_dir + Vec3::new(0.0, -droop * 0.8, 0.0))
+            .try_normalize()
+            .unwrap_or(Vec3::Y);
+        let ref_vec = if long_axis.y.abs() < 0.92 {
+            Vec3::Y
+        } else {
+            Vec3::X
+        };
+        let side_axis = long_axis.cross(ref_vec).try_normalize().unwrap_or(Vec3::X);
+        let height = base_height * rng.random_range(0.7..1.25);
+        let width = base_width * rng.random_range(0.75..1.3);
+
+        foliage.push(FoliageElement::NeedleCard(NeedleCard {
+            center,
+            axis_u: side_axis * (width * 0.5),
+            axis_v: long_axis * (height * 0.5),
+            hue_shift: rng.random_range(-1.0..1.0) * variance * 80.0,
+            light_shift: rng.random_range(-1.0..1.0) * variance,
+            random: rng.random::<f32>(),
+        }));
     }
 }
 
@@ -475,16 +555,20 @@ fn generate_branch(
             let r = rng.random_range(spec.foliage.leaf_size[0]..spec.foliage.leaf_size[1])
                 * tree_height
                 * 0.06;
-            push_sdf_foliage(
-                spec,
-                foliage,
-                FoliageBlob {
-                    center: mid,
-                    radius: r.max(0.2),
-                    hue_shift: rng.random_range(-15.0..15.0),
-                    light_shift: rng.random_range(-0.08..0.08),
-                },
-            );
+            if spec.foliage.leaf_type == LeafType::Needle {
+                push_needle_foliage(spec, rng, foliage, mid, end - origin, tree_height);
+            } else {
+                push_sdf_foliage(
+                    spec,
+                    foliage,
+                    FoliageBlob {
+                        center: mid,
+                        radius: r.max(0.2),
+                        hue_shift: rng.random_range(-15.0..15.0),
+                        light_shift: rng.random_range(-0.08..0.08),
+                    },
+                );
+            }
         }
         return;
     }
@@ -499,14 +583,14 @@ fn generate_branch(
         use_leaf_color: false,
     });
 
+    let eff_dir = (end - origin).normalize();
+
     if depth >= spec.branching.max_depth {
         if spec.foliage.leaf_type.has_foliage() {
-            add_foliage(spec, rng, end, tree_height, foliage);
+            add_foliage(spec, rng, end, eff_dir, tree_height, foliage);
         }
         return;
     }
-
-    let eff_dir = (end - origin).normalize();
 
     if spec.branching.apical_dominance > 0.2 {
         let cont_len = length
@@ -563,9 +647,15 @@ fn add_foliage(
     spec: &SpeciesConfig,
     rng: &mut StdRng,
     pos: Vec3,
+    branch_dir: Vec3,
     tree_height: f32,
     foliage: &mut Vec<FoliageElement>,
 ) {
+    if spec.foliage.leaf_type == LeafType::Needle {
+        push_needle_foliage(spec, rng, foliage, pos, branch_dir, tree_height);
+        return;
+    }
+
     let variance = spec.color.leaf_variance.unwrap_or(0.15);
     let size_base = tree_height * 0.045 * (1.0 + spec.crown.density * 0.5);
     let strategy = &spec.foliage.cluster_strategy;

@@ -53,7 +53,7 @@ mod tests {
     }
 
     #[test]
-    fn broadleaf_and_needle_route_to_distinct_sdf_kinds() {
+    fn broadleaf_uses_sdf_and_needle_uses_cards() {
         let oak = species(include_str!("species/oak.json"));
         let spruce = species(include_str!("species/spruce.json"));
 
@@ -63,13 +63,13 @@ mod tests {
         assert!(oak_tree
             .sdf_foliage_kinds()
             .all(|kind| kind == SdfFoliageKind::Broadleaf));
+        assert_eq!(oak_tree.needle_cards().count(), 0);
 
         let mut spruce_tree = generate_tree(&spruce, 7);
         compact_foliage(&mut spruce_tree.foliage);
         assert!(!spruce_tree.foliage.is_empty());
-        assert!(spruce_tree
-            .sdf_foliage_kinds()
-            .all(|kind| kind == SdfFoliageKind::NeedleFallback));
+        assert_eq!(spruce_tree.sdf_foliage_kinds().count(), 0);
+        assert!(spruce_tree.needle_cards().count() > 0);
     }
 
     #[test]
@@ -88,17 +88,42 @@ mod tests {
     }
 
     #[test]
-    fn generated_mesh_records_single_opaque_part_for_phase_two() {
+    fn generated_needle_mesh_records_opaque_and_card_parts() {
         let spruce = species(include_str!("species/spruce.json"));
         let mesh = generate_plant_mesh(&spruce, 13);
 
         assert!(!mesh.vertices.is_empty());
         assert!(!mesh.indices.is_empty());
-        assert_eq!(mesh.parts.len(), 1);
+        assert_eq!(mesh.parts.len(), 2);
         assert_eq!(mesh.parts[0].kind, PlantMeshPartKind::Opaque);
         assert_eq!(mesh.parts[0].vertex_start, 0);
-        assert_eq!(mesh.parts[0].vertex_count, mesh.vertices.len() as u32);
+        assert!(mesh.parts[0].vertex_count < mesh.vertices.len() as u32);
         assert_eq!(mesh.parts[0].index_start, 0);
+        assert!(mesh.parts[0].index_count < mesh.indices.len() as u32);
+
+        assert_eq!(mesh.parts[1].kind, PlantMeshPartKind::FoliageCards);
+        assert_eq!(
+            mesh.parts[1].vertex_start,
+            mesh.parts[0].vertex_start + mesh.parts[0].vertex_count
+        );
+        assert_eq!(
+            mesh.parts[1].index_start,
+            mesh.parts[0].index_start + mesh.parts[0].index_count
+        );
+        assert_eq!(mesh.parts[1].vertex_count % 4, 0);
+        assert_eq!(mesh.parts[1].index_count % 6, 0);
+    }
+
+    #[test]
+    fn broadleaf_mesh_stays_single_opaque_part() {
+        let oak = species(include_str!("species/oak.json"));
+        let mesh = generate_plant_mesh(&oak, 13);
+
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+        assert_eq!(mesh.parts.len(), 1);
+        assert_eq!(mesh.parts[0].kind, PlantMeshPartKind::Opaque);
+        assert_eq!(mesh.parts[0].vertex_count, mesh.vertices.len() as u32);
         assert_eq!(mesh.parts[0].index_count, mesh.indices.len() as u32);
     }
 }

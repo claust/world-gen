@@ -11,6 +11,7 @@ const CYL_SIDES: usize = 8;
 pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> PlantMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
+    let mut parts = Vec::new();
 
     // Bark is the default; a segment may opt into the leaf colour (reed stalks).
     let bark_linear = hsl_to_linear(spec.color.bark.h, spec.color.bark.s, spec.color.bark.l);
@@ -39,7 +40,7 @@ pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> PlantMesh {
         );
     }
 
-    // Foliage via SDF smooth union + surface nets
+    // Foliage via SDF smooth union + surface nets.
     let foliage_blobs: Vec<_> = data.sdf_blobs().collect();
     if !foliage_blobs.is_empty() {
         let base_idx = vertices.len() as u32;
@@ -49,23 +50,77 @@ pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> PlantMesh {
         indices.extend(foliage_idx.iter().map(|i| i + base_idx));
     }
 
-    let parts = if indices.is_empty() {
-        Vec::new()
-    } else {
-        vec![PlantMeshPart {
+    if !indices.is_empty() {
+        parts.push(PlantMeshPart {
             kind: PlantMeshPartKind::Opaque,
             vertex_start: 0,
             vertex_count: vertices.len() as u32,
             index_start: 0,
             index_count: indices.len() as u32,
-        }]
-    };
+        });
+    }
+
+    let card_vertex_start = vertices.len() as u32;
+    let card_index_start = indices.len() as u32;
+    for card in data.needle_cards() {
+        add_needle_card(card, &mut vertices, &mut indices);
+    }
+
+    let card_vertex_count = vertices.len() as u32 - card_vertex_start;
+    let card_index_count = indices.len() as u32 - card_index_start;
+    if card_index_count > 0 {
+        parts.push(PlantMeshPart {
+            kind: PlantMeshPartKind::FoliageCards,
+            vertex_start: card_vertex_start,
+            vertex_count: card_vertex_count,
+            index_start: card_index_start,
+            index_count: card_index_count,
+        });
+    }
 
     PlantMesh {
         vertices,
         indices,
         parts,
     }
+}
+
+fn add_needle_card(
+    card: &super::tree::NeedleCard,
+    verts: &mut Vec<PlantVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let base_idx = verts.len() as u32;
+    let normal = card
+        .axis_u
+        .cross(card.axis_v)
+        .try_normalize()
+        .unwrap_or(Vec3::Y);
+    let corners = [
+        (card.center - card.axis_u - card.axis_v, [0.0, 0.0]),
+        (card.center + card.axis_u - card.axis_v, [1.0, 0.0]),
+        (card.center + card.axis_u + card.axis_v, [1.0, 1.0]),
+        (card.center - card.axis_u + card.axis_v, [0.0, 1.0]),
+    ];
+
+    for (pos, uv) in corners {
+        verts.push(PlantVertex {
+            position: [pos.x, pos.y, pos.z],
+            normal: [normal.x, normal.y, normal.z],
+            // Foliage-card shaders read UV from xy and a stable per-card random
+            // value from z. Tint jitter lives on the card data for future use.
+            color: [uv[0], uv[1], card.random],
+        });
+    }
+
+    indices.extend_from_slice(&[
+        base_idx,
+        base_idx + 1,
+        base_idx + 2,
+        base_idx,
+        base_idx + 2,
+        base_idx + 3,
+    ]);
 }
 
 fn add_cylinder(
