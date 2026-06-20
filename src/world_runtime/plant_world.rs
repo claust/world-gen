@@ -748,9 +748,10 @@ impl PlantWorld {
             }
             chunks_touched += 1;
             total_plants_considered += plants.len();
+            let base_count = self.base_count[idx] as usize;
             let origin_x = cx as f32 * CHUNK_SIZE_METERS;
             let origin_z = cz as f32 * CHUNK_SIZE_METERS;
-            for plant in plants {
+            for (plant_idx, plant) in plants.iter().enumerate() {
                 let world_x = origin_x + dequantize_span(plant.local_x);
                 let world_z = origin_z + dequantize_span(plant.local_z);
                 let dx = torus_delta(world_x, target_x, world);
@@ -779,7 +780,16 @@ impl PlantWorld {
                 );
                 environment_sums.add(env);
                 phenotype_moments.add(evaluate_phenotype(plant.genes, species, env));
-                stage_counts[plant.stage.min(DEAD) as usize] += 1;
+                let stage = analytic_stage(
+                    self.seed,
+                    idx,
+                    plant,
+                    species,
+                    plant_idx < base_count,
+                    env,
+                    sample_hour,
+                );
+                stage_counts[stage.min(DEAD) as usize] += 1;
                 *species_counts.entry(plant.species).or_default() += 1;
             }
         }
@@ -875,30 +885,59 @@ impl PlantWorld {
         self.population
     }
 
-    /// Worldwide per-species × per-stage census. `row[s]` is species id `s`'s
-    /// `[seedling, young, mature, dead]` counts; every registered species gets a
-    /// row (zeros if absent) so the row index is a stable species handle. O(world
-    /// population); parallel across chunks on native, where the whole world is
-    /// resident. Feeds the population-history time series, so it is taken at the
-    /// throttled census cadence, not every frame.
-    pub fn census(&self) -> Vec<[u32; population_history::STAGE_COUNT]> {
+    /// Worldwide per-species × per-stage census at sim-time `now`. `row[s]` is
+    /// species id `s`'s `[seedling, young, mature, dead]` counts; every registered
+    /// species gets a row (zeros if absent) so the row index is a stable species
+    /// handle. O(world population); parallel across chunks on native, where the
+    /// whole world is resident. Feeds the population-history time series, so it is
+    /// taken at the throttled census cadence, not every frame.
+    ///
+    /// Stages are derived from each plant's analytic [`life_schedule`] at `now`
+    /// rather than its cached `stage` byte: the byte only advances on a growth
+    /// tick, so at high `day_speed` plants step across the whole Young band
+    /// between ticks and the byte never records Young (see [`analytic_stage`]).
+    pub fn census(&self, now: f64) -> Vec<[u32; population_history::STAGE_COUNT]> {
         let species_count = self.registry.species.len();
-        let tally = |plants: &[Plant], acc: &mut [[u32; population_history::STAGE_COUNT]]| {
-            for plant in plants {
-                if let Some(row) = acc.get_mut(plant.species as usize) {
-                    row[plant.stage.min(DEAD) as usize] += 1;
+        let tally =
+            |idx: usize, plants: &[Plant], acc: &mut [[u32; population_history::STAGE_COUNT]]| {
+                let base_count = self.base_count[idx] as usize;
+                for (plant_idx, plant) in plants.iter().enumerate() {
+                    let Some(row) = acc.get_mut(plant.species as usize) else {
+                        continue;
+                    };
+                    let Some(species) = self.registry.species.get(plant.species as usize) else {
+                        row[plant.stage.min(DEAD) as usize] += 1;
+                        continue;
+                    };
+                    let env = plant_life_environment(
+                        &self.heightmap,
+                        &self.rivers,
+                        self.sea_level,
+                        idx,
+                        plant,
+                    );
+                    let stage = analytic_stage(
+                        self.seed,
+                        idx,
+                        plant,
+                        species,
+                        plant_idx < base_count,
+                        env,
+                        now,
+                    );
+                    row[stage.min(DEAD) as usize] += 1;
                 }
-            }
-        };
+            };
 
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.chunks
                 .par_iter()
+                .enumerate()
                 .fold(
                     || vec![[0u32; population_history::STAGE_COUNT]; species_count],
-                    |mut acc, plants| {
-                        tally(plants, &mut acc);
+                    |mut acc, (idx, plants)| {
+                        tally(idx, plants, &mut acc);
                         acc
                     },
                 )
@@ -917,8 +956,8 @@ impl PlantWorld {
         #[cfg(target_arch = "wasm32")]
         {
             let mut acc = vec![[0u32; population_history::STAGE_COUNT]; species_count];
-            for plants in &self.chunks {
-                tally(plants, &mut acc);
+            for (idx, plants) in self.chunks.iter().enumerate() {
+                tally(idx, plants, &mut acc);
             }
             acc
         }
@@ -2974,6 +3013,29 @@ fn life_schedule(
     }
 }
 
+/// Instantaneous lifecycle stage of a plant at sim-time `now`, computed
+/// analytically from its life schedule instead of read from the cached
+/// `plant.stage` byte. The cached byte is only refreshed when a growth tick
+/// lands on the chunk, so at high `day_speed` a single frame can step a plant's
+/// age clean across the ~100h Young band (Seedling→Mature) without the byte
+/// ever recording Young — which is why a stage *census* of the cached byte
+/// reports zero young. Counting stages off this analytic stage instead reports
+/// the true current distribution regardless of the tick cadence. Returns `DEAD`
+/// for a plant already past its despawn point but not yet reaped by a tick.
+fn analytic_stage(
+    seed: u32,
+    chunk_idx: usize,
+    plant: &Plant,
+    species: &crate::world_core::herbarium::PlantSpeciesInfo,
+    is_base: bool,
+    env: PlantEnvironment,
+    now: f64,
+) -> u8 {
+    let schedule = life_schedule(seed, chunk_idx, plant, species, is_base, env);
+    let age = (now - plant.born_hour as f64).max(0.0);
+    schedule.stage_at(age).unwrap_or(DEAD)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3086,6 +3148,49 @@ mod tests {
             shade: 0.0,
             root_pressure: 0.0,
         }
+    }
+
+    // Regression for the "Population Lens shows young 0" report: the census must
+    // count a spread plant whose age puts it in the Young band as Young, even
+    // when its cached `stage` byte still says Seedling because no growth tick has
+    // refreshed it yet. (At high day_speed a frame steps a plant clean across the
+    // Young band between ticks, so the byte never records Young — the census now
+    // derives the stage analytically instead of trusting the byte.)
+    #[test]
+    fn census_counts_young_from_analytic_stage_not_stale_byte() {
+        let reg = registry();
+        // Chunk 0: one mature base plant, then one spread seedling (appended after
+        // base_count was captured, so it counts as non-base).
+        let base = Plant {
+            stage: MATURE,
+            ..seedling(10.0, 0.0)
+        };
+        let mut world = test_world(vec![vec![base]], Arc::clone(&reg));
+        let spread = seedling(40.0, 0.0);
+        world.chunks[0].push(spread);
+
+        // The spread plant's real Young window, sampled with the same environment
+        // the census uses, so the boundaries line up exactly.
+        let species = &reg.species[spread.species as usize];
+        let env =
+            plant_life_environment(&world.heightmap, &world.rivers, world.sea_level, 0, &spread);
+        let schedule = life_schedule(world.seed, 0, &spread, species, false, env);
+        assert!(
+            schedule.mature_at > schedule.young_at,
+            "the Young band must have non-zero width for this test to mean anything"
+        );
+        let now = 0.5 * (schedule.young_at + schedule.mature_at);
+
+        // The cached byte is deliberately still Seedling — proof the Young count
+        // below cannot be coming from the stored stage.
+        assert_eq!(world.chunks[0][1].stage, stage_to_u8(GrowthStage::Seedling));
+
+        let row = world.census(now)[spread.species as usize];
+        assert_eq!(
+            row[stage_to_u8(GrowthStage::Young) as usize],
+            1,
+            "the spread plant is mid-Young-band at `now`, so the census must report one young"
+        );
     }
 
     #[test]
@@ -3881,16 +3986,31 @@ mod tests {
         let reg = registry();
         let total = (WORLD_SIZE_CHUNKS as usize) * (WORLD_SIZE_CHUNKS as usize);
         let mut chunks = vec![Vec::new(); total];
-        chunks[0].push(grid_plant(40.0, 40.0, 0));
-        chunks[0].push(Plant {
+        let base = grid_plant(40.0, 40.0, 0);
+        chunks[0].push(base);
+        let mut world = test_world(chunks, Arc::clone(&reg));
+
+        // Stages are now derived analytically from each plant's life schedule at
+        // the sample hour, so pick a sample time where the base plant is still
+        // Mature (past maturity, before death) and add a genuine spread seedling
+        // (appended after `base_count` was captured) born right at that time.
+        let base_env =
+            plant_life_environment(&world.heightmap, &world.rivers, world.sea_level, 0, &base);
+        let base_sched = life_schedule(world.seed, 0, &base, &reg.species[0], true, base_env);
+        assert!(
+            base_sched.dead_at > 0.0,
+            "base plant must outlive its birth"
+        );
+        let now = 0.5 * base_sched.dead_at;
+        world.chunks[0].push(Plant {
             stage: stage_to_u8(GrowthStage::Seedling),
             genes: PlantGenes::from_bytes([200, 100, 50, 25, 75, 125, 175, 225]),
+            born_hour: now as f32,
             ..grid_plant(46.0, 40.0, 0)
         });
-        let world = test_world(chunks, reg);
-        let report = world.inspect_evolution_region(42.0, 40.0, 16.0, 123.0);
+        let report = world.inspect_evolution_region(42.0, 40.0, 16.0, now);
 
-        assert_eq!(report.sample_hour, 123.0);
+        assert_eq!(report.sample_hour, now);
         assert_eq!(report.plant_count, 2);
         assert_eq!(report.counts.plants_included, 2);
         assert!(!report.counts.empty);
