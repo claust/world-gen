@@ -301,6 +301,7 @@ impl WorldRenderer {
         queue: &wgpu::Queue,
         light_direction: Vec3,
         ambient: f32,
+        lens_radius_meters: Option<f32>,
         palette: &SkyPalette,
     ) {
         self.fog_color = palette.horizon;
@@ -309,6 +310,7 @@ impl WorldRenderer {
             light_direction,
             ambient,
             [self.fog_start, self.fog_end, 0.0, 0.0],
+            lens_radius_meters,
             palette,
         );
     }
@@ -348,11 +350,20 @@ impl WorldRenderer {
         camera_pos: Vec3,
         camera_yaw: f32,
         camera_fov: f32,
+        lens_radius_meters: Option<f32>,
         screen_w: f32,
         screen_h: f32,
     ) {
         self.minimap.update(
-            queue, device, dt, camera_pos, camera_yaw, camera_fov, screen_w, screen_h,
+            queue,
+            device,
+            dt,
+            camera_pos,
+            camera_yaw,
+            camera_fov,
+            lens_radius_meters,
+            screen_w,
+            screen_h,
         );
     }
 
