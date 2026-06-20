@@ -28,8 +28,11 @@ impl PlantMesh {
             .filter(|part| part.kind == kind)
             .flat_map(|part| {
                 let start = part.index_start as usize;
-                let end = start + part.index_count as usize;
-                self.indices[start..end].iter().copied()
+                let end = start.saturating_add(part.index_count as usize);
+                self.indices
+                    .get(start..end)
+                    .into_iter()
+                    .flat_map(|indices| indices.iter().copied())
             })
             .collect()
     }
@@ -148,6 +151,23 @@ mod tests {
         assert_eq!(mesh.parts[0].vertex_count, mesh.vertices.len() as u32);
         assert_eq!(mesh.parts[0].index_count, mesh.indices.len() as u32);
         assert_eq!(mesh.opaque_indices(), mesh.indices);
+    }
+
+    #[test]
+    fn malformed_mesh_part_indices_return_empty_slice() {
+        let mesh = super::PlantMesh {
+            vertices: Vec::new(),
+            indices: vec![0, 1, 2],
+            parts: vec![super::PlantMeshPart {
+                kind: PlantMeshPartKind::Opaque,
+                vertex_start: 0,
+                vertex_count: 0,
+                index_start: 99,
+                index_count: 3,
+            }],
+        };
+
+        assert!(mesh.opaque_indices().is_empty());
     }
 
     #[test]

@@ -583,7 +583,9 @@ fn generate_branch(
         use_leaf_color: false,
     });
 
-    let eff_dir = (end - origin).normalize();
+    let eff_dir = (end - origin)
+        .try_normalize()
+        .unwrap_or_else(|| direction.try_normalize().unwrap_or(Vec3::Y));
 
     if depth >= spec.branching.max_depth {
         if spec.foliage.leaf_type.has_foliage() {
