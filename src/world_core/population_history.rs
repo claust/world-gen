@@ -178,7 +178,15 @@ impl PopulationHistory {
     /// `last.hour - window`. If the series is shorter than the window, the earliest
     /// sample is used as the baseline, so a young world reports its growth-so-far.
     /// `None` only when there are no samples at all.
+    ///
+    /// `window` must be positive and finite. A non-positive window puts the cutoff at or
+    /// after the newest sample, which would report no change (or a future cutoff); it is
+    /// debug-asserted rather than handled, since the only caller passes a fixed week.
     pub fn delta_over_hours(&self, window: f64) -> Option<i64> {
+        debug_assert!(
+            window.is_finite() && window > 0.0,
+            "delta_over_hours expects a positive, finite window in sim-hours, got {window}",
+        );
         let last = self.samples.last()?;
         let cutoff = last.hour - window;
         let baseline = self

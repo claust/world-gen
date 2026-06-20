@@ -63,6 +63,13 @@ impl HudPass {
             .expect("decode plant_count.png")
             .to_rgba8();
         let (backdrop_w, backdrop_h) = backdrop.dimensions();
+        // `write_texture` requires `bytes_per_row` (w * 4) to be 256-byte aligned, i.e.
+        // the width a multiple of 64. Assert it so swapping in a differently-sized asset
+        // fails here with a clear message rather than as an opaque wgpu validation error.
+        assert!(
+            backdrop_w.is_multiple_of(64),
+            "plant_count.png width ({backdrop_w}) must be a multiple of 64 for the texture row pitch to meet wgpu's 256-byte copy alignment",
+        );
         let backdrop_aspect = backdrop_w as f32 / backdrop_h as f32;
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -352,7 +359,7 @@ impl HudPass {
         };
         let arrow_w = delta_px * 0.46;
         let arrow_h = delta_px * 0.5;
-        let mag = format_grouped_count(weekly_delta.unsigned_abs() as i64);
+        let mag = format_grouped_count(weekly_delta);
         let mag_w = font.measure(&mag, delta_px);
         let suffix = " / week";
         let delta_w = arrow_w + 7.0 + mag_w + font.measure(suffix, delta_px);

@@ -87,14 +87,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // otherwise solid quads (panel, clock ticks/horizon) carry the sentinel uv == (-1,
     // -1) and everything else is MSDF text (uv >= 0).
     let msd = textureSample(font_texture, font_sampler, max(in.uv, vec2(0.0))).rgb;
-    let img = textureSample(image_texture, font_sampler, clamp(in.uv, vec2(0.0), vec2(1.0)));
 
     if (in.sdf.x > 0.5) {
         let shape = in.sdf.x;
 
-        // Textured backdrop: return the sampled image tinted (and faded) by the vertex
-        // color, so the same color channel both dims and sets the backdrop's opacity.
+        // Textured backdrop: sample at the base level (there is no mip chain) and tint/
+        // fade by the vertex color. textureSampleLevel takes no implicit derivatives, so
+        // unlike the textureSample above it can live in this branch — text and other SDF
+        // primitives then skip the backdrop fetch entirely.
         if (is_shape(shape, SDF_IMAGE)) {
+            let img = textureSampleLevel(
+                image_texture,
+                font_sampler,
+                clamp(in.uv, vec2(0.0), vec2(1.0)),
+                0.0,
+            );
             return vec4<f32>(img.rgb * in.color.rgb, img.a * in.color.a);
         }
 
