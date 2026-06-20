@@ -21,6 +21,24 @@ pub struct PlantMesh {
     pub parts: Vec<PlantMeshPart>,
 }
 
+impl PlantMesh {
+    pub fn indices_for_part(&self, kind: PlantMeshPartKind) -> Vec<u32> {
+        self.parts
+            .iter()
+            .filter(|part| part.kind == kind)
+            .flat_map(|part| {
+                let start = part.index_start as usize;
+                let end = start + part.index_count as usize;
+                self.indices[start..end].iter().copied()
+            })
+            .collect()
+    }
+
+    pub fn opaque_indices(&self) -> Vec<u32> {
+        self.indices_for_part(PlantMeshPartKind::Opaque)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlantMeshPartKind {
     Opaque,
@@ -44,7 +62,7 @@ pub fn generate_plant_mesh(spec: &SpeciesConfig, seed: u32) -> PlantMesh {
 
 #[cfg(test)]
 mod tests {
-    use super::config::SpeciesConfig;
+    use super::config::{LeafType, SpeciesConfig};
     use super::tree::{compact_foliage, generate_tree, SdfFoliageKind};
     use super::{generate_plant_mesh, PlantMeshPartKind};
 
@@ -112,6 +130,10 @@ mod tests {
         );
         assert_eq!(mesh.parts[1].vertex_count % 4, 0);
         assert_eq!(mesh.parts[1].index_count % 6, 0);
+        assert_eq!(
+            mesh.opaque_indices().len() as u32,
+            mesh.parts[0].index_count
+        );
     }
 
     #[test]
@@ -125,5 +147,16 @@ mod tests {
         assert_eq!(mesh.parts[0].kind, PlantMeshPartKind::Opaque);
         assert_eq!(mesh.parts[0].vertex_count, mesh.vertices.len() as u32);
         assert_eq!(mesh.parts[0].index_count, mesh.indices.len() as u32);
+        assert_eq!(mesh.opaque_indices(), mesh.indices);
+    }
+
+    #[test]
+    fn needle_fan_top_routes_frond_foliage_to_cards() {
+        let mut palm = species(include_str!("species/palm.json"));
+        palm.foliage.leaf_type = LeafType::Needle;
+
+        let tree = generate_tree(&palm, 17);
+        assert_eq!(tree.sdf_foliage_kinds().count(), 0);
+        assert!(tree.needle_cards().count() > 0);
     }
 }

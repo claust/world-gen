@@ -732,20 +732,25 @@ fn generate_fronds(
         }
         for j in 0..5 {
             let ft = 0.25 + j as f32 * 0.15;
-            push_sdf_foliage(
-                spec,
-                foliage,
-                FoliageBlob {
-                    center: Vec3::new(
-                        apex.x + dx * ft + rng.random_range(-0.3..0.3),
-                        apex.y + dy * ft,
-                        apex.z + dz * ft + rng.random_range(-0.3..0.3),
-                    ),
-                    radius: tree_height * 0.03 * (1.2 - ft * 0.5),
-                    hue_shift: rng.random_range(-1.0..1.0) * variance * 80.0,
-                    light_shift: rng.random_range(-1.0..1.0) * variance * 0.8,
-                },
+            let center = Vec3::new(
+                apex.x + dx * ft + rng.random_range(-0.3..0.3),
+                apex.y + dy * ft,
+                apex.z + dz * ft + rng.random_range(-0.3..0.3),
             );
+            if spec.foliage.leaf_type == LeafType::Needle {
+                push_needle_foliage(spec, rng, foliage, center, end - apex, tree_height);
+            } else {
+                push_sdf_foliage(
+                    spec,
+                    foliage,
+                    FoliageBlob {
+                        center,
+                        radius: tree_height * 0.03 * (1.2 - ft * 0.5),
+                        hue_shift: rng.random_range(-1.0..1.0) * variance * 80.0,
+                        light_shift: rng.random_range(-1.0..1.0) * variance * 0.8,
+                    },
+                );
+            }
         }
     }
 }

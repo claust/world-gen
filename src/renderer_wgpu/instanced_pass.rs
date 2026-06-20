@@ -261,6 +261,7 @@ impl InstancedPass {
 
             let key = format!("plant-{}", species.name);
             let plant_mesh = plant_gen::generate_plant_mesh(&species.species_config, i as u32);
+            let plant_indices = plant_mesh.opaque_indices();
             let verts: Vec<Vertex> = plant_mesh
                 .vertices
                 .iter()
@@ -270,7 +271,7 @@ impl InstancedPass {
                     color: v.color,
                 })
                 .collect();
-            let mesh = upload_prototype(device, &verts, &plant_mesh.indices, &key);
+            let mesh = upload_prototype(device, &verts, &plant_indices, &key);
             models.models.insert(key.clone(), mesh);
             species_names.push(key);
 
@@ -278,6 +279,7 @@ impl InstancedPass {
             let lod_key = format!("plant-{}-lod", species.name);
             let lod_config = species.species_config.simplify_for_lod();
             let lod_plant_mesh = plant_gen::generate_plant_mesh(&lod_config, i as u32);
+            let lod_indices = lod_plant_mesh.opaque_indices();
             let lod_verts: Vec<Vertex> = lod_plant_mesh
                 .vertices
                 .iter()
@@ -287,7 +289,7 @@ impl InstancedPass {
                     color: v.color,
                 })
                 .collect();
-            let lod_mesh = upload_prototype(device, &lod_verts, &lod_plant_mesh.indices, &lod_key);
+            let lod_mesh = upload_prototype(device, &lod_verts, &lod_indices, &lod_key);
             models.models.insert(lod_key.clone(), lod_mesh);
             species_lod_names.push(lod_key);
 
@@ -296,6 +298,7 @@ impl InstancedPass {
             let dead_key = format!("plant-{}-dead", species.name);
             let dead_config = species.species_config.deadify();
             let dead_plant_mesh = plant_gen::generate_plant_mesh(&dead_config, i as u32);
+            let dead_indices = dead_plant_mesh.opaque_indices();
             let dead_verts: Vec<Vertex> = dead_plant_mesh
                 .vertices
                 .iter()
@@ -305,8 +308,7 @@ impl InstancedPass {
                     color: v.color,
                 })
                 .collect();
-            let dead_mesh =
-                upload_prototype(device, &dead_verts, &dead_plant_mesh.indices, &dead_key);
+            let dead_mesh = upload_prototype(device, &dead_verts, &dead_indices, &dead_key);
             models.models.insert(dead_key.clone(), dead_mesh);
             species_dead_names.push(dead_key);
             species_is_shrub.push(false);
