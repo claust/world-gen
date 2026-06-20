@@ -1477,10 +1477,15 @@ impl AppState {
             lighting.sun_direction,
             None,
         );
+        let lens_radius_meters = self
+            .population_lens
+            .is_visible()
+            .then(|| self.population_lens.radius());
         self.world_renderer.update_material(
             &self.gpu.queue,
             lighting.sun_direction,
             lighting.ambient,
+            lens_radius_meters,
             &palette,
         );
         self.world_renderer.update_hud(
@@ -1501,6 +1506,7 @@ impl AppState {
             self.camera.position,
             self.camera.yaw,
             self.camera.fov_y_radians,
+            lens_radius_meters,
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );
@@ -1569,7 +1575,7 @@ impl AppState {
             Some(0.0),
         );
         self.world_renderer
-            .update_material(&self.gpu.queue, light_dir, ambient, &palette);
+            .update_material(&self.gpu.queue, light_dir, ambient, None, &palette);
 
         // Process debug commands in editor mode
         #[cfg(not(target_arch = "wasm32"))]
@@ -1824,7 +1830,7 @@ impl AppState {
             None,
         );
         self.world_renderer
-            .update_material(&self.gpu.queue, light_dir, ambient, &palette);
+            .update_material(&self.gpu.queue, light_dir, ambient, None, &palette);
     }
 
     fn render(&mut self) -> Result<(), SurfaceError> {
