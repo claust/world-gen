@@ -13,9 +13,10 @@ fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
     m - k * h * (1.0 - h)
 }
 
-fn eval_sdf(p: Vec3, blobs: &[FoliageBlob], k: f32, max_influence: f32) -> f32 {
+fn eval_sdf(p: Vec3, blobs: &[&FoliageBlob], k: f32, max_influence: f32) -> f32 {
     let mut d = f32::MAX;
     for blob in blobs {
+        let blob = *blob;
         // Skip blobs too far to influence the result
         let dist_sq = p.distance_squared(blob.center);
         let reach = blob.radius + max_influence;
@@ -28,7 +29,7 @@ fn eval_sdf(p: Vec3, blobs: &[FoliageBlob], k: f32, max_influence: f32) -> f32 {
     d
 }
 
-pub fn extract_foliage_surface(blobs: &[FoliageBlob], leaf: &Hsl) -> (Vec<PlantVertex>, Vec<u32>) {
+pub fn extract_foliage_surface(blobs: &[&FoliageBlob], leaf: &Hsl) -> (Vec<PlantVertex>, Vec<u32>) {
     if blobs.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -39,6 +40,7 @@ pub fn extract_foliage_surface(blobs: &[FoliageBlob], leaf: &Hsl) -> (Vec<PlantV
     let mut radius_sum = 0.0f32;
     let mut min_radius = f32::MAX;
     for blob in blobs {
+        let blob = *blob;
         let r = blob.radius;
         aabb_min = aabb_min.min(blob.center - Vec3::splat(r));
         aabb_max = aabb_max.max(blob.center + Vec3::splat(r));
@@ -123,7 +125,7 @@ pub fn extract_foliage_surface(blobs: &[FoliageBlob], leaf: &Hsl) -> (Vec<PlantV
 
 fn sdf_gradient(
     p: Vec3,
-    blobs: &[FoliageBlob],
+    blobs: &[&FoliageBlob],
     k: f32,
     max_influence: f32,
     eps: f32,
@@ -144,12 +146,13 @@ fn sdf_gradient(
     }
 }
 
-fn blend_blob_color(p: Vec3, blobs: &[FoliageBlob], leaf: &Hsl) -> [f32; 3] {
+fn blend_blob_color(p: Vec3, blobs: &[&FoliageBlob], leaf: &Hsl) -> [f32; 3] {
     let mut total_weight = 0.0f32;
     let mut blended_hue_shift = 0.0f32;
     let mut blended_light_shift = 0.0f32;
 
     for blob in blobs {
+        let blob = *blob;
         let dist = p.distance(blob.center);
         let w = (1.0 - dist / (blob.radius * 1.5)).max(0.0);
         let w = w * w;

@@ -3,12 +3,12 @@ use glam::Vec3;
 use super::config::SpeciesConfig;
 use super::sdf;
 use super::tree::TreeData;
-use super::PlantVertex;
+use super::{PlantMesh, PlantMeshPart, PlantMeshPartKind, PlantVertex};
 use crate::world_core::color::hsl_to_linear;
 
 const CYL_SIDES: usize = 8;
 
-pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> (Vec<PlantVertex>, Vec<u32>) {
+pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> PlantMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -40,15 +40,32 @@ pub fn build_mesh(spec: &SpeciesConfig, data: &TreeData) -> (Vec<PlantVertex>, V
     }
 
     // Foliage via SDF smooth union + surface nets
-    if !data.foliage.is_empty() {
+    let foliage_blobs: Vec<_> = data.sdf_blobs().collect();
+    if !foliage_blobs.is_empty() {
         let base_idx = vertices.len() as u32;
         let (foliage_verts, foliage_idx) =
-            sdf::extract_foliage_surface(&data.foliage, &spec.color.leaf);
+            sdf::extract_foliage_surface(&foliage_blobs, &spec.color.leaf);
         vertices.extend(foliage_verts);
         indices.extend(foliage_idx.iter().map(|i| i + base_idx));
     }
 
-    (vertices, indices)
+    let parts = if indices.is_empty() {
+        Vec::new()
+    } else {
+        vec![PlantMeshPart {
+            kind: PlantMeshPartKind::Opaque,
+            vertex_start: 0,
+            vertex_count: vertices.len() as u32,
+            index_start: 0,
+            index_count: indices.len() as u32,
+        }]
+    };
+
+    PlantMesh {
+        vertices,
+        indices,
+        parts,
+    }
 }
 
 fn add_cylinder(

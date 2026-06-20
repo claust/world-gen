@@ -55,7 +55,7 @@ The new property is named **`leaf_type`**.
 
 A needle conifer is **opaque bark geometry + alpha-tested foliage cards** within
 the *same* species. Today a tree mesh is entirely opaque (one pipeline) and only
-shrubs use the billboard pipeline. Phase 3 therefore needs the renderer to draw a
+shrubs use the billboard pipeline. Therefore, the renderer needs to draw a
 single species across **two pipelines** — an opaque bark submesh + an
 alpha-tested foliage-card submesh. The instanced pass already switches pipelines
 per-species for shrubs (`instanced_pass.rs`); extend that to a per-submesh split
@@ -93,37 +93,86 @@ Done:
 - No `gen_key` bump (see Decisions). `cargo check`, `clippy`, and the full lib
   test suite (115 tests) pass.
 
-### Phase 2 — Dispatch foliage generation on `leaf_type`
+### Phase 2 — Split the plant mesh data model
 
-- `generate_plant_mesh` (`src/world_core/plant_gen/mod.rs`) branches on
-  `leaf_type`:
-  - `Broadleaf` → existing `FoliageBlob` → SDF path (unchanged).
-  - `Needle` → new path emitting **needle-spray card placements** (position,
-    orientation along branch, size, tint) instead of spheres.
-- Introduce a foliage-element abstraction (enum/trait) rather than a single
-  `Vec<FoliageBlob>`, so future leaf types slot in cleanly.
+- Keep visible output unchanged.
+- Replace the single `TreeData { segments, foliage: Vec<FoliageBlob>, ... }`
+  shape with a representation that can carry multiple foliage element kinds:
+  broadleaf SDF blobs now, needle cards later.
+- Keep `Broadleaf`, `PalmFrond`, and existing live trees on the current
+  `FoliageBlob` → SDF path.
+- Keep `Needle` temporarily mapped to the old blob path while the new data
+  model lands, but isolate that mapping behind a clear dispatch point.
+- Teach `PlantMesh` about named submeshes or mesh parts, even if Phase 2 still
+  returns only one opaque part.
+- Add focused tests/assertions for:
+  - broadleaf output staying non-empty and opaque,
+  - `LeafType::None` producing no foliage part,
+  - `Needle` reaching a separate dispatch branch without changing visuals yet.
+
+**Done means:** `cargo check` passes, the old broadleaf/spruce visuals are
+unchanged, and the code has an obvious place to plug in needle card generation
+without disturbing SDF broadleaf generation.
+
+**Status:** complete
+
+Done:
+
+- Added typed foliage elements in `tree.rs`: broadleaf, palm, scale-leaf
+  fallback, and needle fallback SDF blobs now carry their foliage kind instead
+  of living in an undifferentiated `Vec<FoliageBlob>`.
+- Kept `Needle` deliberately on the old SDF blob output for this phase, but
+  routed it through `SdfFoliageKind::NeedleFallback` so Phase 3 can replace that
+  branch with card generation.
+- Added `PlantMeshPart` / `PlantMeshPartKind` metadata to `PlantMesh`. Existing
+  renderer callers still consume the flattened `vertices` and `indices`, while
+  Phase 4 can use the part list to split opaque/card draws.
+- Added focused tests for broadleaf vs. needle dispatch, leafless dead trees,
+  and the single opaque mesh part emitted during Phase 2.
+
+### Phase 3 — Generate needle card mesh data
+
+- Add a `NeedleCard`/foliage-card element with position, local axes or corners,
+  size, tint variation, and a stable per-card random value.
+- Route `LeafType::Needle` to emit card elements distributed along spruce branch
+  tips instead of adding SDF blobs.
+- Build fixed-orientation quad vertices from those elements, using the existing
+  `Vertex` layout convention where the colour attribute can pack card UVs for
+  alpha-tested foliage shaders.
+- Preserve bark cylinder generation exactly as-is.
+- Keep this phase CPU/data-only where possible: it can produce a card submesh,
+  but it does not have to be drawn with the final shader yet.
+
+**Done means:** spruce mesh generation produces a separate foliage-card mesh
+part with sane vertex/index counts, broadleaf still uses SDF blobs, and dead
+snags remain bark-only.
 
 **Status:** not started
 
-### Phase 3 — Needle-spray card geometry + shader
+### Phase 4 — Draw mixed opaque/card plant submeshes
 
-- Generate small fixed-orientation quad cards distributed along branch tips,
-  oriented to droop with the branch (reuse the spruce `droop` / `coverage` /
-  `whorled` structure already in the preset).
-- Render via the existing alpha-tested billboard pipeline
-  (`pipeline.rs` `create_billboard_pipeline`) with a **procedural needle-spray
-  alpha mask** in a dedicated shader (sibling to `shrub_billboard.wgsl`) — no
-  textures, consistent with the current art pipeline.
-- Extend the instanced pass to draw the opaque bark submesh + alpha-tested
-  foliage-card submesh per species (see architecture note).
-- Screenshot-loop tuning against a real spruce in-world.
+- Add a dedicated needle-card shader, sibling to `shrub_billboard.wgsl`, with a
+  procedural needle-spray alpha mask — no textures.
+- Extend the instanced renderer so one species can draw:
+  - opaque bark/SDF submesh through the normal instanced pipeline,
+  - alpha-tested card submesh through `create_billboard_pipeline`.
+- Keep foliage cards out of the shadow pass initially. Bark continues to cast
+  shadows.
+- Reuse the same instance buffers for both submesh draws so plant placement,
+  scale, tint, tilt, LOD, and dead-state handling stay unified.
+
+**Done means:** spruce no longer renders as SDF globules in-world; bark and
+needle cards render together for the same plant instances; shrubs still use
+their existing billboard path.
 
 **Status:** not started
 
-### Phase 4 — Editor, verification, benchmark
+### Phase 5 — Editor, screenshots, benchmark
 
 - Expose `leaf_type` in the plant editor.
 - Verify in-world via `take_screenshot` (debug CLI `screenshot`).
+- Screenshot-loop tune spruce card size/count/mask against a real spruce in the
+  world.
 - Run the FPS benchmark — card overdraw will shift vert counts
   (`bun tools/bench.ts`).
 
