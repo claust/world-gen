@@ -55,9 +55,9 @@ impl HudPass {
 
         let (font, atlas_rgba) = MsdfFont::load();
 
-        // Plant-count backdrop: a white-keyed photo of a foliage sculpture, drawn as a
-        // translucent motif behind the population number. Its width is a multiple of 64
-        // so `bytes_per_row` (w * 4) meets wgpu's 256-byte copy alignment.
+        // Plant-readout brand mark: the flat FloraForge spruce, drawn as a translucent
+        // motif with the population count seated inside its lower canopy. Its width is a
+        // multiple of 64 so `bytes_per_row` (w * 4) meets wgpu's 256-byte copy alignment.
         let backdrop_png = include_bytes!("../../assets/hud/plant_count.png");
         let backdrop = image::load_from_memory(backdrop_png)
             .expect("decode plant_count.png")
@@ -159,7 +159,7 @@ impl HudPass {
         drop(atlas_rgba);
 
         // --- Backdrop texture ---
-        // sRGB so the photo's colors are interpreted correctly; the MSDF atlas above is
+        // sRGB so the brand-green is interpreted correctly; the MSDF atlas above is
         // a non-color distance field and stays Unorm.
         let backdrop_size = wgpu::Extent3d {
             width: backdrop_w,
@@ -320,23 +320,24 @@ impl HudPass {
         let font = &self.font;
 
         // --- Plant readout (top-left) ---
-        // A white-keyed foliage photo sits on top; the population count stacks just below
-        // it, then a red/green weekly delta. No panel, no label — the backdrop says
-        // "plants" on its own; drop shadows keep the type legible over the scene.
+        // The FloraForge spruce sits top-left as a translucent brand mark; the population
+        // count nestles inside its lower canopy, then a red/green weekly delta below the
+        // tree. Drop shadows keep the digits legible over the green and the scene.
         let margin = 18.0;
 
-        let hero_px = 48.0;
+        let hero_px = 28.0;
         let hero = format_grouped_count(plant_count as i64);
         let hero_w = font.measure(&hero, hero_px);
 
-        // Backdrop sized to overhang the number's width so the foliage frames it.
-        let bw = hero_w + 60.0;
+        // Tree sized so its lower canopy is wide enough to seat the number (the silhouette
+        // is ~0.54 of the image width, so 2.5× the digit width clears it comfortably).
+        let bw = hero_w * 2.5;
         let bh = bw / self.backdrop_aspect;
-        push_image_quad(&mut verts, margin, margin, bw, bh, [1.0, 1.0, 1.0, 0.85]);
+        push_image_quad(&mut verts, margin, margin, bw, bh, [1.0, 1.0, 1.0, 0.92]);
 
-        // Count centered horizontally under the image, sitting just below its bottom edge.
+        // Count centered horizontally; seated low in the lower canopy near the base.
         let hero_x = margin + (bw - hero_w) * 0.5;
-        let hero_y = margin + bh + 4.0;
+        let hero_y = margin + bh * 0.82 - font.ascender * hero_px * 0.5;
         push_text_shadowed(
             font,
             &hero,
@@ -348,9 +349,10 @@ impl HudPass {
         );
 
         // Weekly delta: green for a net gain, red for a net loss, led by an arrow.
-        // Centered under the count; a full hero-em down so the comma descender clears it.
-        let delta_px = 18.0;
-        let delta_y = hero_y + hero_px;
+        // Seated just above the count, in the open green of the lower canopy, so it doesn't
+        // crowd the spruce's base line.
+        let delta_px = hero_px * 0.42;
+        let delta_y = hero_y - delta_px * 1.4;
         let gain = weekly_delta >= 0;
         let delta_color = if gain {
             [0.49, 0.89, 0.55, 0.95]
