@@ -90,8 +90,6 @@ pub struct MsdfFont {
     pub atlas_h: u32,
     /// Distance-field spread in atlas texels — the shader uses this to size its AA.
     pub px_range: f32,
-    /// Baseline-to-baseline line advance, in em.
-    pub line_height: f32,
     /// Baseline-to-top ascent, in em (a line's pen origin sits this far below its top).
     pub ascender: f32,
     glyphs: [Option<Glyph>; GLYPH_COUNT],
@@ -110,7 +108,6 @@ struct RawAtlas {
     atlas_w: u32,
     atlas_h: u32,
     px_range: f32,
-    line_height: f32,
     ascender: f32,
     glyphs: Vec<RawGlyph>,
 }
@@ -158,7 +155,6 @@ impl MsdfFont {
             atlas_w: raw.atlas_w,
             atlas_h: raw.atlas_h,
             px_range: raw.px_range,
-            line_height: raw.line_height,
             ascender: raw.ascender,
             glyphs,
         };

@@ -172,6 +172,31 @@ impl PopulationHistory {
             _ => None,
         }
     }
+
+    /// Change in total world population over roughly the last `window` sim-hours:
+    /// the newest sample's total minus the total of the newest sample at or before
+    /// `last.hour - window`. If the series is shorter than the window, the earliest
+    /// sample is used as the baseline, so a young world reports its growth-so-far.
+    /// `None` only when there are no samples at all.
+    ///
+    /// `window` must be positive and finite. A non-positive window puts the cutoff at or
+    /// after the newest sample, which would report no change (or a future cutoff); it is
+    /// debug-asserted rather than handled, since the only caller passes a fixed week.
+    pub fn delta_over_hours(&self, window: f64) -> Option<i64> {
+        debug_assert!(
+            window.is_finite() && window > 0.0,
+            "delta_over_hours expects a positive, finite window in sim-hours, got {window}",
+        );
+        let last = self.samples.last()?;
+        let cutoff = last.hour - window;
+        let baseline = self
+            .samples
+            .iter()
+            .rev()
+            .find(|s| s.hour <= cutoff)
+            .or_else(|| self.samples.first())?;
+        Some(last.total() as i64 - baseline.total() as i64)
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +253,30 @@ mod tests {
         assert!(h.len() <= MAX_SAMPLES);
         // The newest sample survives decimation.
         assert_eq!(h.latest().unwrap().hour, MAX_SAMPLES as f64);
+    }
+
+    #[test]
+    fn delta_over_window_uses_baseline_at_or_before_cutoff() {
+        let mut h = PopulationHistory::new();
+        // One sample per "day" (24h), totals climbing by 10 each day.
+        for day in 0..10 {
+            let hour = day as f64 * 24.0;
+            let total = (day + 1) as u32 * 10;
+            h.record(hour, sample(hour, &[[total, 0, 0, 0]]));
+        }
+        // Latest is day 9 (total 100) at hour 216; one week back is hour 48 (day 2,
+        // total 30). 100 - 30 = 70.
+        assert_eq!(h.delta_over_hours(24.0 * 7.0), Some(70));
+    }
+
+    #[test]
+    fn delta_over_window_falls_back_to_earliest_when_series_is_young() {
+        let mut h = PopulationHistory::new();
+        h.record(0.0, sample(0.0, &[[5, 0, 0, 0]]));
+        h.record(48.0, sample(48.0, &[[12, 0, 0, 0]]));
+        // No sample a week before hour 48, so the earliest (total 5) is the baseline.
+        assert_eq!(h.delta_over_hours(24.0 * 7.0), Some(7));
+        assert_eq!(PopulationHistory::new().delta_over_hours(24.0 * 7.0), None);
     }
 
     #[test]

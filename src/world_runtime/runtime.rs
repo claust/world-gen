@@ -49,6 +49,11 @@ pub struct RuntimeStats {
     pub resident_bytes: usize,
     /// Per-biome fill: `(name, percent_saturated, chunk_count)`.
     pub biome_fill: Vec<(&'static str, f32, usize)>,
+    /// Elapsed in-world day count, starting at day 1.
+    pub day_number: u64,
+    /// Net change in world population over roughly the last seven in-world days
+    /// (positive = net gain). Zero before any census exists.
+    pub weekly_population_delta: i64,
 }
 
 pub struct WorldRuntime {
@@ -527,6 +532,11 @@ impl WorldRuntime {
             tick_ms: self.last_tick_ms,
             resident_bytes: self.plant_world.resident_bytes(),
             biome_fill: self.plant_world.biome_fill_percents(),
+            day_number: (self.clock.total_hours() / 24.0).floor() as u64 + 1,
+            weekly_population_delta: self
+                .population_history
+                .delta_over_hours(24.0 * 7.0)
+                .unwrap_or(0),
         }
     }
 

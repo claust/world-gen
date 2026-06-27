@@ -1,5 +1,4 @@
 use bytemuck::{Pod, Zeroable};
-use glam::Vec3;
 use wgpu::util::DeviceExt;
 
 use super::hud_font::{self, HudVertex, MsdfFont, SDF_PLAIN};
@@ -16,8 +15,6 @@ struct HudUniform {
 
 const INITIAL_VERTEX_CAP: usize = 4096;
 
-/// Font size (em → pixels) for the info-panel text lines.
-const PANEL_TEXT_PX: f32 = 22.0;
 /// Font size for the compass cardinal labels.
 const COMPASS_LABEL_PX: f32 = 20.0;
 
@@ -27,6 +24,8 @@ pub struct HudPass {
     uniform_bind_group: wgpu::BindGroup,
     font_bind_group: wgpu::BindGroup,
     font: MsdfFont,
+    /// Width / height of the plant-count backdrop image, so its quad keeps aspect.
+    backdrop_aspect: f32,
     vertex_buffer: wgpu::Buffer,
     vertex_cap: usize,
     vertex_count: u32,
@@ -55,6 +54,23 @@ impl HudPass {
         });
 
         let (font, atlas_rgba) = MsdfFont::load();
+
+        // Plant-count backdrop: a white-keyed photo of a foliage sculpture, drawn as a
+        // translucent motif behind the population number. Its width is a multiple of 64
+        // so `bytes_per_row` (w * 4) meets wgpu's 256-byte copy alignment.
+        let backdrop_png = include_bytes!("../../assets/hud/plant_count.png");
+        let backdrop = image::load_from_memory(backdrop_png)
+            .expect("decode plant_count.png")
+            .to_rgba8();
+        let (backdrop_w, backdrop_h) = backdrop.dimensions();
+        // `write_texture` requires `bytes_per_row` (w * 4) to be 256-byte aligned, i.e.
+        // the width a multiple of 64. Assert it so swapping in a differently-sized asset
+        // fails here with a clear message rather than as an opaque wgpu validation error.
+        assert!(
+            backdrop_w.is_multiple_of(64),
+            "plant_count.png width ({backdrop_w}) must be a multiple of 64 for the texture row pitch to meet wgpu's 256-byte copy alignment",
+        );
+        let backdrop_aspect = backdrop_w as f32 / backdrop_h as f32;
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("hud-uniform-buffer"),
@@ -95,6 +111,17 @@ impl HudPass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // Plant-count backdrop image; shares binding 1's sampler.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -131,6 +158,41 @@ impl HudPass {
         // The CPU texels live only on the GPU now; metrics are kept in `font`.
         drop(atlas_rgba);
 
+        // --- Backdrop texture ---
+        // sRGB so the photo's colors are interpreted correctly; the MSDF atlas above is
+        // a non-color distance field and stays Unorm.
+        let backdrop_size = wgpu::Extent3d {
+            width: backdrop_w,
+            height: backdrop_h,
+            depth_or_array_layers: 1,
+        };
+        let backdrop_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hud-plant-backdrop"),
+            size: backdrop_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &backdrop_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &backdrop,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(backdrop_w * 4),
+                rows_per_image: Some(backdrop_h),
+            },
+            backdrop_size,
+        );
+        let backdrop_view = backdrop_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let font_view = font_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Linear filtering: the MSDF shader reconstructs the edge from a smoothly
         // interpolated distance, so the sampler must interpolate (not snap).
@@ -152,6 +214,10 @@ impl HudPass {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&font_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&backdrop_view),
                 },
             ],
         });
@@ -218,6 +284,7 @@ impl HudPass {
             uniform_bind_group,
             font_bind_group,
             font,
+            backdrop_aspect,
             vertex_buffer,
             vertex_cap: INITIAL_VERTEX_CAP,
             vertex_count: 0,
@@ -229,11 +296,12 @@ impl HudPass {
         &mut self,
         queue: &wgpu::Queue,
         device: &wgpu::Device,
-        camera_pos: Vec3,
         camera_yaw: f32,
         hour: f32,
         fps: f32,
         plant_count: usize,
+        day_number: u64,
+        weekly_delta: i64,
         screen_w: f32,
         screen_h: f32,
     ) {
@@ -249,52 +317,101 @@ impl HudPass {
         );
 
         let mut verts: Vec<HudVertex> = Vec::with_capacity(512);
+        let font = &self.font;
 
-        // --- Info panel (top-left): coordinates, FPS, plant count ---
-        let px = PANEL_TEXT_PX;
-        let line_h = self.font.line_height * px;
-        let text_color = [1.0, 1.0, 1.0, 0.95];
+        // --- Plant readout (top-left) ---
+        // A white-keyed foliage photo sits on top; the population count stacks just below
+        // it, then a red/green weekly delta. No panel, no label — the backdrop says
+        // "plants" on its own; drop shadows keep the type legible over the scene.
+        let margin = 18.0;
 
-        let lines = [
-            format!("X: {:.1}m", camera_pos.x),
-            format!("Y: {:.1}m", camera_pos.y),
-            format!("Z: {:.1}m", camera_pos.z),
-            format!("FPS: {:.0}", fps),
-            format!("PLANTS: {}", format_compact_count(plant_count)),
-        ];
+        let hero_px = 48.0;
+        let hero = format_grouped_count(plant_count as i64);
+        let hero_w = font.measure(&hero, hero_px);
 
-        let margin = 8.0; // gap between screen edge and panel
-        let inner = 10.0; // gap between panel edge and text
-        let text_x = margin + inner;
-        let text_y = margin + inner;
+        // Backdrop sized to overhang the number's width so the foliage frames it.
+        let bw = hero_w + 60.0;
+        let bh = bw / self.backdrop_aspect;
+        push_image_quad(&mut verts, margin, margin, bw, bh, [1.0, 1.0, 1.0, 0.85]);
 
-        let max_w = lines
-            .iter()
-            .map(|l| self.font.measure(l, px))
-            .fold(0.0_f32, f32::max);
-        let panel_w = inner * 2.0 + max_w;
-        let panel_h = inner * 2.0 + lines.len() as f32 * line_h;
+        // Count centered horizontally under the image, sitting just below its bottom edge.
+        let hero_x = margin + (bw - hero_w) * 0.5;
+        let hero_y = margin + bh + 4.0;
+        push_text_shadowed(
+            font,
+            &hero,
+            hero_x,
+            hero_y,
+            hero_px,
+            [1.0, 1.0, 1.0, 0.98],
+            &mut verts,
+        );
 
-        // See-through background panel (pushed first so the text sits on top).
-        push_panel(&mut verts, margin, margin, panel_w, panel_h);
+        // Weekly delta: green for a net gain, red for a net loss, led by an arrow.
+        // Centered under the count; a full hero-em down so the comma descender clears it.
+        let delta_px = 18.0;
+        let delta_y = hero_y + hero_px;
+        let gain = weekly_delta >= 0;
+        let delta_color = if gain {
+            [0.49, 0.89, 0.55, 0.95]
+        } else {
+            [0.95, 0.42, 0.40, 0.95]
+        };
+        let arrow_w = delta_px * 0.46;
+        let arrow_h = delta_px * 0.5;
+        let mag = format_grouped_count(weekly_delta);
+        let mag_w = font.measure(&mag, delta_px);
+        let suffix = " / week";
+        let delta_w = arrow_w + 7.0 + mag_w + font.measure(suffix, delta_px);
+        let delta_x = margin + (bw - delta_w) * 0.5;
+        let arrow_cy = delta_y + font.ascender * delta_px * 0.6;
+        push_delta_arrow(
+            &mut verts,
+            delta_x + arrow_w * 0.5,
+            arrow_cy,
+            arrow_w,
+            arrow_h,
+            gain,
+            delta_color,
+        );
+        let mag_x = delta_x + arrow_w + 7.0;
+        push_text_shadowed(
+            font,
+            &mag,
+            mag_x,
+            delta_y,
+            delta_px,
+            delta_color,
+            &mut verts,
+        );
+        push_text_shadowed(
+            font,
+            suffix,
+            mag_x + mag_w,
+            delta_y,
+            delta_px,
+            [1.0, 1.0, 1.0, 0.6],
+            &mut verts,
+        );
 
-        for (i, line) in lines.iter().enumerate() {
-            hud_font::build_text_quads(
-                &self.font,
-                line,
-                text_x,
-                text_y + i as f32 * line_h,
-                px,
-                text_color,
-                &mut verts,
-            );
-        }
+        // --- FPS (bottom-right), kept understated and clear of the bottom-left minimap ---
+        let fps_px = 13.0;
+        let fps_str = format!("{fps:.0} fps");
+        push_text_shadowed(
+            font,
+            &fps_str,
+            screen_w - margin - font.measure(&fps_str, fps_px),
+            screen_h - margin - font.ascender * fps_px,
+            fps_px,
+            [1.0, 1.0, 1.0, 0.45],
+            &mut verts,
+        );
 
         // --- Compass rose (top-right) ---
-        build_compass(&self.font, &mut verts, camera_yaw, screen_w);
+        build_compass(font, &mut verts, camera_yaw, screen_w);
 
-        // --- Sky clock (below compass) ---
-        build_sky_clock(&mut verts, hour, screen_w);
+        // --- Sky clock + day counter (below compass) ---
+        build_sky_clock(font, &mut verts, hour, day_number, screen_w);
 
         // Upload vertices
         self.vertex_count = verts.len() as u32;
@@ -344,6 +461,9 @@ const SDF_DISC: f32 = 3.0;
 const SDF_RING: f32 = 4.0;
 /// Filled box, boundary `max(|x|, |y|) = 1` (used for the thin sun-ray spokes).
 const SDF_BOX: f32 = 5.0;
+/// Textured quad sampling `image_texture` at `uv` (0..1), tinted/faded by the vertex
+/// color. Used for the plant-count backdrop photo.
+const SDF_IMAGE: f32 = 6.0;
 
 fn push_tri(verts: &mut Vec<HudVertex>, a: [f32; 2], b: [f32; 2], c: [f32; 2], color: [f32; 4]) {
     verts.push(HudVertex {
@@ -421,39 +541,89 @@ fn push_sdf_circle(
     push_sdf_quad(verts, cx, cy, 1.0, 0.0, r, r, 1.5, shape, param, color);
 }
 
-fn format_compact_count(count: usize) -> String {
-    // f64 is exact for integers up to 2^53, well beyond any realistic plant total,
-    // so the division below never loses precision the way f32 would past ~16.7M.
-    if count >= 1_000_000 {
-        format!("{:.1}M", count as f64 / 1_000_000.0)
-    } else if count >= 10_000 {
-        format!("{:.1}k", count as f64 / 1_000.0)
+/// Formats a non-negative integer with thousands separators, e.g. `48210 → "48,210"`.
+/// Negative inputs are formatted by magnitude (the caller carries the sign separately,
+/// e.g. via the delta arrow's direction).
+fn format_grouped_count(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let bytes = digits.as_bytes();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, &b) in bytes.iter().enumerate() {
+        // Insert a separator before every group of three counted from the right.
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(b as char);
+    }
+    out
+}
+
+/// Pushes an axis-aligned textured quad sampling `image_texture` across `0..1` uv, with
+/// `tint` multiplying the sampled texels (its alpha fades the whole image). `(x, y)` is
+/// the top-left corner in screen pixels.
+fn push_image_quad(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, tint: [f32; 4]) {
+    let v = |px: f32, py: f32, u: f32, vv: f32| HudVertex {
+        position: [px, py],
+        uv: [u, vv],
+        color: tint,
+        sdf: [SDF_IMAGE, 0.0],
+    };
+    let (tl, tr, br, bl) = (
+        v(x, y, 0.0, 0.0),
+        v(x + w, y, 1.0, 0.0),
+        v(x + w, y + h, 1.0, 1.0),
+        v(x, y + h, 0.0, 1.0),
+    );
+    verts.extend_from_slice(&[tl, tr, br, tl, br, bl]);
+}
+
+/// A small filled triangle marking the sign of the weekly delta: apex up for a gain,
+/// apex down for a loss. Centered at `(cx, cy)` with base width `w` and height `h`.
+fn push_delta_arrow(
+    verts: &mut Vec<HudVertex>,
+    cx: f32,
+    cy: f32,
+    w: f32,
+    h: f32,
+    up: bool,
+    color: [f32; 4],
+) {
+    let (hw, hh) = (w * 0.5, h * 0.5);
+    if up {
+        push_tri(
+            verts,
+            [cx, cy - hh],
+            [cx + hw, cy + hh],
+            [cx - hw, cy + hh],
+            color,
+        );
     } else {
-        count.to_string()
+        push_tri(
+            verts,
+            [cx, cy + hh],
+            [cx + hw, cy - hh],
+            [cx - hw, cy - hh],
+            color,
+        );
     }
 }
 
-/// Pushes a filled axis-aligned rectangle (two triangles) as a solid-color quad.
-fn push_rect(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-    push_tri(verts, [x, y], [x + w, y], [x + w, y + h], color);
-    push_tri(verts, [x, y], [x + w, y + h], [x, y + h], color);
-}
-
-/// A translucent info panel: a dark see-through fill framed by a subtle border.
-fn push_panel(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32) {
-    let border = 1.5;
-    let border_color = [0.7, 0.75, 0.8, 0.35];
-    let fill_color = [0.04, 0.06, 0.09, 0.5];
-    // Border first as a slightly larger rect, then the fill on top of it.
-    push_rect(
-        verts,
-        x - border,
-        y - border,
-        w + border * 2.0,
-        h + border * 2.0,
-        border_color,
-    );
-    push_rect(verts, x, y, w, h, fill_color);
+/// Draws `text` with a soft drop shadow so light type stays legible over any scene:
+/// a dark copy is laid down first, offset down-right by a size-proportional amount,
+/// then the foreground copy on top.
+fn push_text_shadowed(
+    font: &MsdfFont,
+    text: &str,
+    x: f32,
+    y: f32,
+    px: f32,
+    color: [f32; 4],
+    verts: &mut Vec<HudVertex>,
+) {
+    let off = (px * 0.045).max(1.5);
+    let shadow = [0.0, 0.0, 0.0, color[3] * 0.6];
+    hud_font::build_text_quads(font, text, x + off, y + off, px, shadow, verts);
+    hud_font::build_text_quads(font, text, x, y, px, color, verts);
 }
 
 fn build_compass(font: &MsdfFont, verts: &mut Vec<HudVertex>, yaw: f32, screen_w: f32) {
@@ -537,7 +707,13 @@ fn build_compass(font: &MsdfFont, verts: &mut Vec<HudVertex>, yaw: f32, screen_w
 ///
 /// Layout:  12h (noon) at top, 0h (midnight) at bottom,
 ///          6h (sunrise) at left, 18h (sunset) at right.
-fn build_sky_clock(verts: &mut Vec<HudVertex>, hour: f32, screen_w: f32) {
+fn build_sky_clock(
+    font: &MsdfFont,
+    verts: &mut Vec<HudVertex>,
+    hour: f32,
+    day_number: u64,
+    screen_w: f32,
+) {
     use std::f32::consts::{PI, TAU};
 
     let cx = screen_w - 70.0;
@@ -661,25 +837,40 @@ fn build_sky_clock(verts: &mut Vec<HudVertex>, hour: f32, screen_w: f32) {
             );
         }
     }
+
+    // --- Day counter, captioned beneath the dial so it reads as part of it ---
+    let day_px = 14.0;
+    let day_str = format!("Day {day_number}");
+    let day_x = cx - font.measure(&day_str, day_px) * 0.5;
+    let day_y = cy + bg_r + 5.0;
+    push_text_shadowed(
+        font,
+        &day_str,
+        day_x,
+        day_y,
+        day_px,
+        [1.0, 1.0, 1.0, 0.9],
+        verts,
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::format_compact_count;
+    use super::format_grouped_count;
 
     #[test]
-    fn compact_count_keeps_hud_plant_totals_readable() {
-        assert_eq!(format_compact_count(3_129), "3129");
-        assert_eq!(format_compact_count(29_532), "29.5k");
-        assert_eq!(format_compact_count(999_999), "1000.0k");
-        assert_eq!(format_compact_count(14_165_889), "14.2M");
+    fn grouped_count_inserts_thousands_separators() {
+        assert_eq!(format_grouped_count(0), "0");
+        assert_eq!(format_grouped_count(42), "42");
+        assert_eq!(format_grouped_count(999), "999");
+        assert_eq!(format_grouped_count(1_000), "1,000");
+        assert_eq!(format_grouped_count(48_210), "48,210");
+        assert_eq!(format_grouped_count(14_165_889), "14,165,889");
     }
 
     #[test]
-    fn compact_count_stays_exact_past_f32_precision() {
-        // Above ~16.7M an f32 mantissa can't represent every integer, which would
-        // skew the division; f64 keeps the rounded result correct.
-        assert_eq!(format_compact_count(16_777_217), "16.8M");
-        assert_eq!(format_compact_count(123_456_789), "123.5M");
+    fn grouped_count_formats_magnitude_of_negatives() {
+        // The weekly-delta caller passes the magnitude and shows sign via the arrow.
+        assert_eq!(format_grouped_count(-860), "860");
     }
 }

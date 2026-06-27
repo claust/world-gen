@@ -8,6 +8,7 @@ struct HudUniform {
 
 @group(1) @binding(0) var font_texture: texture_2d<f32>;
 @group(1) @binding(1) var font_sampler: sampler;
+@group(1) @binding(2) var image_texture: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -45,6 +46,7 @@ const SDF_DIAMOND_SEAM: f32 = 2.0; // diamond that also fades across the y = 0 s
 const SDF_DISC: f32 = 3.0;         // length(p) <= 1
 const SDF_RING: f32 = 4.0;         // sdf.y <= length(p) <= 1
 const SDF_BOX: f32 = 5.0;          // max(|x|, |y|) <= 1
+const SDF_IMAGE: f32 = 6.0;        // sample image_texture at uv (0..1), tinted by color
 
 // Coverage of an SDF inside-negative field, anti-aliased over ~1 screen pixel using the
 // field's screen-space gradient `aa`. The gradient is passed in (not taken with `fwidth`
@@ -88,6 +90,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if (in.sdf.x > 0.5) {
         let shape = in.sdf.x;
+
+        // Textured backdrop: sample at the base level (there is no mip chain) and tint/
+        // fade by the vertex color. textureSampleLevel takes no implicit derivatives, so
+        // unlike the textureSample above it can live in this branch — text and other SDF
+        // primitives then skip the backdrop fetch entirely.
+        if (is_shape(shape, SDF_IMAGE)) {
+            let img = textureSampleLevel(
+                image_texture,
+                font_sampler,
+                clamp(in.uv, vec2(0.0), vec2(1.0)),
+                0.0,
+            );
+            return vec4<f32>(img.rgb * in.color.rgb, img.a * in.color.a);
+        }
+
         // Unknown ids stay fully transparent, so adding/reordering shape constants can
         // never silently fall through to the wrong primitive.
         var alpha = 0.0;
