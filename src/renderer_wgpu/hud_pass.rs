@@ -321,8 +321,9 @@ impl HudPass {
 
         // --- Plant readout (top-left) ---
         // The FloraForge spruce sits top-left as a translucent brand mark; the population
-        // count nestles inside its lower canopy, then a red/green weekly delta below the
-        // tree. Drop shadows keep the digits legible over the green and the scene.
+        // count nestles inside its lower canopy, with a red/green weekly delta seated just
+        // above it in the open canopy green. Drop shadows keep the digits legible over the
+        // green and the scene.
         let margin = 18.0;
 
         let hero_px = 28.0;
