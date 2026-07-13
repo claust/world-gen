@@ -2,6 +2,9 @@
 name = "world-gen"
 version = "0.1.0"
 edition = "2021"
+# `sim_bench` makes the crate multi-binary; keep plain `cargo run` (and the
+# bench.ts wrapper built on it) launching the game.
+default-run = "FloraForge"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

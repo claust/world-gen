@@ -473,6 +473,19 @@ pub struct PlantWorld {
     /// `0.0` forces a recompute on the next pass; `INFINITY` means nothing left
     /// to happen (empty, or all-mature immortals).
     next_event: Vec<f64>,
+    /// Per-plant absolute sim-hour of the next lifecycle threshold, in lockstep
+    /// with `chunks` (same chunk index, same in-chunk order). A plant's
+    /// [`life_schedule`] is a pure function of its stable identity and the
+    /// immutable terrain, so once computed its thresholds never change — this
+    /// cache lets a growth pass touch a plant with one `f32` compare instead of
+    /// re-deriving the schedule (env sampling + hashing) for the whole world
+    /// every tick. Values are rounded *down* to `f32` so a stored event is never
+    /// later than the analytic threshold: an early wake costs one cheap
+    /// recompute, whereas a late one would delay the transition by a tick.
+    /// `0.0` means "compute on next scan" (fresh loads, new seedlings); a list
+    /// shorter than its chunk is extended with that sentinel when the chunk is
+    /// next scanned. Derived cache — never persisted.
+    events: Vec<Vec<f32>>,
     /// Sim-hour of the most recent growth pass; snag decay (the render-side
     /// shrink) is measured against this.
     growth_hours: f64,
@@ -514,6 +527,11 @@ pub struct PlantWorld {
     /// spread adds plants and transitions chunks empty→non-empty.
     population: usize,
     populated_chunks: usize,
+    /// Worldwide per-species × per-stage tallies of the cached stage bytes,
+    /// maintained incrementally by growth transitions/reaps and spread landings
+    /// so [`census`](Self::census) is O(species) instead of a full-world scan.
+    /// Load paths seed it with [`recount_stage_counts`](Self::recount_stage_counts).
+    stage_counts: Vec<[u32; population_history::STAGE_COUNT]>,
     /// Seedlings added by the most recent spread pass, for telemetry.
     last_spread_added: usize,
     /// Cached per-biome fill, refreshed only when saturation changes — `stats()`
@@ -662,6 +680,7 @@ impl PlantWorld {
             Some(threads),
         );
         let mut world = Self {
+            events: vec![Vec::new(); chunks.len()],
             chunks,
             immature,
             next_event,
@@ -679,11 +698,13 @@ impl PlantWorld {
             seed,
             population,
             populated_chunks,
+            stage_counts: Vec::new(),
             last_spread_added: 0,
             biome_fill: Vec::new(),
             dirty_chunks: Vec::new(),
         };
         world.recompute_biome_fill();
+        world.recount_stage_counts();
         world
     }
 
@@ -885,82 +906,33 @@ impl PlantWorld {
         self.population
     }
 
-    /// Worldwide per-species × per-stage census at sim-time `now`. `row[s]` is
-    /// species id `s`'s `[seedling, young, mature, dead]` counts; every registered
-    /// species gets a row (zeros if absent) so the row index is a stable species
-    /// handle. O(world population); parallel across chunks on native, where the
-    /// whole world is resident. Feeds the population-history time series, so it is
-    /// taken at the throttled census cadence, not every frame.
+    /// Worldwide per-species × per-stage census. `row[s]` is species id `s`'s
+    /// `[seedling, young, mature, dead]` counts; every registered species gets a
+    /// row (zeros if absent) so the row index is a stable species handle.
     ///
-    /// Stages are derived from each plant's analytic [`life_schedule`] at `now`
-    /// rather than its cached `stage` byte: the byte only advances on a growth
-    /// tick, so at high `day_speed` plants step across the whole Young band
-    /// between ticks and the byte never records Young (see [`analytic_stage`]).
-    pub fn census(&self, now: f64) -> Vec<[u32; population_history::STAGE_COUNT]> {
-        let species_count = self.registry.species.len();
-        let tally =
-            |idx: usize, plants: &[Plant], acc: &mut [[u32; population_history::STAGE_COUNT]]| {
-                let base_count = self.base_count[idx] as usize;
-                for (plant_idx, plant) in plants.iter().enumerate() {
-                    let Some(row) = acc.get_mut(plant.species as usize) else {
-                        continue;
-                    };
-                    let Some(species) = self.registry.species.get(plant.species as usize) else {
-                        row[plant.stage.min(DEAD) as usize] += 1;
-                        continue;
-                    };
-                    let env = plant_life_environment(
-                        &self.heightmap,
-                        &self.rivers,
-                        self.sea_level,
-                        idx,
-                        plant,
-                    );
-                    let stage = analytic_stage(
-                        self.seed,
-                        idx,
-                        plant,
-                        species,
-                        plant_idx < base_count,
-                        env,
-                        now,
-                    );
-                    row[stage.min(DEAD) as usize] += 1;
-                }
-            };
+    /// O(species): this returns the tallies the growth and spread passes maintain
+    /// incrementally, so sampling the population graph never rescans the world.
+    /// The growth pass sets each cached stage byte to the plant's *analytic*
+    /// stage (see [`life_schedule`]), so the counts are exact as of the most
+    /// recent growth tick — at most one tick (or one frame's sim advance, at
+    /// extreme `day_speed`) behind the clock, well inside the census cadence.
+    pub fn census(&self) -> Vec<[u32; population_history::STAGE_COUNT]> {
+        self.stage_counts.clone()
+    }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.chunks
-                .par_iter()
-                .enumerate()
-                .fold(
-                    || vec![[0u32; population_history::STAGE_COUNT]; species_count],
-                    |mut acc, (idx, plants)| {
-                        tally(idx, plants, &mut acc);
-                        acc
-                    },
-                )
-                .reduce(
-                    || vec![[0u32; population_history::STAGE_COUNT]; species_count],
-                    |mut a, b| {
-                        for (lhs, rhs) in a.iter_mut().zip(b) {
-                            for (l, r) in lhs.iter_mut().zip(rhs) {
-                                *l += r;
-                            }
-                        }
-                        a
-                    },
-                )
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let mut acc = vec![[0u32; population_history::STAGE_COUNT]; species_count];
-            for (idx, plants) in self.chunks.iter().enumerate() {
-                tally(idx, plants, &mut acc);
+    /// Rebuild the census counters from the cached stage bytes in one flat pass.
+    /// Construction and load call this once; the growth and spread ticks keep
+    /// the counters exact incrementally afterwards.
+    fn recount_stage_counts(&mut self) {
+        let mut counts = vec![[0u32; population_history::STAGE_COUNT]; self.registry.species.len()];
+        for chunk in &self.chunks {
+            for plant in chunk {
+                if let Some(row) = counts.get_mut(plant.species as usize) {
+                    row[plant.stage.min(DEAD) as usize] += 1;
+                }
             }
-            acc
         }
+        self.stage_counts = counts;
     }
 
     /// Display names of every registered species, indexed by species id — the
@@ -1050,98 +1022,89 @@ impl PlantWorld {
 
     /// Advance the life cycle on the global clock. Stages — including death and
     /// despawn — are analytic functions of each plant's `born_hour` and stable
-    /// identity, so this only walks chunks whose earliest pending transition
-    /// (`next_event`) has arrived. Plants past their `gone_at` are removed,
+    /// identity, so the pass is gated twice: it only walks chunks whose earliest
+    /// pending transition (`next_event`) has arrived, and inside a due chunk it
+    /// only re-derives the schedule for plants whose own cached event
+    /// ([`events`](Self::events)) has arrived — everything else is one compare.
+    /// Chunks are scanned in parallel on native (each scan touches only its own
+    /// chunk; the world-total deltas fold commutatively, so the result is
+    /// independent of thread count). Plants past their `gone_at` are removed,
     /// freeing their ground: the chunk (and its 8 neighbours, which can reach
     /// the freed spot) is un-saturated so the spread pass resumes there.
     /// Returns whether anything changed (so the render bridge can refresh
     /// loaded chunks).
     pub fn tick_growth(&mut self, total_hours: f64) -> bool {
         self.growth_hours = total_hours;
-        let registry = Arc::clone(&self.registry);
-        let seed = self.seed;
-        let heightmap = &self.heightmap;
-        let rivers = &self.rivers;
-        let sea_level = self.sea_level;
-        let mut changed = false;
-        let mut reaped_chunks: Vec<usize> = Vec::new();
-        let mut dirty_chunks: Vec<usize> = Vec::new();
-        for idx in 0..self.chunks.len() {
-            if total_hours < self.next_event[idx] {
-                continue;
+        let ctx = GrowthCtx {
+            seed: self.seed,
+            registry: &self.registry,
+            heightmap: &self.heightmap,
+            rivers: &self.rivers,
+            sea_level: self.sea_level,
+            total_hours,
+        };
+        let species_count = self.registry.species.len();
+        let new_acc = || GrowthAcc::new(species_count);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let acc: GrowthAcc = self
+            .chunks
+            .par_iter_mut()
+            .zip_eq(self.events.par_iter_mut())
+            .zip_eq(self.immature.par_iter_mut())
+            .zip_eq(self.next_event.par_iter_mut())
+            .zip_eq(self.base_count.par_iter_mut())
+            .enumerate()
+            .fold(new_acc, |mut acc, (idx, item)| {
+                let ((((chunk, events), immature), next_event), base_count) = item;
+                scan_chunk_growth(
+                    &ctx, idx, chunk, events, immature, next_event, base_count, &mut acc,
+                );
+                acc
+            })
+            .reduce(new_acc, GrowthAcc::merge);
+        #[cfg(target_arch = "wasm32")]
+        let acc: GrowthAcc = {
+            let mut acc = new_acc();
+            let iter = self
+                .chunks
+                .iter_mut()
+                .zip(self.events.iter_mut())
+                .zip(self.immature.iter_mut())
+                .zip(self.next_event.iter_mut())
+                .zip(self.base_count.iter_mut())
+                .enumerate();
+            for (idx, item) in iter {
+                let ((((chunk, events), immature), next_event), base_count) = item;
+                scan_chunk_growth(
+                    &ctx, idx, chunk, events, immature, next_event, base_count, &mut acc,
+                );
             }
-            let base_count = self.base_count[idx] as usize;
-            let chunk = &mut self.chunks[idx];
-            if chunk.is_empty() {
-                self.next_event[idx] = f64::INFINITY;
-                continue;
-            }
-            let mut immature = 0u32;
-            let mut next_event = f64::INFINITY;
-            let mut removed_base = 0u32;
-            let mut write = 0usize;
-            let mut chunk_changed = false;
-            for read in 0..chunk.len() {
-                let mut plant = chunk[read];
-                let Some(species) = registry.species.get(plant.species as usize) else {
-                    chunk[write] = plant;
-                    write += 1;
-                    continue;
-                };
-                let env = plant_life_environment(heightmap, rivers, sea_level, idx, &plant);
-                let schedule = life_schedule(seed, idx, &plant, species, read < base_count, env);
-                let age = (total_hours - plant.born_hour as f64).max(0.0);
-                let Some(stage) = schedule.stage_at(age) else {
-                    // Despawned: drop the record, freeing its spacing-grid spot
-                    // for the next spread pass (the grid is rebuilt per pass).
-                    if read < base_count {
-                        removed_base += 1;
-                    }
-                    changed = true;
-                    chunk_changed = true;
-                    continue;
-                };
-                if stage != plant.stage {
-                    plant.stage = stage;
-                    changed = true;
-                    chunk_changed = true;
-                }
-                if plant.stage < MATURE {
-                    immature += 1;
-                }
-                next_event = next_event.min(plant.born_hour as f64 + schedule.next_threshold(age));
-                chunk[write] = plant;
-                write += 1;
-            }
-            let removed = chunk.len() - write;
-            chunk.truncate(write);
-            if chunk_changed {
-                dirty_chunks.push(idx);
-            }
-            self.immature[idx] = immature;
-            self.next_event[idx] = next_event;
-            if removed > 0 {
-                self.base_count[idx] -= removed_base;
-                self.population -= removed;
-                if self.chunks[idx].is_empty() {
-                    self.populated_chunks -= 1;
-                }
-                reaped_chunks.push(idx);
+            acc
+        };
+
+        for (row, delta) in self.stage_counts.iter_mut().zip(&acc.counts) {
+            for (count, d) in row.iter_mut().zip(delta) {
+                let next = *count as i64 + d;
+                debug_assert!(next >= 0, "census stage counter went negative");
+                *count = next.max(0) as u32;
             }
         }
-        self.dirty_chunks.extend(dirty_chunks);
-        if !reaped_chunks.is_empty() {
+        self.population -= acc.removed;
+        self.populated_chunks -= acc.emptied_chunks;
+        self.dirty_chunks.extend(acc.dirty);
+        if !acc.reaped.is_empty() {
             // Freed ground is reachable by the 8-neighbourhood's spread radius,
             // so the whole block must wake up or the gap never refills.
             let mut any_unsaturated = false;
-            for &idx in &reaped_chunks {
+            for &idx in &acc.reaped {
                 any_unsaturated |= self.unsaturate_neighbourhood(idx);
             }
             if any_unsaturated {
                 self.recompute_biome_fill();
             }
         }
-        changed
+        acc.changed
     }
 
     /// Clear the saturation flag on chunk `idx` and its 8 (wrapped) neighbours.
@@ -1262,6 +1225,14 @@ impl PlantWorld {
                 }
                 self.immature[idx] += count;
                 self.population += count as usize;
+                // The landed suffix is this pass's seedlings; tally them into
+                // the census counters the growth pass otherwise maintains.
+                let len = self.chunks[idx].len();
+                for plant in &self.chunks[idx][len - count as usize..] {
+                    if let Some(row) = self.stage_counts.get_mut(plant.species as usize) {
+                        row[plant.stage.min(DEAD) as usize] += 1;
+                    }
+                }
                 // New seedlings bring new life thresholds; recompute the
                 // chunk's timeline on the next growth pass.
                 self.next_event[idx] = 0.0;
@@ -1282,11 +1253,18 @@ impl PlantWorld {
         self.last_spread_added
     }
 
-    /// Approximate resident bytes of the store (packed plants + per-chunk Vec
-    /// headers + the parallel index Vecs + the house index).
+    /// Approximate resident bytes of the store (packed plants + their cached
+    /// event hours + per-chunk Vec headers + the parallel index Vecs + the
+    /// house index).
     pub fn resident_bytes(&self) -> usize {
         let plant = self.population * std::mem::size_of::<Plant>();
-        let headers = self.chunks.len() * std::mem::size_of::<Vec<Plant>>();
+        let events: usize = self
+            .events
+            .iter()
+            .map(|e| e.capacity() * std::mem::size_of::<f32>())
+            .sum();
+        let headers = self.chunks.len()
+            * (std::mem::size_of::<Vec<Plant>>() + std::mem::size_of::<Vec<f32>>());
         let side = self.chunks.len();
         // House index: outer per-chunk Vec headers + each inner Vec's allocated XZ.
         let house_headers = self.houses.len() * std::mem::size_of::<Vec<Vec2>>();
@@ -1300,7 +1278,7 @@ impl PlantWorld {
                 + std::mem::size_of::<bool>() // saturated
                 + std::mem::size_of::<u32>() // base_count
                 + std::mem::size_of::<Biome>()); // biome
-        plant + headers + indices + house_headers + house_positions
+        plant + events + headers + indices + house_headers + house_positions
     }
 
     /// Per-biome fill: the percentage (0–100) of each biome's chunks that are
@@ -1436,6 +1414,7 @@ impl PlantWorld {
         // Recompute cached totals from scratch — cheap next to world generation.
         self.population = self.chunks.iter().map(Vec::len).sum();
         self.populated_chunks = self.chunks.iter().filter(|c| !c.is_empty()).count();
+        self.recount_stage_counts();
         // Seed saturation so a resumed, settled world is cheap on its first spread
         // pass instead of emitting for every chunk: an all-mature chunk is treated
         // as saturated (a chunk that still has room re-clears the flag the moment a
@@ -1641,6 +1620,7 @@ impl PlantWorld {
             None,
         );
         let mut world = Self {
+            events: vec![Vec::new(); chunks.len()],
             chunks,
             immature,
             next_event,
@@ -1658,11 +1638,13 @@ impl PlantWorld {
             seed,
             population,
             populated_chunks,
+            stage_counts: Vec::new(),
             last_spread_added: 0,
             biome_fill: Vec::new(),
             dirty_chunks: Vec::new(),
         };
         world.recompute_biome_fill();
+        world.recount_stage_counts();
         world
     }
 }
@@ -1723,6 +1705,185 @@ fn parse_base_chunk(
         });
     }
     Ok((plants, biome_from_slot(biome_code), cell))
+}
+
+/// Everything the per-chunk growth scan reads, so the same body runs under
+/// rayon on native and serially on wasm.
+struct GrowthCtx<'a> {
+    seed: u32,
+    registry: &'a PlantRegistry,
+    heightmap: &'a Heightmap,
+    rivers: &'a RiverField,
+    sea_level: f32,
+    total_hours: f64,
+}
+
+/// World-total deltas of one growth pass that can't be written through the
+/// per-chunk slices. Every field merges commutatively (integer sums, flag ORs,
+/// order-insensitive index lists), so a parallel pass folds to the same result
+/// regardless of thread count or scheduling.
+struct GrowthAcc {
+    /// Per-species stage-count deltas; rows align with `stage_counts`.
+    counts: Vec<[i64; population_history::STAGE_COUNT]>,
+    /// Plants despawned this pass, worldwide.
+    removed: usize,
+    /// Chunks that went non-empty → empty this pass.
+    emptied_chunks: usize,
+    /// Chunks whose visible plant list changed (stage flips or despawns).
+    dirty: Vec<usize>,
+    /// Chunks that lost at least one plant, for the saturation wake-up.
+    reaped: Vec<usize>,
+    changed: bool,
+}
+
+impl GrowthAcc {
+    fn new(species_count: usize) -> Self {
+        Self {
+            counts: vec![[0i64; population_history::STAGE_COUNT]; species_count],
+            removed: 0,
+            emptied_chunks: 0,
+            dirty: Vec::new(),
+            reaped: Vec::new(),
+            changed: false,
+        }
+    }
+
+    fn count(&mut self, species: u8, stage: u8, delta: i64) {
+        if let Some(row) = self.counts.get_mut(species as usize) {
+            row[stage.min(DEAD) as usize] += delta;
+        }
+    }
+
+    /// Only the parallel (rayon) pass reduces accumulators; wasm folds serially.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn merge(mut a: Self, b: Self) -> Self {
+        for (lhs, rhs) in a.counts.iter_mut().zip(b.counts) {
+            for (l, r) in lhs.iter_mut().zip(rhs) {
+                *l += r;
+            }
+        }
+        a.removed += b.removed;
+        a.emptied_chunks += b.emptied_chunks;
+        a.dirty.extend(b.dirty);
+        a.reaped.extend(b.reaped);
+        a.changed |= b.changed;
+        a
+    }
+}
+
+/// Absolute sim-hour of a plant's next lifecycle threshold, rounded *down* to
+/// `f32`. Rounding down means a stored event can wake a plant one tick before
+/// its threshold — the recompute then finds nothing due and re-stores the same
+/// event, which costs one schedule derivation. Rounding up instead would let a
+/// stored event land *after* the threshold and delay the transition by a tick,
+/// making the trajectory depend on `f32` rounding rather than the analytic
+/// schedule alone.
+fn event_hour(born_hour: f32, next_threshold_age: f64) -> f32 {
+    let abs = born_hour as f64 + next_threshold_age;
+    let rounded = abs as f32;
+    if (rounded as f64) > abs {
+        rounded.next_down()
+    } else {
+        rounded
+    }
+}
+
+/// Advance one chunk's plants to `ctx.total_hours` — the per-chunk body of
+/// [`PlantWorld::tick_growth`]. Fast path: a plant whose cached next-event hour
+/// hasn't arrived is a single compare. Slow path (event due, or the `0.0`
+/// recompute sentinel on fresh loads and new seedlings): re-derive the analytic
+/// schedule, apply the stage byte or despawn, and cache the next threshold.
+/// Compacts `chunk` and `events` in lockstep and refreshes the chunk-level
+/// `next_event` min; `immature` and the census deltas in `acc` are maintained
+/// incrementally from the observed transitions.
+#[allow(clippy::too_many_arguments)]
+fn scan_chunk_growth(
+    ctx: &GrowthCtx<'_>,
+    idx: usize,
+    chunk: &mut Vec<Plant>,
+    events: &mut Vec<f32>,
+    immature: &mut u32,
+    next_event: &mut f64,
+    base_count: &mut u32,
+    acc: &mut GrowthAcc,
+) {
+    if ctx.total_hours < *next_event {
+        return;
+    }
+    if chunk.is_empty() {
+        *next_event = f64::INFINITY;
+        return;
+    }
+    // Plants appended since the last scan (spread landings, a loaded save) have
+    // no cached event yet; the sentinel makes this pass compute one.
+    if events.len() < chunk.len() {
+        events.resize(chunk.len(), 0.0);
+    }
+    let base = *base_count as usize;
+    let mut removed_base = 0u32;
+    let mut chunk_min = f64::INFINITY;
+    let mut write = 0usize;
+    let mut chunk_changed = false;
+    for read in 0..chunk.len() {
+        let mut plant = chunk[read];
+        let mut event = events[read];
+        if ctx.total_hours >= event as f64 {
+            if let Some(species) = ctx.registry.species.get(plant.species as usize) {
+                let env =
+                    plant_life_environment(ctx.heightmap, ctx.rivers, ctx.sea_level, idx, &plant);
+                let schedule = life_schedule(ctx.seed, idx, &plant, species, read < base, env);
+                let age = (ctx.total_hours - plant.born_hour as f64).max(0.0);
+                let Some(stage) = schedule.stage_at(age) else {
+                    // Despawned: drop the record, freeing its spacing-grid spot
+                    // for the next spread pass (the grid is rebuilt per pass).
+                    if read < base {
+                        removed_base += 1;
+                    }
+                    if plant.stage < MATURE {
+                        *immature -= 1;
+                    }
+                    acc.count(plant.species, plant.stage, -1);
+                    chunk_changed = true;
+                    continue;
+                };
+                if stage != plant.stage {
+                    // Stages only advance, so immaturity can only be shed here.
+                    if plant.stage < MATURE && stage >= MATURE {
+                        *immature -= 1;
+                    }
+                    acc.count(plant.species, plant.stage, -1);
+                    acc.count(plant.species, stage, 1);
+                    plant.stage = stage;
+                    chunk_changed = true;
+                }
+                event = event_hour(plant.born_hour, schedule.next_threshold(age));
+            } else {
+                // Unregistered species never transition; park the plant so the
+                // fast path skips it from now on.
+                event = f32::INFINITY;
+            }
+        }
+        chunk_min = chunk_min.min(event as f64);
+        chunk[write] = plant;
+        events[write] = event;
+        write += 1;
+    }
+    let removed = chunk.len() - write;
+    chunk.truncate(write);
+    events.truncate(write);
+    *next_event = chunk_min;
+    *base_count -= removed_base;
+    if chunk_changed {
+        acc.changed = true;
+        acc.dirty.push(idx);
+    }
+    if removed > 0 {
+        acc.removed += removed;
+        acc.reaped.push(idx);
+        if chunk.is_empty() {
+            acc.emptied_chunks += 1;
+        }
+    }
 }
 
 /// True when chunk `idx` and all eight of its (wrapped) neighbours are saturated,
@@ -3062,7 +3223,8 @@ mod tests {
         let cell_bytes = vec![0u8; chunks.len()];
         let next_event = vec![0.0; chunks.len()];
         let houses = vec![Vec::new(); chunks.len()];
-        PlantWorld {
+        let mut world = PlantWorld {
+            events: vec![Vec::new(); chunks.len()],
             chunks,
             immature,
             next_event,
@@ -3080,10 +3242,13 @@ mod tests {
             seed: 7,
             population,
             populated_chunks,
+            stage_counts: Vec::new(),
             last_spread_added: 0,
             biome_fill: Vec::new(),
             dirty_chunks: Vec::new(),
-        }
+        };
+        world.recount_stage_counts();
+        world
     }
 
     // In-memory storage with binary support, for persistence round-trips.
@@ -3150,12 +3315,13 @@ mod tests {
         }
     }
 
-    // Regression for the "Population Lens shows young 0" report: the census must
-    // count a spread plant whose age puts it in the Young band as Young, even
-    // when its cached `stage` byte still says Seedling because no growth tick has
-    // refreshed it yet. (At high day_speed a frame steps a plant clean across the
-    // Young band between ticks, so the byte never records Young — the census now
-    // derives the stage analytically instead of trusting the byte.)
+    // Regression for the "Population Lens shows young 0" report: a spread plant
+    // whose age puts it in the Young band must show up in the census as Young,
+    // even though its cached `stage` byte was still Seedling going into the tick.
+    // The growth pass derives the stage analytically (a single tick can step
+    // Seedling→Young without an intermediate pass), and the census reads the
+    // tallies that pass maintains — so the count reflects the analytic stage,
+    // never a skipped band.
     #[test]
     fn census_counts_young_from_analytic_stage_not_stale_byte() {
         let reg = registry();
@@ -3168,9 +3334,10 @@ mod tests {
         let mut world = test_world(vec![vec![base]], Arc::clone(&reg));
         let spread = seedling(40.0, 0.0);
         world.chunks[0].push(spread);
+        world.recount_stage_counts();
 
         // The spread plant's real Young window, sampled with the same environment
-        // the census uses, so the boundaries line up exactly.
+        // the growth pass uses, so the boundaries line up exactly.
         let species = &reg.species[spread.species as usize];
         let env =
             plant_life_environment(&world.heightmap, &world.rivers, world.sea_level, 0, &spread);
@@ -3181,16 +3348,91 @@ mod tests {
         );
         let now = 0.5 * (schedule.young_at + schedule.mature_at);
 
-        // The cached byte is deliberately still Seedling — proof the Young count
-        // below cannot be coming from the stored stage.
+        // The cached byte is deliberately still Seedling — the single tick below
+        // must land the analytic stage, not step through intermediate passes.
         assert_eq!(world.chunks[0][1].stage, stage_to_u8(GrowthStage::Seedling));
+        world.tick_growth(now);
 
-        let row = world.census(now)[spread.species as usize];
+        let row = world.census()[spread.species as usize];
         assert_eq!(
             row[stage_to_u8(GrowthStage::Young) as usize],
             1,
             "the spread plant is mid-Young-band at `now`, so the census must report one young"
         );
+    }
+
+    // The census counters are maintained incrementally by growth transitions,
+    // despawns and spread landings; they must always agree with a from-scratch
+    // recount of the stage bytes, or the population graph drifts from reality.
+    #[test]
+    fn census_counters_match_a_full_recount_across_ticks() {
+        let reg = registry();
+        let n = WORLD_SIZE_CHUNKS as usize;
+        let mut chunks = vec![Vec::new(); n * n];
+        // A mortal base plant, plus seedlings of two species born at different
+        // hours, so ticks below cross young/mature/dead/despawn thresholds.
+        chunks[0].push(grid_plant(10.0, 50.0, 0));
+        chunks[0].push(seedling(40.0, 0.0));
+        chunks[0].push(Plant {
+            species: 1,
+            ..seedling(70.0, 12.0)
+        });
+        chunks[1].push(seedling(20.0, 24.0));
+        let mut world = test_world(chunks, Arc::clone(&reg));
+        world.base_count[0] = 1;
+        world.base_count[1] = 0;
+
+        let lifespan = reg.species[0].placement.lifespan_hours as f64;
+        for step in 0..40 {
+            let t = step as f64 * lifespan / 16.0;
+            world.tick_growth(t);
+            if step % 4 == 0 {
+                world.tick_spread(t);
+            }
+            let incremental = world.census();
+            world.recount_stage_counts();
+            assert_eq!(
+                incremental,
+                world.census(),
+                "incremental census counters diverged from a recount at t={t}"
+            );
+        }
+    }
+
+    // The per-plant event cache must never postpone a transition: after any
+    // growth tick, every surviving plant's cached byte equals its analytic
+    // stage at that hour, no matter how many events fired since the last scan.
+    #[test]
+    fn event_cache_never_delays_a_stage_transition() {
+        let reg = registry();
+        let mut chunks = vec![Vec::new()];
+        for i in 0..6 {
+            chunks[0].push(seedling(10.0 + i as f32 * 30.0, i as f32 * 7.0));
+        }
+        let mut world = test_world(chunks, Arc::clone(&reg));
+        world.base_count[0] = 0;
+
+        let lifespan = reg.species[0].placement.lifespan_hours as f64;
+        let mut t = 0.0;
+        while t < 2.0 * lifespan {
+            world.tick_growth(t);
+            for (pi, plant) in world.chunks[0].iter().enumerate() {
+                let species = &reg.species[plant.species as usize];
+                let env = plant_life_environment(
+                    &world.heightmap,
+                    &world.rivers,
+                    world.sea_level,
+                    0,
+                    plant,
+                );
+                let expected = analytic_stage(world.seed, 0, plant, species, false, env, t);
+                assert_eq!(
+                    plant.stage, expected,
+                    "plant {pi} byte lags its analytic stage at t={t}"
+                );
+            }
+            t += 13.0;
+        }
     }
 
     #[test]
@@ -3726,6 +3968,7 @@ mod tests {
             world.chunks[1].push(seedling(30.0, 0.0));
             world.immature[1] = 2;
             world.population += 2;
+            world.recount_stage_counts();
             world
         };
 
