@@ -815,6 +815,7 @@ impl WebWorldBuilder {
             last_growth_hour: self.total_hours,
             last_spread_hour: self.total_hours,
             last_tick_ms: 0.0,
+            last_update_timings: UpdateTimings::default(),
             // The browser never persists the base (localStorage can't hold it); the
             // HTTP cache covers repeat downloads, so nothing is staged here.
             pending_base_snapshot: None,
