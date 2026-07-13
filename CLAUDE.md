@@ -111,6 +111,37 @@ on every backend, unlike GPU timestamp queries, which do not bracket fragment wo
 on Apple Silicon (tile-based deferred GPUs) — pass-boundary timestamps measure only
 the tiling phase and encoder-level `write_timestamp` writes zeros on Metal.
 
+**Hitch attribution.** Every recorded frame also carries the `WorldRuntime::update`
+phase breakdown (growth / spread / streaming / refresh / census) plus the HUD stats
+scan. Frames over 50 ms CPU are listed in the report's `worst_hitches` with those
+per-phase costs, and `phases` sums each phase over the run — so a periodic stall
+can be pinned to the sim pass that causes it.
+
+**Reproducing plant-sim stalls.** Benchmark mode normally starts a fresh world,
+which never shows them (a young, small population has no lifecycle events due).
+Script fields to control the sim state:
+
+- `"day_speed": 0.6` — override the clock speed (deterministic under the fixed
+  timestep); one growth tick per sim-hour ⇒ every `1/(fixed_dt·day_speed)` frames.
+- `"start_total_hours": 20004.0` — jump the clock after load; base plants are born
+  at hour 0, so this ages the world (still far smaller than a long-played save).
+- `"resume": true` — resume the real save (e.g. `benchmarks/hud_stall.json`, which
+  circles in place on the resumed world). A long-played save carries tens of
+  millions of plants — the state where the hourly growth pass and census stall the
+  frame. Machine-specific, so for diagnosis, not CI baselines. Saving is disabled
+  throughout benchmark mode; the resumed state is never written back.
+
+`sim_bench` (headless, no GPU) mirrors this for fast iteration:
+`cargo run --release --bin sim_bench -- --state-dir . --warmup-steps 500 --steps 2000`
+replays the real state dir read-only and prints per-step spikes with the same phase
+split. Note that on an old save the population drops sharply on the first growth
+tick — that's by design, not a restore bug: the app and sim_bench both restore
+the full save (base + spread), then the first tick reaps every plant whose
+analytic despawn already passed (on the 206k-hour save, ~11.5M of the 23.9M
+loaded plants — most of the hour-0 base cohort is long dead). Since the
+build-time prewarm pass, that reap happens during load, so reported populations
+are post-reap everywhere.
+
 ### Visual feedback loop with `take_screenshot`
 
 The debug API's `take_screenshot` command captures the current GPU frame to `captures/` (`latest.png` + timestamped history). Use this for a closed feedback loop: make a change, rebuild, take a screenshot, read `captures/latest.png` to verify the visual result, and iterate. The debug API is enabled by default on `127.0.0.1:7777`.

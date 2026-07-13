@@ -1,0 +1,11 @@
+{
+  "name": "hud-stall-resume",
+  "fixed_dt": 0.0166667,
+  "warmup_frames": 300,
+  "resume": true,
+  "day_speed": 0.6,
+  "start": { "x": 43306.7, "y": 130.0, "z": 40141.6, "yaw": -0.36, "pitch": -0.25 },
+  "segments": [
+    { "keys": [], "yaw_rate": 0.5, "frames": 1500 }
+  ]
+}

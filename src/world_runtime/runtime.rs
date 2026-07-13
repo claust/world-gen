@@ -56,6 +56,27 @@ pub struct RuntimeStats {
     pub weekly_population_delta: i64,
 }
 
+/// Wall-clock cost of the most recent [`WorldRuntime::update`], split by phase.
+/// All values are milliseconds; a phase that didn't run this call reports 0.
+/// Telemetry for the FPS benchmark's hitch attribution — the plant sim runs on
+/// a sim-hour cadence, so a single frame absorbs a whole world pass and these
+/// numbers say which one.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UpdateTimings {
+    /// Global growth/death pass over due chunks ([`PlantWorld::tick_growth`]).
+    pub growth_ms: f32,
+    /// Reproduction rounds ([`PlantWorld::tick_spread`]), incl. catch-up.
+    pub spread_ms: f32,
+    /// Chunk streaming around the camera (load/unload/generation handoff).
+    pub streaming_ms: f32,
+    /// Rebuild of already-loaded chunks after the sim changed them.
+    pub refresh_ms: f32,
+    /// Worldwide per-species census for the population graph.
+    pub census_ms: f32,
+    /// The whole `update` call, including the phases above.
+    pub total_ms: f32,
+}
+
 pub struct WorldRuntime {
     streaming: StreamingWorld,
     clock: WorldClock,
@@ -70,6 +91,8 @@ pub struct WorldRuntime {
     last_spread_hour: f64,
     /// Wall-clock ms of the most recent growth/spread tick (telemetry).
     last_tick_ms: f32,
+    /// Per-phase wall-clock breakdown of the most recent `update` call.
+    last_update_timings: UpdateTimings,
     /// Serialized base-world snapshot awaiting persistence, set when a New Game
     /// generated the base fresh (cache miss). The caller drains it via
     /// [`take_pending_base_snapshot`] and writes it to storage on the main
@@ -80,10 +103,9 @@ pub struct WorldRuntime {
     /// Worldwide plant-count time series, sampled at the throttled census cadence
     /// as sim-time advances. Backs the Population Lens's evolution graph.
     population_history: PopulationHistory,
-    /// Wall-clock time of the last census, so the full-world scan can't run every
-    /// frame at high `day_speed` (where many sim-hours, and thus many sample
-    /// intervals, elapse per frame). The sim-time cadence still gates it at normal
-    /// speeds; this is purely a per-frame-cost ceiling.
+    /// Wall-clock time of the last census, so high `day_speed` (where many
+    /// sim-hours, and thus many sample intervals, elapse per frame) can't record
+    /// a sample every frame and churn the history buffer.
     last_census_at: Instant,
 }
 
@@ -308,10 +330,19 @@ impl WorldRuntime {
             plant_world.populated_chunks(),
         );
 
+        // Settle the lifecycle events that came due while the world was unloaded
+        // (a resume reaps the same overdue plants a live world already removed)
+        // and warm the per-plant event caches, so the first in-game growth tick
+        // is an incremental pass instead of a full-world schedule recompute.
+        // Runs off the frame loop, on the generation thread. Nothing is loaded
+        // yet, so the dirty marks have no chunks to refresh.
+        plant_world.tick_growth(total_hours);
+        plant_world.take_dirty_chunks();
+
         // Seed the time series with the world's starting census so the graph has
         // a t0 point the moment the lens is first opened.
         let mut population_history = PopulationHistory::new();
-        population_history.record(total_hours, plant_world.census(total_hours));
+        population_history.record(total_hours, plant_world.census());
 
         Ok(Self {
             streaming: StreamingWorld::new(
@@ -327,6 +358,7 @@ impl WorldRuntime {
             last_growth_hour: total_hours,
             last_spread_hour: total_hours,
             last_tick_ms: 0.0,
+            last_update_timings: UpdateTimings::default(),
             pending_base_snapshot,
             evolution_overlay: EvolutionOverlayMode::Off,
             population_history,
@@ -348,12 +380,22 @@ impl WorldRuntime {
 
     pub fn update(&mut self, dt_seconds: f32, camera_position: Vec3) {
         self.clock.update(dt_seconds);
+        let update_start = Instant::now();
+        let mut timings = UpdateTimings::default();
 
         // `Instant` resolves to `web_time::Instant` on wasm, so the tick is timed
-        // on every platform.
+        // on every platform. Phase timings stay 0 when the pass wasn't due, so
+        // hitch attribution only sees real work, not timer overhead.
         let tick_start = Instant::now();
         let growth = self.tick_plant_world_growth();
+        if growth.is_some() {
+            timings.growth_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
+        }
+        let spread_start = Instant::now();
         let spread = self.tick_plant_world_spread();
+        if spread.is_some() {
+            timings.spread_ms = spread_start.elapsed().as_secs_f32() * 1000.0;
+        }
         // A pass *ran* if it was due; it *changed* the world if it returned `true`.
         // Time every actual pass so `tick_ms` reflects the latest tick, not the
         // latest visible change.
@@ -364,29 +406,53 @@ impl WorldRuntime {
 
         // Stream chunks around the camera; newly loaded chunks read their plants
         // from the resident PlantWorld.
+        let streaming_start = Instant::now();
         self.streaming
             .update(camera_position, &self.plant_world, self.evolution_overlay);
+        timings.streaming_ms = streaming_start.elapsed().as_secs_f32() * 1000.0;
         // If the global sim changed the world, refresh the already-loaded chunks
         // so growth stage changes and new seedlings show up.
         if changed {
+            let refresh_start = Instant::now();
             let changed_chunks = self.plant_world.take_dirty_chunks();
             self.streaming.refresh_changed_from_plant_world(
                 &self.plant_world,
                 self.evolution_overlay,
                 &changed_chunks,
             );
+            timings.refresh_ms = refresh_start.elapsed().as_secs_f32() * 1000.0;
         }
 
-        // Sample the worldwide census for the population graph. Gated on both the
-        // history's sim-time cadence (so it's rare during plain flight) and a
-        // wall-clock floor (so an extreme day_speed can't trigger a full-world
-        // scan every frame).
+        // Sample the worldwide census for the population graph. The census is an
+        // O(species) counter read; the sim-time cadence and wall-clock floor now
+        // mostly bound how fast the history buffer fills.
         let now = self.clock.total_hours();
         if self.population_history.is_due(now) && self.last_census_at.elapsed() >= CENSUS_MIN_WALL {
             self.last_census_at = Instant::now();
             self.population_history
-                .record(now, self.plant_world.census(now));
+                .record(now, self.plant_world.census());
+            timings.census_ms = self.last_census_at.elapsed().as_secs_f32() * 1000.0;
         }
+
+        timings.total_ms = update_start.elapsed().as_secs_f32() * 1000.0;
+        self.last_update_timings = timings;
+    }
+
+    /// Per-phase wall-clock breakdown of the most recent [`update`](Self::update).
+    pub fn last_update_timings(&self) -> UpdateTimings {
+        self.last_update_timings
+    }
+
+    /// Jump the simulation clock to `total_hours` (benchmark setup). Every plant
+    /// ages relative to its `born_hour`, so this instantly produces a world where
+    /// lifecycle events are due. The tick cursors move with the clock so the jump
+    /// itself doesn't fire a catch-up burst — the next growth/spread pass lands
+    /// one full cadence after the jump.
+    pub fn set_total_hours(&mut self, total_hours: f64) {
+        self.clock.set_total_hours(total_hours);
+        let now = self.clock.total_hours();
+        self.last_growth_hour = now;
+        self.last_spread_hour = now;
     }
 
     /// The worldwide plant-count time series, for the population graph panel.
@@ -790,10 +856,16 @@ impl WebWorldBuilder {
         }
     }
 
-    fn finish(&mut self, plant_world: PlantWorld) -> anyhow::Result<WorldRuntime> {
+    fn finish(&mut self, mut plant_world: PlantWorld) -> anyhow::Result<WorldRuntime> {
         let rivers = self.rivers.take().expect("rivers solved before finish");
+        // Mirror the native build: settle overdue lifecycle events and warm the
+        // per-plant event caches during load, so the first in-game growth tick
+        // is incremental. Replaces the full-world census scan this step used to
+        // pay (census is now an O(species) counter read).
+        plant_world.tick_growth(self.total_hours);
+        plant_world.take_dirty_chunks();
         let mut population_history = PopulationHistory::new();
-        population_history.record(self.total_hours, plant_world.census(self.total_hours));
+        population_history.record(self.total_hours, plant_world.census());
         Ok(WorldRuntime {
             streaming: StreamingWorld::new(
                 self.seed,
@@ -808,6 +880,7 @@ impl WebWorldBuilder {
             last_growth_hour: self.total_hours,
             last_spread_hour: self.total_hours,
             last_tick_ms: 0.0,
+            last_update_timings: UpdateTimings::default(),
             // The browser never persists the base (localStorage can't hold it); the
             // HTTP cache covers repeat downloads, so nothing is staged here.
             pending_base_snapshot: None,
