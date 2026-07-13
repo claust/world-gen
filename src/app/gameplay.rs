@@ -180,16 +180,14 @@ impl AppState {
     }
 
     fn species_count(&self) -> usize {
-        self.world
-            .as_ref()
-            .map(|w| w.species_names().len())
-            .unwrap_or(0)
+        self.world.as_ref().map(|w| w.species_count()).unwrap_or(0)
     }
 
     fn species_name(&self, species: u8) -> String {
         self.world
             .as_ref()
-            .and_then(|w| w.species_names().get(species as usize).cloned())
+            .and_then(|w| w.species_name(species))
+            .map(str::to_owned)
             .unwrap_or_else(|| format!("species {species}"))
     }
 
@@ -268,7 +266,7 @@ struct ExpeditionView {
     done: bool,
 }
 
-/// Draw the gameplay HUD (top-left) and, while the cursor is captured, a
+/// Draw the gameplay HUD (top-centre) and, while the cursor is captured, a
 /// centre-screen crosshair marking where the plant/cull verbs act. A free
 /// function (not a method) so it can be called inside the egui `run` closure
 /// without capturing `self`.

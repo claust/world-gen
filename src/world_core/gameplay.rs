@@ -53,7 +53,9 @@ impl EcoScore {
         let weights = stage_biomass_weights();
         let mut living = 0u64;
         let mut biomass = 0.0;
-        let mut living_per_species: Vec<f64> = Vec::new();
+        // Upper bound is one entry per species; pre-size to avoid reallocation
+        // as living species are pushed (this runs on the HUD/debug path).
+        let mut living_per_species: Vec<f64> = Vec::with_capacity(sample.per_species.len());
 
         for row in &sample.per_species {
             let mut species_living = 0u64;

@@ -400,6 +400,16 @@ impl WorldRuntime {
         self.plant_world.species_names()
     }
 
+    /// Display name of one species by id, borrowed (no allocation).
+    pub fn species_name(&self, id: u8) -> Option<&str> {
+        self.plant_world.species_name(id)
+    }
+
+    /// Number of registered species.
+    pub fn species_count(&self) -> usize {
+        self.plant_world.species_count()
+    }
+
     pub fn evolution_overlay(&self) -> EvolutionOverlayMode {
         self.evolution_overlay
     }

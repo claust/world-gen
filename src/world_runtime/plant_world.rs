@@ -973,6 +973,20 @@ impl PlantWorld {
             .collect()
     }
 
+    /// Display name of one species by id, borrowing the registry (no allocation)
+    /// — for hot-path callers like the gameplay HUD.
+    pub fn species_name(&self, id: u8) -> Option<&str> {
+        self.registry
+            .species
+            .get(id as usize)
+            .map(|s| s.name.as_str())
+    }
+
+    /// Number of registered species.
+    pub fn species_count(&self) -> usize {
+        self.registry.species.len()
+    }
+
     pub fn take_dirty_chunks(&mut self) -> Vec<usize> {
         let mut dirty = std::mem::take(&mut self.dirty_chunks);
         dirty.sort_unstable();
