@@ -221,6 +221,13 @@ pub struct AppState {
     /// loop so `render()` can attribute total CPU-active time for benchmark mode.
     #[cfg(not(target_arch = "wasm32"))]
     update_cpu_ms: f32,
+    /// World-update phase breakdown of the most recent frame, for benchmark
+    /// hitch attribution.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_sim_timings: crate::world_runtime::UpdateTimings,
+    /// CPU cost (ms) of the most recent frame's HUD stats scan + upload.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_hud_ms: f32,
 }
 
 impl AppState {
@@ -316,6 +323,8 @@ impl AppState {
             audio: crate::audio::AudioSystem::new(),
             benchmark,
             update_cpu_ms: 0.0,
+            last_sim_timings: Default::default(),
+            last_hud_ms: 0.0,
             egui_bridge,
             egui_pass,
             config_panel,
@@ -353,10 +362,13 @@ impl AppState {
             blur_capture_pending: false,
         };
 
-        // In benchmark mode, skip the menu and start loading the world immediately.
+        // In benchmark mode, skip the menu and start loading the world
+        // immediately — resuming the save when the script asks for it (a
+        // long-played world reproduces plant-sim stalls a fresh one can't).
         #[cfg(not(target_arch = "wasm32"))]
-        if app.benchmark.is_some() {
-            app.begin_loading(false);
+        if let Some(bench) = &app.benchmark {
+            let resume = bench.resume() && app.save.is_some();
+            app.begin_loading(resume);
         }
 
         Ok(app)
@@ -1427,6 +1439,21 @@ impl AppState {
         // `dt` is what we record. Otherwise sim_dt == dt and behavior is unchanged.
         #[cfg(not(target_arch = "wasm32"))]
         let sim_dt = if let Some(mut bench) = self.benchmark.take() {
+            // Apply the script's one-shot world overrides (clock jump, day
+            // speed) before the first scripted frame so warmup already runs
+            // under the target sim state.
+            if let Some(overrides) = bench.take_world_overrides() {
+                if let Some(world) = self.world.as_mut() {
+                    if let Some(hours) = overrides.start_total_hours {
+                        world.set_total_hours(hours);
+                    }
+                    if let Some(day_speed) = overrides.day_speed {
+                        if let Err(e) = world.set_day_speed(day_speed) {
+                            log::warn!("benchmark day_speed override rejected: {e}");
+                        }
+                    }
+                }
+            }
             bench.tick(dt * 1000.0, &mut self.camera, &mut self.camera_controller);
             let fixed = bench.fixed_dt();
             self.benchmark = Some(bench);
@@ -1448,6 +1475,10 @@ impl AppState {
         clamp_camera_to_terrain(&mut self.camera, world.chunks());
 
         world.update(sim_dt, self.camera.position);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.last_sim_timings = world.last_update_timings();
+        }
         self.world_renderer
             .sync_chunks(&self.gpu.device, &self.gpu.queue, world.chunks());
 
@@ -1466,6 +1497,8 @@ impl AppState {
         let aspect = self.gpu.aspect();
         let view_proj = self.camera.view_projection(aspect);
         let lighting = world.lighting();
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_hud = Instant::now();
         let stats = world.stats();
         let palette = crate::renderer_wgpu::sky::sky_palette(stats.hour);
         self.world_renderer.update_frame(
@@ -1500,6 +1533,10 @@ impl AppState {
             self.gpu.config.width as f32,
             self.gpu.config.height as f32,
         );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.last_hud_ms = t_hud.elapsed().as_secs_f32() * 1000.0;
+        }
         self.world_renderer.update_minimap(
             &self.gpu.queue,
             &self.gpu.device,
@@ -2190,7 +2227,12 @@ impl AppState {
         {
             let cpu_ms = self.update_cpu_ms + t_encode.elapsed().as_secs_f32() * 1000.0;
             if let Some(bench) = &mut self.benchmark {
-                bench.record_frame_timing(gpu_wait_ms, cpu_ms);
+                bench.record_frame_timing(
+                    gpu_wait_ms,
+                    cpu_ms,
+                    self.last_sim_timings,
+                    self.last_hud_ms,
+                );
             }
         }
 
@@ -2212,6 +2254,12 @@ impl AppState {
     }
 
     fn save_game(&self) {
+        // Benchmark runs must never write state: a resumed benchmark advances
+        // the sim past the real save, and persisting that would corrupt it.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.benchmark.is_some() {
+            return;
+        }
         let Some(world) = &self.world else { return };
         let save = self.build_save_data(world);
         if let Err(e) = save.save(&*self.storage) {
@@ -2225,6 +2273,11 @@ impl AppState {
     /// Save to storage and update the in-memory save (for mid-session resume).
     /// Returns `Ok` only when both the metadata and the plant state were written.
     fn save_and_update(&mut self) -> anyhow::Result<()> {
+        // Same guard as `save_game`: benchmark runs must never write state.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.benchmark.is_some() {
+            return Err(anyhow::anyhow!("saving is disabled in benchmark mode"));
+        }
         let Some(world) = &self.world else {
             return Err(anyhow::anyhow!("no world loaded"));
         };

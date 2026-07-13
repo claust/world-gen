@@ -36,6 +36,14 @@ impl WorldClock {
         self.hour = hour.rem_euclid(24.0);
     }
 
+    /// Jump the monotonic simulation clock to `total_hours`, deriving the time
+    /// of day from it. Used by benchmark setup to age the world so lifecycle
+    /// events (stage changes, death, despawn) are actually due during the run.
+    pub fn set_total_hours(&mut self, total_hours: f64) {
+        self.total_hours = total_hours.max(0.0);
+        self.hour = (self.total_hours % 24.0) as f32;
+    }
+
     pub fn hour(&self) -> f32 {
         self.hour
     }
