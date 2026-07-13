@@ -134,8 +134,13 @@ Script fields to control the sim state:
 `sim_bench` (headless, no GPU) mirrors this for fast iteration:
 `cargo run --release --bin sim_bench -- --state-dir . --warmup-steps 500 --steps 2000`
 replays the real state dir read-only and prints per-step spikes with the same phase
-split (note: it currently restores fewer plants than the app resume — use the
-windowed benchmark for absolute numbers).
+split. Note that on an old save the population drops sharply on the first growth
+tick — that's by design, not a restore bug: the app and sim_bench both restore
+the full save (base + spread), then the first tick reaps every plant whose
+analytic despawn already passed (on the 206k-hour save, ~11.5M of the 23.9M
+loaded plants — most of the hour-0 base cohort is long dead). Since the
+build-time prewarm pass, that reap happens during load, so reported populations
+are post-reap everywhere.
 
 ### Visual feedback loop with `take_screenshot`
 

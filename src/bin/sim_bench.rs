@@ -121,6 +121,13 @@ struct Report {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Surface the world-load warnings (rejected base snapshot, ignored spread
+    // save) that would otherwise vanish — a silently smaller world skews every
+    // number this benchmark reports.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,world_gen=info"),
+    )
+    .init();
     let mut args = Args::parse()?;
 
     let setup_start = Instant::now();
