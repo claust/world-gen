@@ -40,6 +40,7 @@ mod benchmark;
 #[cfg(not(target_arch = "wasm32"))]
 mod debug_commands;
 mod event_loop;
+mod gameplay;
 pub(crate) mod plant_editor;
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot;
@@ -193,6 +194,9 @@ pub struct AppState {
     favorite_toast: Option<(String, f32)>,
     /// Whether the keyboard-shortcuts help overlay (toggled with `H`) is shown.
     show_help: bool,
+    /// Agency-MVP player state: selected planting species + action tallies for
+    /// the expeditions HUD. See `gameplay`.
+    game: gameplay::GameState,
     /// Handle to the background world-generation worker (native only). Polled each
     /// frame; dropped (detaching the thread) if the user leaves the loading screen.
     #[cfg(not(target_arch = "wasm32"))]
@@ -347,6 +351,7 @@ impl AppState {
             pending_recall: None,
             favorite_toast: None,
             show_help: false,
+            game: gameplay::GameState::default(),
             world_gen_job: None,
             thumbnail_renderer: None,
             blur_pass,
@@ -463,6 +468,7 @@ impl AppState {
             pending_recall: None,
             favorite_toast: None,
             show_help: false,
+            game: gameplay::GameState::default(),
             wasm_world_job: None,
             wasm_world_progress: None,
             wasm_base_prefetch,
@@ -1859,6 +1865,7 @@ impl AppState {
         let is_loading = self.is_loading();
         let is_herbarium = self.is_on_herbarium();
         let is_editor = self.is_on_editor();
+        let is_playing = matches!(self.screen, Screen::Playing);
 
         // Shadow depth pass: render the scene from the sun's point of view into
         // the shadow map before the main color pass. Only needed when the 3D
@@ -1973,7 +1980,11 @@ impl AppState {
                 || is_editor
                 || self.map_open
                 || self.show_help
-                || self.population_lens.is_visible();
+                || self.population_lens.is_visible()
+                // The gameplay HUD (score + expeditions) is always on while
+                // playing, so the egui pass must run every frame in-world, not
+                // only when a panel or toast is open.
+                || is_playing;
             // The confirmation toast renders during plain gameplay, when egui
             // would otherwise be skipped, so keep the pass alive while it shows.
             #[cfg(not(target_arch = "wasm32"))]
@@ -2003,6 +2014,14 @@ impl AppState {
                     .map(|t| t.elapsed().as_secs_f32())
                     .unwrap_or(0.0);
                 let mut map_teleport_target = None;
+                // Snapshot HUD data before the closure: a `&self` call inside it
+                // would force a whole-`self` capture that conflicts with the
+                // `egui_bridge` receiver `run` is invoked on.
+                let gameplay_hud = if matches!(self.screen, Screen::Playing) {
+                    Some(self.gameplay_hud_data())
+                } else {
+                    None
+                };
                 let full_output = self.egui_bridge.ctx().run(raw_input, |ctx| {
                     match self.screen {
                         Screen::StartMenu => {
@@ -2104,6 +2123,9 @@ impl AppState {
                             }
                             if self.show_help {
                                 render_help_ui(ctx);
+                            }
+                            if let Some(hud) = &gameplay_hud {
+                                gameplay::draw_gameplay_hud(ctx, hud);
                             }
                         }
                         Screen::PlantEditor => {

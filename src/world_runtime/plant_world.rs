@@ -989,6 +989,196 @@ impl PlantWorld {
         self.populated_chunks
     }
 
+    /// Split a world position onto the canonical torus: `(chunk_index, local_x,
+    /// local_z)` with the local offset in `[0, CHUNK_SIZE_METERS)`. Mirrors the
+    /// wrap used by the spread pass so a planted seed lands in the same chunk a
+    /// spread seedling at that spot would.
+    fn locate(world_x: f32, world_z: f32) -> (usize, f32, f32) {
+        let n = WORLD_SIZE_CHUNKS;
+        let world = WORLD_SIZE_METERS as f32;
+        let wx = world_x.rem_euclid(world);
+        let wz = world_z.rem_euclid(world);
+        let cx = ((wx / CHUNK_SIZE_METERS).floor() as i32).clamp(0, n - 1);
+        let cz = ((wz / CHUNK_SIZE_METERS).floor() as i32).clamp(0, n - 1);
+        let idx = (cz * n + cx) as usize;
+        (
+            idx,
+            wx - cx as f32 * CHUNK_SIZE_METERS,
+            wz - cz as f32 * CHUNK_SIZE_METERS,
+        )
+    }
+
+    /// Plant one seedling of `species` at a world position, as the player's
+    /// "plant at cursor" verb. Appended after the chunk's base-flora prefix (so it
+    /// persists in the spread delta) with an environment-seeded founder genome,
+    /// the same as base flora. Rejects invalid species and unplantable ground
+    /// (underwater / in a river channel), mirroring the spread landing guards.
+    /// Updates the cached counters exactly as the spread pass does and marks the
+    /// chunk dirty so the render bridge re-uploads it.
+    pub fn plant_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        species: u8,
+        now_hours: f64,
+    ) -> Result<(), &'static str> {
+        if (species as usize) >= self.registry.species.len() {
+            return Err("no such species");
+        }
+        let (idx, local_x, local_z) = Self::locate(world_x, world_z);
+        // Re-derive the wrapped world position from the canonical cell so the
+        // terrain/river samples match what the plant will render against.
+        let n = WORLD_SIZE_CHUNKS;
+        let cx = (idx as i32) % n;
+        let cz = (idx as i32) / n;
+        let sample_x = cx as f32 * CHUNK_SIZE_METERS + local_x;
+        let sample_z = cz as f32 * CHUNK_SIZE_METERS + local_z;
+
+        let ground = self.heightmap.sample_height(sample_x, sample_z);
+        if ground < self.sea_level {
+            return Err("cannot plant below sea level");
+        }
+        if self.rivers.wetness(sample_x, sample_z) > MAX_PLANTABLE_WETNESS {
+            return Err("cannot plant in a river");
+        }
+
+        let env = plant_environment(
+            &self.heightmap,
+            &self.rivers,
+            self.sea_level,
+            sample_x,
+            sample_z,
+        );
+        let genes = initial_genes(
+            self.seed,
+            FounderKey {
+                chunk: IVec2::new(cx, cz),
+                local_x: quantize_span(local_x),
+                local_z: quantize_span(local_z),
+                species,
+            },
+            env,
+        );
+        // Mid-range mature height for the species; render scales it down by the
+        // seedling stage factor until it grows.
+        let [h_lo, h_hi] = self.registry.species[species as usize].height_range;
+        let height = 0.5 * (h_lo + h_hi);
+        // Cheap deterministic yaw from the position so hand-planted rows don't all
+        // face the same way.
+        let rotation = (local_x * 0.37 + local_z * 0.71).rem_euclid(std::f32::consts::TAU);
+
+        let was_empty = self.chunks[idx].is_empty();
+        self.chunks[idx].push(Plant {
+            local_x: quantize_span(local_x),
+            local_z: quantize_span(local_z),
+            height: quantize_span(height),
+            rotation: quantize_rotation(rotation),
+            species,
+            stage: stage_to_u8(GrowthStage::Seedling),
+            born_hour: now_hours as f32,
+            genes,
+        });
+        self.mark_dirty(idx);
+        self.saturated[idx] = false;
+        if was_empty {
+            self.populated_chunks += 1;
+        }
+        self.immature[idx] += 1;
+        self.population += 1;
+        // A new life threshold arrived; recompute this chunk's timeline next tick.
+        self.next_event[idx] = 0.0;
+        self.recompute_biome_fill();
+        Ok(())
+    }
+
+    /// Remove every plant within `radius` metres of a world position — the
+    /// player's "cull at cursor" verb. Scans the target chunk and its eight
+    /// neighbours (so a radius that overhangs a chunk border still clears the
+    /// far side), removing base and spread plants alike and updating the cached
+    /// counters as the despawn path does. Un-saturates each affected
+    /// neighbourhood so the spread pass refills the cleared ground. Returns the
+    /// number of plants removed.
+    ///
+    /// Note: culled *base* flora regenerates from the seed on reload — only the
+    /// spread delta is persisted — so a base cull is not durable. Spread and
+    /// hand-planted removals persist.
+    pub fn cull_at(&mut self, world_x: f32, world_z: f32, radius: f32) -> usize {
+        if radius <= 0.0 {
+            return 0;
+        }
+        let n = WORLD_SIZE_CHUNKS;
+        let world = WORLD_SIZE_METERS as f32;
+        let wx = world_x.rem_euclid(world);
+        let wz = world_z.rem_euclid(world);
+        let cx0 = (wx / CHUNK_SIZE_METERS).floor() as i32;
+        let cz0 = (wz / CHUNK_SIZE_METERS).floor() as i32;
+        let r2 = radius * radius;
+
+        let mut total_removed = 0usize;
+        let mut touched: Vec<usize> = Vec::new();
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let idx = ((cz0 + dz).rem_euclid(n) * n + (cx0 + dx).rem_euclid(n)) as usize;
+                if touched.contains(&idx) {
+                    // Tiny (unit-test) worlds can wrap neighbours onto the same
+                    // chunk; process each at most once.
+                    continue;
+                }
+                // Use the *unwrapped* neighbour origin so plant positions stay
+                // continuous around the query point across the world seam.
+                let origin_x = (cx0 + dx) as f32 * CHUNK_SIZE_METERS;
+                let origin_z = (cz0 + dz) as f32 * CHUNK_SIZE_METERS;
+
+                let base_count = self.base_count[idx] as usize;
+                let chunk = &mut self.chunks[idx];
+                if chunk.is_empty() {
+                    continue;
+                }
+                let mut write = 0usize;
+                let mut removed_base = 0u32;
+                for read in 0..chunk.len() {
+                    let plant = chunk[read];
+                    let px = origin_x + dequantize_span(plant.local_x);
+                    let pz = origin_z + dequantize_span(plant.local_z);
+                    let dxp = px - wx;
+                    let dzp = pz - wz;
+                    if dxp * dxp + dzp * dzp <= r2 {
+                        if read < base_count {
+                            removed_base += 1;
+                        }
+                        continue;
+                    }
+                    chunk[write] = plant;
+                    write += 1;
+                }
+                let removed = chunk.len() - write;
+                if removed == 0 {
+                    continue;
+                }
+                chunk.truncate(write);
+                self.base_count[idx] -= removed_base;
+                self.population -= removed;
+                if self.chunks[idx].is_empty() {
+                    self.populated_chunks -= 1;
+                }
+                self.immature[idx] =
+                    self.chunks[idx].iter().filter(|p| p.stage < MATURE).count() as u32;
+                self.next_event[idx] = 0.0;
+                self.mark_dirty(idx);
+                total_removed += removed;
+                touched.push(idx);
+            }
+        }
+
+        if total_removed > 0 {
+            for &idx in &touched {
+                self.unsaturate_neighbourhood(idx);
+            }
+            self.recompute_biome_fill();
+        }
+        total_removed
+    }
+
     /// Reconstruct renderable instances for the raw chunk at `raw_coord`, reading
     /// the canonical chunk's plant list and resampling ground height from
     /// `terrain`. Dead snags carry their decay fraction (0 freshly dead → 1

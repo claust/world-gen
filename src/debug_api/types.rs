@@ -175,6 +175,23 @@ pub enum CommandKind {
         z: f32,
         radius: f32,
     },
+    /// Plant one seedling of `species` (species id) at a world position — the
+    /// debug-driven form of the `T` verb.
+    PlantSeed {
+        x: f32,
+        z: f32,
+        species: u8,
+    },
+    /// Cull every plant within `radius` metres of a world position — the
+    /// debug-driven form of the `C` verb.
+    CullPlants {
+        x: f32,
+        z: f32,
+        radius: f32,
+    },
+    /// Report the current gameplay state (selected species, tallies, eco score,
+    /// expedition progress).
+    GameStats,
     SetPopulationLens {
         open: bool,
     },

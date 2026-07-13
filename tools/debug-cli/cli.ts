@@ -324,6 +324,27 @@ async function cmdInspectEvolutionRegion(apiBase: string, flags: Record<string, 
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdPlantSeed(apiBase: string, flags: Record<string, string>) {
+  const x = requireFloat(flags, "x");
+  const z = requireFloat(flags, "z");
+  const species = requireInt(flags, "species");
+  const result = await sendAndWait(apiBase, { type: "plant_seed", x, z, species });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdCullPlants(apiBase: string, flags: Record<string, string>) {
+  const x = requireFloat(flags, "x");
+  const z = requireFloat(flags, "z");
+  const radius = optionalFloat(flags, "radius") ?? 6;
+  const result = await sendAndWait(apiBase, { type: "cull_plants", x, z, radius });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdGameStats(apiBase: string) {
+  const result = await sendAndWait(apiBase, { type: "game_stats" });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdMove(apiBase: string, flags: Record<string, string>) {
   const key = requireFlag(flags, "key");
   const valid = ["w", "a", "s", "d", "up", "down"];
@@ -363,6 +384,9 @@ Commands:
                                            Set plant evolution overlay mode
   inspect_evolution_region --x <n> --z <n> [--radius <n>]
                                            Summarize genes/phenotypes around a world position
+  plant           --x <n> --z <n> --species <id>  Plant a seedling of a species at a world position
+  cull            --x <n> --z <n> [--radius <n>]  Cull plants within radius of a world position (default 6m)
+  game_stats                               Get gameplay state (selected species, tallies, eco score, expeditions)
   set_population_lens --open <true|false>  Open/close the in-game Population Lens
   ui_snapshot                              Get all interactive UI elements
   ui_click        --element <id>           Click a button or toggle checkbox
@@ -476,6 +500,15 @@ async function main() {
         break;
       case "inspect_evolution_region":
         await cmdInspectEvolutionRegion(apiBase, flags);
+        break;
+      case "plant":
+        await cmdPlantSeed(apiBase, flags);
+        break;
+      case "cull":
+        await cmdCullPlants(apiBase, flags);
+        break;
+      case "game_stats":
+        await cmdGameStats(apiBase);
         break;
       case "set_population_lens":
         await cmdSetPopulationLens(apiBase, flags);

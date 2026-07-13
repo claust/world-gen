@@ -372,6 +372,57 @@ impl AppState {
                         )
                     }
                 }
+                CommandKind::PlantSeed { x, z, species } => {
+                    match self.plant_species_at(x, z, species) {
+                        Ok(()) => {
+                            let mut evt = CommandAppliedEvent::ok(
+                                command.id,
+                                self.frame_index,
+                                format!("planted species {species} at ({x:.1}, {z:.1})"),
+                            );
+                            evt.object_position = Some([x, 0.0, z]);
+                            evt.data = Some(self.game_stats_json());
+                            evt
+                        }
+                        Err(message) => CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("plant failed: {message}"),
+                        ),
+                    }
+                }
+                CommandKind::CullPlants { x, z, radius } => {
+                    if self.world.is_some() {
+                        let removed = self.cull_plants_at(x, z, radius);
+                        let mut evt = CommandAppliedEvent::ok(
+                            command.id,
+                            self.frame_index,
+                            format!(
+                                "culled {removed} plant(s) within {radius:.1}m of ({x:.1}, {z:.1})"
+                            ),
+                        );
+                        evt.data = Some(serde_json::json!({
+                            "removed": removed,
+                            "game": self.game_stats_json(),
+                        }));
+                        evt
+                    } else {
+                        CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            "cull failed: world is not running".to_string(),
+                        )
+                    }
+                }
+                CommandKind::GameStats => {
+                    let mut evt = CommandAppliedEvent::ok(
+                        command.id,
+                        self.frame_index,
+                        "game stats".to_string(),
+                    );
+                    evt.data = Some(self.game_stats_json());
+                    evt
+                }
                 CommandKind::SetPopulationLens { open } => {
                     self.set_population_lens(open);
                     CommandAppliedEvent::ok(

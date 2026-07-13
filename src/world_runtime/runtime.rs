@@ -429,6 +429,48 @@ impl WorldRuntime {
             .inspect_evolution_region(x, z, radius, self.clock.total_hours())
     }
 
+    /// Plant one seedling of `species` at a world position (the player's plant
+    /// verb), then refresh any loaded chunk it touched so it renders immediately.
+    /// Returns the plant-store outcome.
+    pub fn plant_seed(&mut self, x: f32, z: f32, species: u8) -> Result<(), &'static str> {
+        let now = self.clock.total_hours();
+        self.plant_world.plant_at(x, z, species, now)?;
+        self.refresh_dirty_chunks();
+        Ok(())
+    }
+
+    /// Remove every plant within `radius` of a world position (the player's cull
+    /// verb), refresh affected loaded chunks, and return the count removed.
+    pub fn cull_at(&mut self, x: f32, z: f32, radius: f32) -> usize {
+        let removed = self.plant_world.cull_at(x, z, radius);
+        if removed > 0 {
+            self.refresh_dirty_chunks();
+        }
+        removed
+    }
+
+    /// Push the plant store's pending per-chunk changes to the render bridge so a
+    /// planting/culling edit outside the growth/spread tick shows up this frame.
+    fn refresh_dirty_chunks(&mut self) {
+        let changed_chunks = self.plant_world.take_dirty_chunks();
+        if changed_chunks.is_empty() {
+            return;
+        }
+        self.streaming.refresh_changed_from_plant_world(
+            &self.plant_world,
+            self.evolution_overlay,
+            &changed_chunks,
+        );
+    }
+
+    /// Headline biomass/biodiversity score from the most recent worldwide census,
+    /// or `None` before the first census has been taken. Drives the gameplay HUD.
+    pub fn eco_score(&self) -> Option<crate::world_core::gameplay::EcoScore> {
+        self.population_history
+            .latest()
+            .map(crate::world_core::gameplay::EcoScore::from_sample)
+    }
+
     /// Advance global growth, rate-limited to [`GROWTH_TICK_HOURS`] of sim time
     /// and capped to one pass per call so a high `day_speed` can't spin it every
     /// frame. Growth is analytic, so each pass is cheap. Returns `None` if no pass
