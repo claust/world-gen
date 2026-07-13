@@ -1498,8 +1498,10 @@ impl AppState {
         let view_proj = self.camera.view_projection(aspect);
         let lighting = world.lighting();
         #[cfg(not(target_arch = "wasm32"))]
-        let t_hud = Instant::now();
+        let t_stats = Instant::now();
         let stats = world.stats();
+        #[cfg(not(target_arch = "wasm32"))]
+        let stats_ms = t_stats.elapsed().as_secs_f32() * 1000.0;
         let palette = crate::renderer_wgpu::sky::sky_palette(stats.hour);
         self.world_renderer.update_frame(
             &self.gpu.queue,
@@ -1521,6 +1523,8 @@ impl AppState {
             lens_radius_meters,
             &palette,
         );
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_hud = Instant::now();
         self.world_renderer.update_hud(
             &self.gpu.queue,
             &self.gpu.device,
@@ -1535,7 +1539,7 @@ impl AppState {
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.last_hud_ms = t_hud.elapsed().as_secs_f32() * 1000.0;
+            self.last_hud_ms = stats_ms + t_hud.elapsed().as_secs_f32() * 1000.0;
         }
         self.world_renderer.update_minimap(
             &self.gpu.queue,

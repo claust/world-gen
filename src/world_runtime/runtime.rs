@@ -372,16 +372,22 @@ impl WorldRuntime {
 
     pub fn update(&mut self, dt_seconds: f32, camera_position: Vec3) {
         self.clock.update(dt_seconds);
+        let update_start = Instant::now();
         let mut timings = UpdateTimings::default();
 
         // `Instant` resolves to `web_time::Instant` on wasm, so the tick is timed
-        // on every platform.
+        // on every platform. Phase timings stay 0 when the pass wasn't due, so
+        // hitch attribution only sees real work, not timer overhead.
         let tick_start = Instant::now();
         let growth = self.tick_plant_world_growth();
-        timings.growth_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
+        if growth.is_some() {
+            timings.growth_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
+        }
         let spread_start = Instant::now();
         let spread = self.tick_plant_world_spread();
-        timings.spread_ms = spread_start.elapsed().as_secs_f32() * 1000.0;
+        if spread.is_some() {
+            timings.spread_ms = spread_start.elapsed().as_secs_f32() * 1000.0;
+        }
         // A pass *ran* if it was due; it *changed* the world if it returned `true`.
         // Time every actual pass so `tick_ms` reflects the latest tick, not the
         // latest visible change.
@@ -421,11 +427,7 @@ impl WorldRuntime {
             timings.census_ms = self.last_census_at.elapsed().as_secs_f32() * 1000.0;
         }
 
-        timings.total_ms = timings.growth_ms
-            + timings.spread_ms
-            + timings.streaming_ms
-            + timings.refresh_ms
-            + timings.census_ms;
+        timings.total_ms = update_start.elapsed().as_secs_f32() * 1000.0;
         self.last_update_timings = timings;
     }
 
