@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FloraForge — Gameplay Design Notes</title>
+<style>
+  :root {
+    --bg: #0d1410;
+    --bg-soft: #131d17;
+    --panel: #182620;
+    --panel-2: #1e2f27;
+    --border: #2c4437;
+    --ink: #e6efe7;
+    --ink-soft: #a9c1b1;
+    --ink-dim: #7d9686;
+    --leaf: #6bbf59;
+    --leaf-bright: #8fe36f;
+    --moss: #3f7d4f;
+    --gold: #e0b64a;
+    --bark: #b07a4a;
+    --shadow: rgba(0,0,0,.35);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f7f0;
+      --bg-soft: #eaf0e3;
+      --panel: #ffffff;
+      --panel-2: #f0f5ec;
+      --border: #d3e0cc;
+      --ink: #1b2a1f;
+      --ink-soft: #3f5645;
+      --ink-dim: #6b8171;
+      --leaf: #3f9c3a;
+      --leaf-bright: #2f7d2c;
+      --moss: #4f9a5f;
+      --gold: #b6871f;
+      --bark: #9a6636;
+      --shadow: rgba(30,50,30,.12);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(107,191,89,.10), transparent 60%),
+      radial-gradient(900px 500px at -10% 20%, rgba(63,125,79,.10), transparent 55%),
+      var(--bg);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* Header */
+  header.hero {
+    padding: 72px 0 40px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 48px;
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--leaf);
+    margin: 0 0 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .kicker::before {
+    content: "";
+    width: 26px; height: 1px; background: var(--leaf); opacity: .6;
+  }
+  h1 {
+    font-size: clamp(34px, 6vw, 56px);
+    line-height: 1.05;
+    margin: 0 0 18px;
+    letter-spacing: -.02em;
+    font-weight: 700;
+  }
+  h1 .accent { color: var(--leaf-bright); }
+  .lede {
+    font-size: clamp(17px, 2.4vw, 20px);
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .lede strong { color: var(--ink); font-weight: 600; }
+  .tags { margin-top: 26px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .tag {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .04em;
+    color: var(--ink-dim);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 5px 12px;
+  }
+
+  /* Sections */
+  section { margin: 0 0 56px; scroll-margin-top: 24px; }
+  h2 {
+    font-size: 13px;
+    font-family: var(--mono);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--leaf);
+    margin: 0 0 6px;
+  }
+  h2 + .h2sub {
+    font-size: clamp(22px, 3.4vw, 30px);
+    line-height: 1.15;
+    margin: 0 0 24px;
+    letter-spacing: -.015em;
+    font-weight: 650;
+  }
+  h3 {
+    font-size: 19px;
+    margin: 32px 0 10px;
+    letter-spacing: -.01em;
+  }
+  p { margin: 0 0 16px; color: var(--ink-soft); }
+  p.plain { color: var(--ink); }
+  strong { color: var(--ink); font-weight: 600; }
+  a { color: var(--leaf-bright); }
+  code {
+    font-family: var(--mono);
+    font-size: .88em;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 6px;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  /* Callout — where we are today */
+  .callout {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--leaf);
+    border-radius: 12px;
+    padding: 24px 26px;
+    box-shadow: 0 12px 30px -18px var(--shadow);
+  }
+  .callout h3 { margin-top: 0; }
+  ul.ticks { list-style: none; padding: 0; margin: 0; }
+  ul.ticks li {
+    position: relative;
+    padding: 4px 0 4px 26px;
+    color: var(--ink-soft);
+  }
+  ul.ticks li::before {
+    content: "❧";
+    position: absolute; left: 0; top: 3px;
+    color: var(--moss);
+    font-size: 14px;
+  }
+  .quest {
+    margin-top: 22px;
+    padding: 16px 18px;
+    background: var(--panel-2);
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    color: var(--ink);
+    font-size: 15.5px;
+  }
+  .quest strong { color: var(--leaf-bright); }
+
+  /* Role cards */
+  .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  @media (max-width: 620px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 20px 22px;
+    box-shadow: 0 12px 30px -22px var(--shadow);
+    transition: transform .15s ease, border-color .15s ease;
+  }
+  .card:hover { transform: translateY(-2px); border-color: var(--moss); }
+  .card.recommend { border-color: var(--leaf); box-shadow: 0 0 0 1px var(--leaf) inset, 0 16px 34px -22px var(--shadow); }
+  .card .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--bg);
+    background: var(--leaf);
+    border-radius: 5px;
+    padding: 2px 8px;
+    margin-bottom: 12px;
+    font-weight: 700;
+  }
+  .card .role-letter {
+    font-family: var(--mono);
+    color: var(--leaf);
+    font-weight: 700;
+    margin-right: 6px;
+  }
+  .card h4 { margin: 0 0 4px; font-size: 18px; letter-spacing: -.01em; }
+  .card .fantasy { color: var(--ink-soft); font-size: 15px; margin: 0 0 14px; font-style: italic; }
+  .card dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 13.5px; }
+  .card dt { color: var(--ink-dim); font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; padding-top: 2px; }
+  .card dd { margin: 0; color: var(--ink-soft); }
+
+  /* Generic panel */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px 26px;
+    box-shadow: 0 12px 30px -22px var(--shadow);
+  }
+  .panel + .panel { margin-top: 16px; }
+  .panel h3 { margin-top: 0; }
+  .panel h3 .num {
+    font-family: var(--mono);
+    color: var(--leaf);
+    margin-right: 8px;
+    font-size: .8em;
+  }
+
+  /* Branch list (biology tree) */
+  .branches { display: grid; gap: 12px; margin-top: 8px; }
+  .branch {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 16px;
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+  }
+  @media (max-width: 560px) { .branch { grid-template-columns: 1fr; gap: 4px; } }
+  .branch .name { font-weight: 650; color: var(--ink); }
+  .branch .genes { font-family: var(--mono); font-size: 11.5px; color: var(--leaf); display: block; margin-top: 2px; }
+  .branch .desc { color: var(--ink-soft); font-size: 15px; }
+
+  /* Verb list */
+  ol.verbs { list-style: none; counter-reset: v; padding: 0; margin: 8px 0 0; }
+  ol.verbs li {
+    counter-increment: v;
+    position: relative;
+    padding: 14px 0 14px 52px;
+    border-top: 1px solid var(--border);
+    color: var(--ink-soft);
+  }
+  ol.verbs li:first-child { border-top: none; }
+  ol.verbs li::before {
+    content: counter(v);
+    position: absolute; left: 0; top: 12px;
+    width: 32px; height: 32px;
+    display: grid; place-items: center;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--leaf-bright);
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 14px;
+  }
+  ol.verbs li b { color: var(--ink); }
+
+  /* Two-up econ */
+  .twoup { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 620px) { .twoup { grid-template-columns: 1fr; } }
+
+  /* Goal tiers */
+  .tiers { display: grid; gap: 12px; }
+  .tier {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 18px;
+    align-items: start;
+    padding: 16px 18px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  @media (max-width: 560px) { .tier { grid-template-columns: 1fr; gap: 4px; } }
+  .tier .when {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--gold);
+    padding-top: 3px;
+  }
+  .tier .what strong { color: var(--ink); }
+
+  /* Rollout timeline */
+  .timeline { position: relative; margin-top: 8px; padding-left: 34px; }
+  .timeline::before {
+    content: ""; position: absolute; left: 11px; top: 6px; bottom: 6px;
+    width: 2px; background: linear-gradient(var(--leaf), var(--moss), transparent);
+  }
+  .step { position: relative; padding: 0 0 26px; }
+  .step:last-child { padding-bottom: 0; }
+  .step::before {
+    content: ""; position: absolute; left: -28px; top: 4px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--bg); border: 2px solid var(--leaf);
+    box-shadow: 0 0 0 4px var(--bg);
+  }
+  .step .st-title { font-weight: 650; color: var(--ink); font-size: 17px; }
+  .step .st-title .n { font-family: var(--mono); color: var(--leaf); margin-right: 8px; }
+  .step p { margin: 4px 0 0; }
+
+  /* Hooks table */
+  .hooks { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .hooks td {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+    vertical-align: top;
+    color: var(--ink-soft);
+  }
+  .hooks tr:first-child td { border-top: none; }
+  .hooks td:first-child { color: var(--ink); font-weight: 550; width: 42%; }
+  .hooks code { white-space: normal; }
+
+  .note {
+    font-size: 13.5px;
+    color: var(--ink-dim);
+    font-style: italic;
+    border-left: 2px solid var(--border);
+    padding-left: 14px;
+    margin: 20px 0 0;
+  }
+  footer {
+    margin-top: 72px; padding-top: 24px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono); font-size: 12px; color: var(--ink-dim);
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">FloraForge · Design Notes</p>
+    <h1>From <span class="accent">sandbox</span><br>to <span class="accent">game</span>.</h1>
+    <p class="lede">
+      FloraForge already contains a <strong>real evolutionary simulation</strong> — but the
+      player is a pure spectator. These notes map the option space for player agency,
+      progression, and goals, and recommend a path. Nothing here is committed yet.
+    </p>
+    <div class="tags">
+      <span class="tag">brainstorm</span>
+      <span class="tag">not committed</span>
+      <span class="tag">breeder-spine recommended</span>
+    </div>
+  </header>
+
+  <!-- Where we are -->
+  <section id="today">
+    <h2>00 · Baseline</h2>
+    <div class="h2sub">Where we are today</div>
+    <p>
+      The sim is the crown jewel; almost nothing lets the player touch it. The continuous
+      question driving every choice below: <strong>what is the player's role?</strong>
+      Pick that, and the tech tree and win conditions fall out of it.
+    </p>
+    <div class="callout">
+      <h3>What already exists</h3>
+      <ul class="ticks">
+        <li><strong>8 heritable genes</strong> per plant (<code>wet_pref</code>, <code>alt_pref</code>, <code>stress_width</code>, <code>capture</code>, <code>fecundity</code>, <code>seed_mass</code>, <code>dispersal</code>, <code>timing</code>) with inheritance + mutation.</li>
+        <li><strong>Phenotype → fitness</strong> mapping: abiotic fitness, competition room, size/lifespan scaling, establishment chance, leaf tint.</li>
+        <li><strong>Lifecycle</strong>: seedling → young → mature → dead snag → despawn.</li>
+        <li><strong>Spread / reproduction tick</strong>: mature plants emit seeds by fecundity + dispersal; seedlings establish by establishment chance.</li>
+        <li><strong>Census, Population Lens, Evolution overlays</strong>: live gene/phenotype stats, population by stage, time-series graph.</li>
+        <li><strong>Houses</strong>: procedurally placed, block plant spread; static decoration, no inhabitants.</li>
+      </ul>
+      <div class="quest">
+        <strong>Missing entirely:</strong> player resources, inventory, score, goals, currency,
+        and win conditions. The player currently only watches.
+      </div>
+    </div>
+  </section>
+
+  <!-- Roles -->
+  <section id="roles">
+    <h2>01 · Identity</h2>
+    <div class="h2sub">The four candidate player roles</div>
+    <p>
+      Recommended spine: <strong>A (Breeder)</strong>, with B and C as supporting loops. It is
+      the only direction that is uniquely ours — nobody else has this genetics engine, and the
+      name literally is FloraForge. D (settlement survival) is the most conventionally "gamey"
+      but competes with Banished / Timberborn and would bury our best system under
+      city-management busywork.
+    </p>
+    <div class="cards">
+      <div class="card recommend">
+        <span class="badge">Recommended spine</span>
+        <h4><span class="role-letter">A</span>The Breeder</h4>
+        <p class="fantasy">Steer evolution; sculpt new species.</p>
+        <dl>
+          <dt>Built on</dt><dd>Genes + mutation + Population Lens</dd>
+          <dt>Verbs</dt><dd>select, cross-pollinate, cull</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h4><span class="role-letter">B</span>The Terraformer</h4>
+        <p class="fantasy">Bring life to a barren or hostile world.</p>
+        <dl>
+          <dt>Built on</dt><dd>Base flora gen + biome/moisture fields</dd>
+          <dt>Verbs</dt><dd>seed, irrigate, reshape terrain</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h4><span class="role-letter">C</span>The Naturalist</h4>
+        <p class="fantasy">Discover, catalogue, complete the Herbarium.</p>
+        <dl>
+          <dt>Built on</dt><dd>Herbarium + overlays + map</dd>
+          <dt>Verbs</dt><dd>scan, sample, document</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h4><span class="role-letter">D</span>The Steward</h4>
+        <p class="fantasy">Keep settlements alive via the ecosystem.</p>
+        <dl>
+          <dt>Built on</dt><dd>House placement + flora dependency</dd>
+          <dt>Verbs</dt><dd>provision, balance, defend</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- Biology tree -->
+  <section id="tree">
+    <h2>02 · Progression shape</h2>
+    <div class="h2sub">The biology tree — our "tech tree"</div>
+    <p>A literal tech tree feels wrong for a plant game. Two better-fitting shapes:</p>
+
+    <div class="panel">
+      <h3><span class="num">2a</span>Trait Unlock Tree <span style="color:var(--ink-dim);font-weight:400;font-size:15px;">— authored</span></h3>
+      <p>Unlock <strong>capabilities to manipulate genes</strong>, not new tech. Branches map to the 8 gene loci:</p>
+      <div class="branches">
+        <div class="branch">
+          <div><span class="name">Dispersal</span><span class="genes">dispersal · seed_mass</span></div>
+          <div class="desc">Observe dispersal → favor long-dispersers when culling → splice the dispersal gene directly.</div>
+        </div>
+        <div class="branch">
+          <div><span class="name">Hardiness</span><span class="genes">wet_pref · alt_pref · stress_width</span></div>
+          <div class="desc">Push a species into hostile biomes — desert, alpine, underwater.</div>
+        </div>
+        <div class="branch">
+          <div><span class="name">Vigor</span><span class="genes">fecundity · capture · timing</span></div>
+          <div class="desc">Faster reproduction, denser canopies.</div>
+        </div>
+        <div class="branch">
+          <div><span class="name">Morphology</span><span class="genes">Plant Editor hook</span></div>
+          <div class="desc">Unlock leaf types, crown shapes, and sizes as "discovered mutations" rather than free sliders.</div>
+        </div>
+      </div>
+      <p class="note">
+        Progress currency = <strong>observation</strong>: earn points by watching real
+        evolutionary events — a species colonizing a new biome, an allele crossing 50%
+        frequency, first death, a successful long-distance dispersal. The census + Lens already
+        compute what's needed to detect these.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h3><span class="num">2b</span>Phylogenetic / Speciation Tree <span style="color:var(--ink-dim);font-weight:400;font-size:15px;">— emergent</span></h3>
+      <p>
+        The tree is <strong>generated by play</strong>: when a population's gene distribution
+        drifts far enough from its parent, it forks into a new branch you name and add to the
+        Herbarium. Progress is literally a growing <strong>tree of life</strong> you bred — the
+        Herbarium becomes a trophy case of species you caused to exist. Most novel, most
+        on-theme.
+      </p>
+      <p class="plain"><strong>Plan:</strong> ship 2a first (buttons to push), grow toward 2b (the long-term payoff).</p>
+    </div>
+  </section>
+
+  <!-- Verbs -->
+  <section id="verbs">
+    <h2>03 · Agency</h2>
+    <div class="h2sub">The moment-to-moment verbs</div>
+    <p>Currently zero. Cheapest high-impact additions, in priority order:</p>
+    <ol class="verbs">
+      <li><b>Plant / seed a species at the cursor.</b> Raycast to terrain — we already raycast for map-click teleport and house placement. Instant "I did that."</li>
+      <li><b>Cull.</b> Remove a plant or clear a radius. Pairs with breeding: cull the unfit, let the fit spread → the player becomes natural selection.</li>
+      <li><b>Cross-pollinate / tag-as-parent.</b> Pick two plants, force their genes into the next local spread round. The spread tick already does inheritance + mutation, so this only overrides parent selection.</li>
+      <li><b>Irrigate / terraform a tile.</b> Locally nudge the moisture/altitude field so a species can establish where it couldn't. Phenotype eval already keys off local wet/altitude.</li>
+    </ol>
+    <p class="note">Even just #1 + #2 turns it from screensaver into game.</p>
+  </section>
+
+  <!-- Progression & resources -->
+  <section id="econ">
+    <h2>04 · Economy</h2>
+    <div class="h2sub">Progression &amp; resources</div>
+    <p>Keep it thematic — avoid gold / XP. Two candidate economies:</p>
+    <div class="twoup">
+      <div class="panel">
+        <h3>Biomass / Biodiversity</h3>
+        <p><em>Passive, observational.</em> Derived from the existing census — total living biomass + a Shannon diversity index across species. Spend on tree unlocks. Rewards a <strong>healthy</strong> ecosystem, not a monoculture.</p>
+      </div>
+      <div class="panel">
+        <h3>Genome / Seed bank</h3>
+        <p><em>Active, collectible.</em> Sample plants to bank their genomes — the player's inventory. Replant anywhere, breed from them, or "complete" a species. The save already stores genes per plant, so a seed bank is a small addition.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Win conditions -->
+  <section id="goals">
+    <h2>05 · Purpose</h2>
+    <div class="h2sub">Win &amp; goal conditions</div>
+    <p>Not a single binary win — <strong>stacked objectives</strong>, so there is always a next thing.</p>
+    <div class="tiers">
+      <div class="tier">
+        <div class="when">Short · session</div>
+        <div class="what"><strong>Expeditions.</strong> "Establish a self-sustaining population in the desert," "breed a tree that survives above the snow line," "get species X to 1,000 individuals." All checkable from census + phenotype data we already compute.</div>
+      </div>
+      <div class="tier">
+        <div class="when">Medium</div>
+        <div class="what"><strong>Herbarium completion.</strong> Discover / breed all base species into stable wild populations, then the emergent variants (2b).</div>
+      </div>
+      <div class="tier">
+        <div class="when">Long · sandbox</div>
+        <div class="what"><strong>Green the world</strong> — bring living flora to N% of land across all biomes (Terraformer victory). Or <strong>Tree of Life</strong> — speciate K distinct lineages (Breeder victory). Reuse the loading screen's 256×256 world map widget as a live victory tracker.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Rollout -->
+  <section id="rollout">
+    <h2>06 · Delivery</h2>
+    <div class="h2sub">Recommended rollout</div>
+    <p>Three increments, each playable on its own:</p>
+    <div class="timeline">
+      <div class="step">
+        <div class="st-title"><span class="n">01</span>Agency MVP</div>
+        <p>Plant + cull at cursor, a biomass score, and 3 expedition goals. Turns spectator → player. Small.</p>
+      </div>
+      <div class="step">
+        <div class="st-title"><span class="n">02</span>Breeder loop</div>
+        <p>Cross-pollinate / parent-select + a seed bank + Trait Unlock Tree (2a). Adds depth + progression.</p>
+      </div>
+      <div class="step">
+        <div class="st-title"><span class="n">03</span>Speciation &amp; victory</div>
+        <p>Emergent phylogenetic tree (2b) + the two long-term win conditions. Adds the endgame and the "wow."</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Hooks -->
+  <section id="hooks">
+    <h2>07 · Reference</h2>
+    <div class="h2sub">Key code hooks</div>
+    <p>The levers a gameplay layer can pull:</p>
+    <table class="hooks">
+      <tr><td>Genetics + mutation</td><td><code>src/world_core/evolution.rs</code></td></tr>
+      <tr><td>Lifecycle stages</td><td><code>src/world_core/lifecycle.rs</code></td></tr>
+      <tr><td>Spread / reproduction + census</td><td><code>src/world_runtime/runtime.rs</code></td></tr>
+      <tr><td>Plant struct + environment sampling</td><td><code>src/world_runtime/plant_world.rs</code></td></tr>
+      <tr><td>Species registry / placement</td><td><code>src/world_core/herbarium.rs</code></td></tr>
+      <tr><td>Houses / spread exclusion</td><td><code>src/world_core/content/houses.rs</code></td></tr>
+      <tr><td>Save state</td><td><code>src/world_core/save.rs</code></td></tr>
+      <tr><td>UI panels (Lens, graph, map, editor, menu)</td><td><code>src/ui/</code></td></tr>
+      <tr><td>Input / overlays / favorites / map-click raycast</td><td><code>src/app/event_loop.rs</code>, <code>src/app/mod.rs</code></td></tr>
+    </table>
+  </section>
+
+  <footer>
+    <span>FloraForge — gameplay design notes</span>
+    <span>brainstorm · v1</span>
+  </footer>
+
+</div>
+</body>
+</html>
