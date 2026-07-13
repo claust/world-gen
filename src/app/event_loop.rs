@@ -221,6 +221,43 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                     }
                 }
 
+                // Agency-MVP verbs (plant / cull / cycle species). Guarded like
+                // the other letter shortcuts so they stay free for egui text
+                // fields, and `!repeat` so a held key acts once. The camera keys
+                // (WASD/arrows/space/shift) don't overlap T/C/R.
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && !key_event.repeat
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && !app.map_open
+                        && !app.show_help
+                    {
+                        match key_event.physical_key {
+                            PhysicalKey::Code(KeyCode::KeyT) => {
+                                app.plant_at_crosshair();
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyC) => {
+                                app.cull_at_crosshair();
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyR) => {
+                                app.cycle_planting_species();
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 // Feed events to egui when on start menu, config panel, plant
                 // editor, or the map overlay
                 let egui_wants_event = if app.is_on_menu()
@@ -628,6 +665,41 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                                 app.on_favorite_key(slot);
                                 return;
                             }
+                        }
+                    }
+                }
+
+                // Agency-MVP verbs (plant / cull / cycle species); mirrors the
+                // native loop.
+                if let WindowEvent::KeyboardInput {
+                    event: ref key_event,
+                    ..
+                } = event
+                {
+                    if key_event.state == ElementState::Pressed
+                        && !key_event.repeat
+                        && !app.is_on_menu()
+                        && !app.is_loading()
+                        && !app.is_on_herbarium()
+                        && !app.is_on_editor()
+                        && !app.config_panel.is_visible()
+                        && !app.map_open
+                        && !app.show_help
+                    {
+                        match key_event.physical_key {
+                            PhysicalKey::Code(KeyCode::KeyT) => {
+                                app.plant_at_crosshair();
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyC) => {
+                                app.cull_at_crosshair();
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyR) => {
+                                app.cycle_planting_species();
+                                return;
+                            }
+                            _ => {}
                         }
                     }
                 }

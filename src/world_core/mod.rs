@@ -6,6 +6,7 @@ pub mod color;
 pub mod config;
 pub mod content;
 pub mod evolution;
+pub mod gameplay;
 pub mod heightmap;
 pub mod herbarium;
 pub mod layer;
