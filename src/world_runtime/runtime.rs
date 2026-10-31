@@ -9,7 +9,7 @@ use web_time::Instant;
 
 use glam::{IVec2, Vec3};
 
-use super::plant_world::PlantWorld;
+use super::plant_world::{CrossOutcome, PlantPick, PlantWorld, Pollen};
 use crate::world_core::chunk::ChunkData;
 use crate::world_core::config::GameConfig;
 use crate::world_core::evolution::EvolutionOverlayMode;
@@ -18,6 +18,7 @@ use crate::world_core::lifecycle::GrowthStage;
 use crate::world_core::population_history::PopulationHistory;
 use crate::world_core::save::SaveData;
 use crate::world_core::storage::Storage;
+use crate::world_core::strains::{Strain, StrainReport};
 use crate::world_core::time::WorldClock;
 use crate::world_runtime::streaming::StreamingWorld;
 
@@ -523,6 +524,53 @@ impl WorldRuntime {
             self.refresh_dirty_chunks();
         }
         removed
+    }
+
+    /// Found a strain on the living plant within `reach` metres of a world
+    /// position (the player's found-strain verb). Returns the new strain id.
+    pub fn found_strain(&mut self, x: f32, z: f32, reach: f32) -> Result<u16, String> {
+        let now = self.clock.total_hours();
+        self.plant_world.found_strain_at(x, z, reach, now)
+    }
+
+    /// Gather pollen from the mature plant within `reach` of a world position.
+    pub fn collect_pollen(&self, x: f32, z: f32, reach: f32) -> Result<Pollen, &'static str> {
+        self.plant_world.collect_pollen_at(x, z, reach)
+    }
+
+    /// Cross-pollinate the mature plant within `reach` of a world position with
+    /// `pollen`, sowing its hybrid brood, and refresh the chunks it touched.
+    pub fn cross_pollinate(
+        &mut self,
+        x: f32,
+        z: f32,
+        reach: f32,
+        pollen: Pollen,
+    ) -> Result<CrossOutcome, String> {
+        let now = self.clock.total_hours();
+        let outcome = self
+            .plant_world
+            .cross_pollinate_at(x, z, reach, pollen, now)?;
+        self.refresh_dirty_chunks();
+        Ok(outcome)
+    }
+
+    /// The plant nearest a world position within `reach`, for HUD inspection.
+    pub fn nearest_plant(&self, x: f32, z: f32, reach: f32) -> Option<PlantPick> {
+        self.plant_world.nearest_plant(x, z, reach, |_| true)
+    }
+
+    pub fn strain(&self, id: u16) -> Option<&Strain> {
+        self.plant_world.strain(id)
+    }
+
+    pub fn rename_strain(&mut self, id: u16, name: &str) -> Result<(), &'static str> {
+        self.plant_world.rename_strain(id, name)
+    }
+
+    /// Live per-strain reports (scans only the chunks each strain reached).
+    pub fn strain_reports(&mut self) -> Vec<StrainReport> {
+        self.plant_world.strain_reports()
     }
 
     /// Push the plant store's pending per-chunk changes to the render bridge so a

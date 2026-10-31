@@ -340,6 +340,39 @@ async function cmdCullPlants(apiBase: string, flags: Record<string, string>) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdCollectPollen(apiBase: string, flags: Record<string, string>) {
+  const x = requireFloat(flags, "x");
+  const z = requireFloat(flags, "z");
+  const result = await sendAndWait(apiBase, { type: "collect_pollen", x, z });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdCrossPollinate(apiBase: string, flags: Record<string, string>) {
+  const x = requireFloat(flags, "x");
+  const z = requireFloat(flags, "z");
+  const result = await sendAndWait(apiBase, { type: "cross_pollinate", x, z });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdFoundStrain(apiBase: string, flags: Record<string, string>) {
+  const x = requireFloat(flags, "x");
+  const z = requireFloat(flags, "z");
+  const result = await sendAndWait(apiBase, { type: "found_strain", x, z });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdStrains(apiBase: string) {
+  const result = await sendAndWait(apiBase, { type: "strains" });
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function cmdRenameStrain(apiBase: string, flags: Record<string, string>) {
+  const id = requireInt(flags, "id");
+  const name = requireFlag(flags, "name");
+  const result = await sendAndWait(apiBase, { type: "rename_strain", id, name });
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function cmdGameStats(apiBase: string) {
   const result = await sendAndWait(apiBase, { type: "game_stats" });
   console.log(JSON.stringify(result, null, 2));
@@ -387,6 +420,11 @@ Commands:
   plant           --x <n> --z <n> --species <id>  Plant a seedling of a species at a world position
   cull            --x <n> --z <n> [--radius <n>]  Cull plants within radius of a world position (default 6m)
   game_stats                               Get gameplay state (selected species, tallies, eco score, expeditions)
+  collect_pollen  --x <n> --z <n>          Gather pollen from the mature plant near a position
+  cross_pollinate --x <n> --z <n>          Cross held pollen onto the mature plant near a position
+  found_strain    --x <n> --z <n>          Found a named strain on the plant near a position
+  strains                                  List player-founded strains (living, stages, mean genes, biomes)
+  rename_strain   --id <n> --name <s>      Rename a strain
   set_population_lens --open <true|false>  Open/close the in-game Population Lens
   ui_snapshot                              Get all interactive UI elements
   ui_click        --element <id>           Click a button or toggle checkbox
@@ -509,6 +547,21 @@ async function main() {
         break;
       case "game_stats":
         await cmdGameStats(apiBase);
+        break;
+      case "collect_pollen":
+        await cmdCollectPollen(apiBase, flags);
+        break;
+      case "cross_pollinate":
+        await cmdCrossPollinate(apiBase, flags);
+        break;
+      case "found_strain":
+        await cmdFoundStrain(apiBase, flags);
+        break;
+      case "strains":
+        await cmdStrains(apiBase);
+        break;
+      case "rename_strain":
+        await cmdRenameStrain(apiBase, flags);
         break;
       case "set_population_lens":
         await cmdSetPopulationLens(apiBase, flags);

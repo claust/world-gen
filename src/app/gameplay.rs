@@ -8,15 +8,46 @@
 //! - **Cycle** (`R`) which species the plant verb sows.
 //!
 //! A small HUD shows the selected species, the worldwide biomass/biodiversity
-//! score (from the census), and three "expeditions" — simple objectives that
-//! reward exercising the new verbs. All of it is deliberately thin; depth (seed
-//! bank, cross-pollination, the trait tree) comes in later steps.
+//! score (from the census), and "expeditions" — simple objectives that reward
+//! exercising the verbs.
+//!
+//! Step 02 (the breeder loop) adds:
+//!
+//! - **Pollinate** (`G`): first press gathers pollen from the mature plant under
+//!   the crosshair; the next press on a mature plant of the same species crosses
+//!   them, sowing a hybrid brood that founds a new strain.
+//! - **Found strain** (`F`): tag the plant under the crosshair as the founder of
+//!   a named strain, inherited down its maternal line by every seed it spreads.
+//! - A strains panel and trait expeditions scored from live strain reports.
 
 use egui::{Color32, Pos2, RichText, Stroke};
 
+use crate::world_core::evolution::PlantGenes;
 use crate::world_core::gameplay::EcoScore;
+use crate::world_core::strains::{StrainReport, DISPERSAL};
+use crate::world_runtime::{Pollen, WILD_STRAIN};
 
 use super::AppState;
+
+/// How far from the crosshair hit a plant verb reaches for "the plant you are
+/// looking at". The ground pick lands within a metre or two of a trunk the
+/// player aims at; tighter would make picking fiddly at a distance.
+const PICK_REACH: f32 = 4.0;
+
+/// Strain reports rescan each strain's chunks, so the HUD refreshes them on a
+/// timer rather than every frame.
+const STRAIN_REFRESH_SECS: f32 = 1.0;
+
+/// The crosshair read-out ray-marches the height field (up to `PICK_MAX_DIST`
+/// noise samples), so it is re-taken at 10 Hz rather than every frame.
+const TARGET_REFRESH_SECS: f32 = 0.1;
+
+/// Strains listed in the HUD panel, most populous first.
+const HUD_STRAIN_ROWS: usize = 4;
+
+/// Living members a strain needs before its trait means count toward an
+/// expedition, so one lucky seedling can't complete a breeding goal.
+const TRAIT_MIN_LIVING: u32 = 10;
 
 /// Metres cleared around the crosshair by one cull. Comfortably larger than a
 /// single plant so a cull reliably removes what the player is aiming at, but
@@ -48,6 +79,23 @@ pub(super) struct GameState {
     pub(super) selected_species: u8,
     pub(super) seeds_planted: u32,
     pub(super) plants_culled: u32,
+    /// Pollen gathered by `G`, waiting to be crossed onto a mother plant.
+    pub(super) pollen: Option<Pollen>,
+    pub(super) crosses: u32,
+    pub(super) strains_founded: u32,
+    /// Latest strain reports and when they were taken (`elapsed_seconds`).
+    pub(super) strain_reports: Vec<StrainReport>,
+    reports_taken_at: Option<f32>,
+    /// Cached crosshair read-out and when it was taken.
+    target: Option<String>,
+    target_taken_at: Option<f32>,
+}
+
+impl GameState {
+    /// Force the next HUD refresh to re-take the strain reports.
+    pub(super) fn invalidate_strain_reports(&mut self) {
+        self.reports_taken_at = None;
+    }
 }
 
 /// One HUD objective row: a title, current progress, and its target.
@@ -57,15 +105,26 @@ struct Expedition {
     target: u32,
 }
 
+/// Best value of `metric` over strains with at least `min_living` members.
+fn best_strain(game: &GameState, min_living: u32, metric: impl Fn(&StrainReport) -> u32) -> u32 {
+    game.strain_reports
+        .iter()
+        .filter(|r| r.living >= min_living)
+        .map(metric)
+        .max()
+        .unwrap_or(0)
+}
+
 impl Expedition {
     fn done(&self) -> bool {
         self.progress >= self.target
     }
 }
 
-/// The three MVP expeditions, evaluated against the running action tallies. They
-/// reward using the new verbs so the loop teaches itself.
-fn expeditions(game: &GameState) -> [Expedition; 3] {
+/// The expeditions, evaluated against the running action tallies and the live
+/// strain reports. The first few reward using each verb so the loop teaches
+/// itself; the breeding goals then ask for an outcome selection has to produce.
+fn expeditions(game: &GameState) -> [Expedition; 7] {
     [
         Expedition {
             title: "First Sprout — plant a seed",
@@ -81,6 +140,28 @@ fn expeditions(game: &GameState) -> [Expedition; 3] {
             title: "Natural Selection — cull 20 plants",
             progress: game.plants_culled,
             target: 20,
+        },
+        Expedition {
+            title: "Matchmaker — cross-pollinate two plants",
+            progress: game.crosses,
+            target: 1,
+        },
+        Expedition {
+            title: "Lineage — grow a strain to 50 plants",
+            progress: best_strain(game, 0, |r| r.living),
+            target: 50,
+        },
+        Expedition {
+            title: "Wanderer — breed a strain to 70% dispersal",
+            progress: best_strain(game, TRAIT_MIN_LIVING, |r| {
+                (r.mean_genes[DISPERSAL] * 100.0).round() as u32
+            }),
+            target: 70,
+        },
+        Expedition {
+            title: "Pioneer — a strain thriving in 2 biomes",
+            progress: best_strain(game, TRAIT_MIN_LIVING, |r| r.biomes.len() as u32),
+            target: 2,
         },
     ]
 }
@@ -142,6 +223,117 @@ impl AppState {
         } else {
             self.set_game_toast("Nothing to cull here".to_string());
         }
+    }
+
+    /// `G`: gather pollen from the plant under the crosshair, or — holding
+    /// pollen — cross it onto that plant. Pollen of another species can't
+    /// fertilise the target, so it is swapped for the target's pollen instead;
+    /// that doubles as the way to drop held pollen.
+    pub(super) fn pollinate_at_crosshair(&mut self) {
+        let Some((x, z)) = self.pick_ground_ahead() else {
+            self.set_game_toast("No plant in view".to_string());
+            return;
+        };
+        let message = match self.game.pollen {
+            Some(pollen) => match self.cross_at(x, z, pollen) {
+                Ok(message) => message,
+                Err(err) => match self
+                    .world
+                    .as_ref()
+                    .map(|w| w.collect_pollen(x, z, PICK_REACH))
+                {
+                    Some(Ok(other)) if other.species != pollen.species => {
+                        self.game.pollen = Some(other);
+                        format!("Swapped to {} pollen", self.species_name(other.species))
+                    }
+                    _ => format!("Can't cross: {err}"),
+                },
+            },
+            None => match self.gather_pollen_at(x, z) {
+                Ok(pollen) => format!(
+                    "Gathered {} pollen{} — [G] on a mature plant to cross",
+                    self.species_name(pollen.species),
+                    self.strain_suffix(pollen.strain),
+                ),
+                Err(err) => format!("Can't gather pollen: {err}"),
+            },
+        };
+        self.set_game_toast(message);
+    }
+
+    /// `F`: found a strain on the plant under the crosshair.
+    pub(super) fn found_strain_at_crosshair(&mut self) {
+        let Some((x, z)) = self.pick_ground_ahead() else {
+            self.set_game_toast("No plant in view".to_string());
+            return;
+        };
+        let message = match self.found_strain_at(x, z) {
+            Ok(name) => format!("Founded the {name} strain"),
+            Err(err) => format!("Can't found a strain: {err}"),
+        };
+        self.set_game_toast(message);
+    }
+
+    /// Gather pollen into the player's hand. Shared with the debug API.
+    pub(super) fn gather_pollen_at(&mut self, x: f32, z: f32) -> Result<Pollen, String> {
+        let world = self.world.as_ref().ok_or("world not ready")?;
+        let pollen = world.collect_pollen(x, z, PICK_REACH)?;
+        self.game.pollen = Some(pollen);
+        Ok(pollen)
+    }
+
+    /// Cross held `pollen` onto the plant at a position, consuming it on
+    /// success and crediting the tally. Shared with the debug API.
+    pub(super) fn cross_at(&mut self, x: f32, z: f32, pollen: Pollen) -> Result<String, String> {
+        let world = self.world.as_mut().ok_or("world not ready")?;
+        let outcome = world.cross_pollinate(x, z, PICK_REACH, pollen)?;
+        let name = world
+            .strain(outcome.strain)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        self.game.pollen = None;
+        self.game.crosses += 1;
+        self.game.invalidate_strain_reports();
+        Ok(format!("Sowed {} {name} hybrids", outcome.seedlings))
+    }
+
+    /// Found a strain at a position, returning its name. Shared with the debug
+    /// API.
+    pub(super) fn found_strain_at(&mut self, x: f32, z: f32) -> Result<String, String> {
+        let world = self.world.as_mut().ok_or("world not ready")?;
+        let id = world.found_strain(x, z, PICK_REACH)?;
+        self.game.strains_founded += 1;
+        self.game.invalidate_strain_reports();
+        Ok(world.strain(id).map(|s| s.name.clone()).unwrap_or_default())
+    }
+
+    /// Re-take the HUD's throttled reads — strain reports, and the crosshair
+    /// read-out — once they are older than their refresh interval (or a verb
+    /// invalidated them).
+    pub(super) fn refresh_hud_caches(&mut self) {
+        let now = self.elapsed_seconds;
+        let stale = |taken: Option<f32>, every: f32| taken.is_none_or(|t| now - t >= every);
+        if stale(self.game.reports_taken_at, STRAIN_REFRESH_SECS) {
+            if let Some(world) = self.world.as_mut() {
+                self.game.strain_reports = world.strain_reports();
+                self.game.reports_taken_at = Some(now);
+            }
+        }
+        if stale(self.game.target_taken_at, TARGET_REFRESH_SECS) {
+            self.game.target = self.target_line();
+            self.game.target_taken_at = Some(now);
+        }
+    }
+
+    fn strain_suffix(&self, strain: u16) -> String {
+        if strain == WILD_STRAIN {
+            return String::new();
+        }
+        self.world
+            .as_ref()
+            .and_then(|w| w.strain(strain))
+            .map(|s| format!(" ({})", s.name))
+            .unwrap_or_default()
     }
 
     /// Switch the plant verb to the next registered species, wrapping around.
@@ -217,6 +409,15 @@ impl AppState {
             "selected_species_name": self.species_name(self.game.selected_species),
             "seeds_planted": self.game.seeds_planted,
             "plants_culled": self.game.plants_culled,
+            "pollen": self.game.pollen.map(|p| serde_json::json!({
+                "species": p.species,
+                "species_name": self.species_name(p.species),
+                "strain": p.strain,
+                "genes": p.genes.to_bytes(),
+            })),
+            "crosses": self.game.crosses,
+            "strains_founded": self.game.strains_founded,
+            "strains": strain_reports_json(&self.game.strain_reports),
             "eco_score": score.map(|s| serde_json::json!({
                 "living": s.living,
                 "biomass": s.biomass,
@@ -234,7 +435,32 @@ impl AppState {
     /// is built on.
     pub(super) fn gameplay_hud_data(&self) -> HudData {
         let exps = expeditions(&self.game);
+        let mut strains: Vec<StrainRow> = self
+            .game
+            .strain_reports
+            .iter()
+            .filter(|r| !r.extinct())
+            .map(|r| StrainRow {
+                name: r.name.clone(),
+                living: r.living,
+                dispersal: r.mean_genes[DISPERSAL],
+                biomes: r.biomes.len(),
+            })
+            .collect();
+        strains.sort_by(|a, b| b.living.cmp(&a.living));
+        let extinct_strains = self.game.strain_reports.len() - strains.len();
+        strains.truncate(HUD_STRAIN_ROWS);
         HudData {
+            pollen: self.game.pollen.map(|p| {
+                format!(
+                    "{}{}",
+                    self.species_name(p.species),
+                    self.strain_suffix(p.strain)
+                )
+            }),
+            target: self.game.target.clone(),
+            strains,
+            extinct_strains,
             species_name: self.species_name(self.game.selected_species),
             score: self.world.as_ref().and_then(|w| w.eco_score()),
             cursor_captured: self.cursor_captured,
@@ -251,8 +477,71 @@ impl AppState {
     }
 }
 
+impl AppState {
+    /// One-line read-out of the plant under the crosshair — its species, stage,
+    /// strain and the traits the breeding goals ask for — so the player can
+    /// choose parents by eye.
+    fn target_line(&self) -> Option<String> {
+        if !self.cursor_captured {
+            return None;
+        }
+        let (x, z) = self.pick_ground_ahead()?;
+        let pick = self.world.as_ref()?.nearest_plant(x, z, PICK_REACH)?;
+        let p = pick.plant;
+        let stage = ["seedling", "young", "mature", "dead"]
+            .get(p.stage as usize)
+            .copied()
+            .unwrap_or("?");
+        let pct = |g: u8| (PlantGenes::unit(g) * 100.0).round() as u32;
+        Some(format!(
+            "{}{} · {stage}\ndisp {}% · fec {}% · hardy {}%",
+            self.species_name(p.species),
+            self.strain_suffix(p.strain),
+            pct(p.genes.dispersal),
+            pct(p.genes.fecundity),
+            pct(p.genes.stress_width),
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn strain_reports_json(reports: &[StrainReport]) -> serde_json::Value {
+    use crate::world_core::strains::GENE_NAMES;
+    reports
+        .iter()
+        .map(|r| {
+            let genes: serde_json::Map<String, serde_json::Value> = GENE_NAMES
+                .iter()
+                .zip(r.mean_genes)
+                .map(|(name, v)| (name.to_string(), serde_json::json!(v)))
+                .collect();
+            serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+                "species": r.species,
+                "hybrid": r.hybrid,
+                "living": r.living,
+                "stages": r.stages,
+                "mean_genes": genes,
+                "biomes": r.biomes,
+            })
+        })
+        .collect()
+}
+
+struct StrainRow {
+    name: String,
+    living: u32,
+    dispersal: f32,
+    biomes: usize,
+}
+
 /// Everything [`draw_gameplay_hud`] renders, snapshotted from `AppState`.
 pub(super) struct HudData {
+    pollen: Option<String>,
+    target: Option<String>,
+    strains: Vec<StrainRow>,
+    extinct_strains: usize,
     species_name: String,
     score: Option<EcoScore>,
     cursor_captured: bool,
@@ -292,7 +581,7 @@ pub(super) fn draw_gameplay_hud(ctx: &egui::Context, hud: &HudData) {
                 .map(|_| ui.painter().add(egui::Shape::Noop))
                 .collect();
 
-            ui.set_max_width(260.0);
+            ui.set_max_width(300.0);
             ui.label(
                 RichText::new("FloraForge")
                     .size(17.0)
@@ -306,10 +595,22 @@ pub(super) fn draw_gameplay_hud(ctx: &egui::Context, hud: &HudData) {
                     .color(Color32::WHITE),
             );
             ui.label(
-                RichText::new("[T] plant   [C] cull   [R] species")
-                    .size(12.0)
-                    .color(TEXT),
+                RichText::new(
+                    "[T] plant   [C] cull   [R] species\n[G] pollen / cross   [F] found strain",
+                )
+                .size(12.0)
+                .color(TEXT),
             );
+            if let Some(pollen) = &hud.pollen {
+                ui.label(
+                    RichText::new(format!("Holding pollen: {pollen}"))
+                        .size(13.0)
+                        .color(DONE),
+                );
+            }
+            if let Some(target) = &hud.target {
+                ui.label(RichText::new(target).size(12.5).color(Color32::WHITE));
+            }
 
             ui.separator();
             if let Some(s) = hud.score {
@@ -333,6 +634,32 @@ pub(super) fn draw_gameplay_hud(ctx: &egui::Context, hud: &HudData) {
                 );
             } else {
                 ui.label(RichText::new("Biomass  (sampling…)").size(13.0).color(TEXT));
+            }
+
+            if !hud.strains.is_empty() || hud.extinct_strains > 0 {
+                ui.separator();
+                ui.label(RichText::new("Strains").size(13.0).strong().color(ACCENT));
+                for row in &hud.strains {
+                    let biomes = if row.biomes == 1 { "biome" } else { "biomes" };
+                    ui.label(
+                        RichText::new(format!(
+                            "{}  {} · disp {:.0}% · {} {biomes}",
+                            row.name,
+                            row.living,
+                            row.dispersal * 100.0,
+                            row.biomes
+                        ))
+                        .size(12.5)
+                        .color(TEXT),
+                    );
+                }
+                if hud.extinct_strains > 0 {
+                    ui.label(
+                        RichText::new(format!("{} extinct", hud.extinct_strains))
+                            .size(12.0)
+                            .color(TEXT),
+                    );
+                }
             }
 
             ui.separator();

@@ -2059,6 +2059,7 @@ impl AppState {
                 // would force a whole-`self` capture that conflicts with the
                 // `egui_bridge` receiver `run` is invoked on.
                 let gameplay_hud = if matches!(self.screen, Screen::Playing) {
+                    self.refresh_hud_caches();
                     Some(self.gameplay_hud_data())
                 } else {
                     None

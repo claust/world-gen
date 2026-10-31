@@ -224,7 +224,7 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                 // Agency-MVP verbs (plant / cull / cycle species). Guarded like
                 // the other letter shortcuts so they stay free for egui text
                 // fields, and `!repeat` so a held key acts once. The camera keys
-                // (WASD/arrows/space/shift) don't overlap T/C/R.
+                // (WASD/arrows/space/shift) don't overlap T/C/R/G/F.
                 if let WindowEvent::KeyboardInput {
                     event: ref key_event,
                     ..
@@ -251,6 +251,14 @@ pub fn run_event_loop(mut app: AppState, event_loop: EventLoop<()>) -> Result<()
                             }
                             PhysicalKey::Code(KeyCode::KeyR) => {
                                 app.cycle_planting_species();
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyG) => {
+                                app.pollinate_at_crosshair();
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyF) => {
+                                app.found_strain_at_crosshair();
                                 return;
                             }
                             _ => {}
@@ -697,6 +705,14 @@ pub fn run_event_loop_web(window: &'static winit::window::Window, event_loop: Ev
                             }
                             PhysicalKey::Code(KeyCode::KeyR) => {
                                 app.cycle_planting_species();
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyG) => {
+                                app.pollinate_at_crosshair();
+                                return;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyF) => {
+                                app.found_strain_at_crosshair();
                                 return;
                             }
                             _ => {}
