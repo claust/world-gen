@@ -93,6 +93,9 @@ pub struct Pollen {
     pub species: u8,
     pub strain: u16,
     pub genes: PlantGenes,
+    /// Where the donor grows, so a hand cross can refuse to dust the pollen
+    /// back onto its own donor (wild spread still self-pollinates).
+    pub donor: StrainFounder,
 }
 
 /// Result of a successful [`PlantWorld::cross_pollinate_at`].
@@ -1317,6 +1320,121 @@ impl PlantWorld {
         best
     }
 
+    /// The first plant a ray hits within `max_t` (pass the terrain hit distance
+    /// so the ground occludes plants behind it). Each plant is a vertical
+    /// cylinder — generous radius for easy aiming, its current-stage height —
+    /// standing on the terrain. Returns the pick and the ray distance; the
+    /// pick's position is on the ray origin's world lap.
+    pub fn pick_plant_on_ray(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        max_t: f32,
+    ) -> Option<(PlantPick, f32)> {
+        const SAMPLE_STEP: f32 = 32.0;
+        let dh = Vec2::new(dir.x, dir.z);
+        let dh2 = dh.length_squared();
+        if dh2 < 1e-6 {
+            // Straight down: no horizontal sweep, the ground pick covers it.
+            return None;
+        }
+        let n = WORLD_SIZE_CHUNKS;
+        let world = WORLD_SIZE_METERS as f32;
+
+        // Chunks (unwrapped, on the origin's lap) along the ray, plus their
+        // neighbours so a plant near a border is never missed.
+        let mut cells: Vec<(i32, i32)> = Vec::new();
+        let mut t = 0.0f32;
+        loop {
+            let p = origin + dir * t.min(max_t);
+            let cx = (p.x / CHUNK_SIZE_METERS).floor() as i32;
+            let cz = (p.z / CHUNK_SIZE_METERS).floor() as i32;
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    if !cells.contains(&(cx + dx, cz + dz)) {
+                        cells.push((cx + dx, cz + dz));
+                    }
+                }
+            }
+            if t >= max_t {
+                break;
+            }
+            t += SAMPLE_STEP;
+        }
+
+        let mut best: Option<(PlantPick, f32)> = None;
+        for (ux, uz) in cells {
+            let idx = (uz.rem_euclid(n) * n + ux.rem_euclid(n)) as usize;
+            let origin_x = ux as f32 * CHUNK_SIZE_METERS;
+            let origin_z = uz as f32 * CHUNK_SIZE_METERS;
+            for (index, plant) in self.chunks[idx].iter().enumerate() {
+                let Some(species) = self.registry.species.get(plant.species as usize) else {
+                    continue;
+                };
+                let radius = if species.kind == "shrub" { 1.5 } else { 2.5 };
+                let px = origin_x + dequantize_span(plant.local_x);
+                let pz = origin_z + dequantize_span(plant.local_z);
+                // Horizontal closest approach first: cheap, rejects nearly all.
+                let rel = Vec2::new(px - origin.x, pz - origin.z);
+                let t_mid = rel.dot(dh) / dh2;
+                let miss2 = (rel - dh * t_mid).length_squared();
+                if miss2 > radius * radius {
+                    continue;
+                }
+                let half = ((radius * radius - miss2) / dh2).sqrt();
+                let t0 = (t_mid - half).max(0.0);
+                let t1 = (t_mid + half).min(max_t);
+                if t0 > t1 || best.as_ref().is_some_and(|(_, bt)| *bt <= t0) {
+                    continue;
+                }
+                let ground = self
+                    .heightmap
+                    .sample_height(px.rem_euclid(world), pz.rem_euclid(world));
+                let top = ground
+                    + dequantize_span(plant.height) * stage_from_u8(plant.stage).scale_factor();
+                // The ray's height is linear in t; take the first t in [t0, t1]
+                // where it is inside [ground, top].
+                let y0 = origin.y + dir.y * t0;
+                let y1 = origin.y + dir.y * t1;
+                let enter = if (ground..=top).contains(&y0) {
+                    Some(t0)
+                } else if dir.y.abs() > 1e-6 {
+                    let bound = if y0 > top { top } else { ground };
+                    let tb = t0 + (bound - y0) / dir.y;
+                    let crosses = (y0 - bound).signum() != (y1 - bound).signum();
+                    crosses.then_some(tb)
+                } else {
+                    None
+                };
+                let Some(hit_t) = enter else {
+                    continue;
+                };
+                if best.as_ref().is_none_or(|(_, bt)| hit_t < *bt) {
+                    let pick = PlantPick {
+                        chunk: idx,
+                        index,
+                        plant: *plant,
+                        distance: 0.0,
+                    };
+                    best = Some((pick, hit_t));
+                }
+            }
+        }
+        best
+    }
+
+    /// World position of a picked plant on the lap nearest `near`.
+    pub fn pick_position(pick: &PlantPick, near: Vec3) -> (f32, f32) {
+        let world = WORLD_SIZE_METERS as f32;
+        let (x, z) = Self::canonical_position(
+            pick.chunk,
+            dequantize_span(pick.plant.local_x),
+            dequantize_span(pick.plant.local_z),
+        );
+        let lap = |v: f32, n: f32| v + ((n - v) / world).round() * world;
+        (lap(x, near.x), lap(z, near.z))
+    }
+
     /// Every registered strain, in id order.
     pub fn strains(&self) -> &[Strain] {
         &self.strains
@@ -1413,6 +1531,11 @@ impl PlantWorld {
             species: pick.plant.species,
             strain: pick.plant.strain,
             genes: pick.plant.genes,
+            donor: StrainFounder {
+                chunk: pick.chunk as u32,
+                local_x: pick.plant.local_x,
+                local_z: pick.plant.local_z,
+            },
         })
     }
 
@@ -1439,6 +1562,13 @@ impl PlantWorld {
             return Err(format!(
                 "{pollen_name} pollen can't fertilise {mother_name}"
             ));
+        }
+        let donor = pollen.donor;
+        if donor.chunk as usize == mother.chunk
+            && donor.local_x == mp.local_x
+            && donor.local_z == mp.local_z
+        {
+            return Err("that plant gave the pollen — pick a second parent".to_string());
         }
         let Some(species) = self.registry.species.get(mp.species as usize) else {
             return Err("unregistered species".to_string());
@@ -2042,33 +2172,24 @@ impl PlantWorld {
         if seed != self.seed {
             anyhow::bail!("seed {seed} does not match world seed {}", self.seed);
         }
-        let chunk_count = cur.read_u32()? as usize;
-        let mut added = 0usize;
-        for _ in 0..chunk_count {
-            let idx = cur.read_u32()? as usize;
-            let count = cur.read_u32()? as usize;
-            if idx >= self.chunks.len() {
-                anyhow::bail!("chunk index {idx} out of range");
-            }
-            // Bound `count` by the bytes actually left before reserving, so a
-            // corrupted length can't trigger a huge allocation ahead of the EOF.
-            if count.saturating_mul(plant_bytes) > cur.remaining() {
-                anyhow::bail!("declared {count} plants exceed the remaining data");
-            }
-            // The base list was shrunk to fit during generation; reserve the
-            // suffix up front so restoring it is one growth, not many.
-            self.chunks[idx].reserve(count);
-            for _ in 0..count {
-                let plant = read_plant(&mut cur, version)?;
-                if plant.stage < MATURE {
-                    self.immature[idx] += 1;
+        // Appended in place to avoid staging a copy of a multi-million-plant
+        // save; every chunk touched is recorded so a malformed tail rolls the
+        // whole load back instead of leaving uncounted plants behind.
+        let mut touched: Vec<(usize, usize)> = Vec::new();
+        let parsed = self.append_spread_body(&mut cur, version, plant_bytes, &mut touched);
+        let (added, strains) = match parsed {
+            Ok(ok) => ok,
+            Err(err) => {
+                for &(idx, len) in &touched {
+                    self.chunks[idx].truncate(len);
                 }
-                self.chunks[idx].push(plant);
-                added += 1;
+                return Err(err);
             }
-        }
-        if version >= SPREAD_VERSION {
-            self.strains = read_strains(&mut cur)?;
+        };
+        self.strains = strains;
+        for &(idx, _) in &touched {
+            self.immature[idx] =
+                self.chunks[idx].iter().filter(|p| p.stage < MATURE).count() as u32;
         }
         self.restore_strain_index();
         // Recompute cached totals from scratch — cheap next to world generation.
@@ -2082,8 +2203,57 @@ impl PlantWorld {
         for (idx, &immature) in self.immature.iter().enumerate() {
             self.saturated[idx] = immature == 0;
         }
+        // ...except where a strain lives: founding woke its block so it could
+        // reproduce, and a save/load must not put it back to sleep.
+        let strain_chunks: Vec<u32> = self.strain_chunks.iter().flatten().copied().collect();
+        for idx in strain_chunks {
+            self.unsaturate_neighbourhood(idx as usize);
+        }
         self.recompute_biome_fill();
         Ok(added)
+    }
+
+    /// Parse the per-chunk plant sections and strain trailer of a spread blob,
+    /// appending plants to their chunks and recording each chunk's prior length
+    /// in `touched` so the caller can roll back on error.
+    fn append_spread_body(
+        &mut self,
+        cur: &mut Cursor<'_>,
+        version: u32,
+        plant_bytes: usize,
+        touched: &mut Vec<(usize, usize)>,
+    ) -> anyhow::Result<(usize, Vec<Strain>)> {
+        let chunk_count = cur.read_u32()? as usize;
+        let mut added = 0usize;
+        for _ in 0..chunk_count {
+            let idx = cur.read_u32()? as usize;
+            let count = cur.read_u32()? as usize;
+            if idx >= self.chunks.len() {
+                anyhow::bail!("chunk index {idx} out of range");
+            }
+            // Bound `count` by the bytes actually left before reserving, so a
+            // corrupted length can't trigger a huge allocation ahead of the EOF.
+            if count.saturating_mul(plant_bytes) > cur.remaining() {
+                anyhow::bail!("declared {count} plants exceed the remaining data");
+            }
+            // A well-formed save lists each chunk once; a repeat only adds a
+            // later, longer entry that rollback (in order) truncates past.
+            touched.push((idx, self.chunks[idx].len()));
+            // The base list was shrunk to fit during generation; reserve the
+            // suffix up front so restoring it is one growth, not many.
+            self.chunks[idx].reserve(count);
+            for _ in 0..count {
+                let plant = read_plant(cur, version)?;
+                self.chunks[idx].push(plant);
+                added += 1;
+            }
+        }
+        let strains = if version >= SPREAD_VERSION {
+            read_strains(cur)?
+        } else {
+            Vec::new()
+        };
+        Ok((added, strains))
     }
 
     /// Brotli quality for the snapshot shipped on GitHub and downloaded by
@@ -4405,6 +4575,80 @@ mod tests {
         assert_eq!(reloaded.apply_saved_spread(&storage), cross.seedlings);
         assert_eq!(reloaded.strains(), world.strains());
         assert_eq!(reloaded.strain_reports(), world.strain_reports());
+    }
+
+    #[test]
+    fn hand_cross_rejects_the_pollen_donor_as_mother() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        let pollen = world.collect_pollen_at(x, z, 2.0).unwrap();
+        let err = world
+            .cross_pollinate_at(x, z, 2.0, pollen, 6.0)
+            .unwrap_err();
+        assert!(err.contains("second parent"), "{err}");
+        assert!(world.strains().is_empty(), "no strain founded");
+    }
+
+    #[test]
+    fn malformed_strain_trailer_rolls_the_load_back() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        world.found_strain_at(x, z, 2.0, 1.0).unwrap();
+        let storage = MemBytes::default();
+        world.save_spread(&storage).unwrap();
+        let mut bytes = storage.load_bytes("plants").unwrap();
+        bytes.truncate(bytes.len() - 3);
+
+        let (mut fresh, ..) = land_world();
+        let before = (fresh.population(), fresh.census());
+        assert_eq!(fresh.apply_saved_spread_bytes(Some(&bytes)), 0);
+        assert_eq!((fresh.population(), fresh.census()), before);
+        assert!(
+            fresh.chunks.iter().all(Vec::is_empty),
+            "no partial plants left"
+        );
+        assert!(fresh.strains().is_empty());
+    }
+
+    #[test]
+    fn reload_keeps_a_founded_strain_awake_in_settled_ground() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        world.found_strain_at(x, z, 2.0, 1.0).unwrap();
+        let storage = MemBytes::default();
+        world.save_spread(&storage).unwrap();
+
+        let (mut reloaded, ..) = land_world();
+        reloaded.apply_saved_spread(&storage);
+        let (idx, ..) = PlantWorld::locate(x, z);
+        assert_eq!(reloaded.chunks[idx][0].strain, 1);
+        assert_eq!(reloaded.immature[idx], 0, "all mature");
+        assert!(!reloaded.saturated[idx], "strain block stays awake");
+    }
+
+    #[test]
+    fn ray_pick_hits_the_first_plant_and_respects_occlusion() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        mature_at(&mut world, x + 10.0, z, [20; 8]);
+        let ground = world.heightmap.sample_height(x, z);
+        // Level ray along +x at ~1 m above the near plant's base.
+        let origin = Vec3::new(x - 20.0, ground + 1.0, z);
+        let dir = Vec3::X;
+        let (pick, t) = world.pick_plant_on_ray(origin, dir, 100.0).expect("hit");
+        assert_eq!(
+            pick.plant.genes,
+            PlantGenes::from_bytes([10; 8]),
+            "nearer plant"
+        );
+        assert!((15.0..20.0).contains(&t), "enters the near cylinder, t={t}");
+        let (px, pz) = PlantWorld::pick_position(&pick, origin);
+        assert!((px - x).abs() < 0.01 && (pz - z).abs() < 0.01);
+        // Terrain occluding at 10 m hides both plants.
+        assert!(world.pick_plant_on_ray(origin, dir, 10.0).is_none());
+        // A ray passing well above the canopy misses.
+        let high = Vec3::new(x - 20.0, ground + 500.0, z);
+        assert!(world.pick_plant_on_ray(high, dir, 100.0).is_none());
     }
 
     #[test]

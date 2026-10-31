@@ -29,10 +29,18 @@ use crate::world_runtime::{Pollen, WILD_STRAIN};
 
 use super::AppState;
 
-/// How far from the crosshair hit a plant verb reaches for "the plant you are
-/// looking at". The ground pick lands within a metre or two of a trunk the
-/// player aims at; tighter would make picking fiddly at a distance.
-const PICK_REACH: f32 = 4.0;
+/// How far from a debug-API position the plant verbs reach for a plant: the
+/// caller names a spot, not an exact trunk.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) const PICK_REACH: f32 = 4.0;
+
+/// Reach around a plant the crosshair ray hit: just enough to re-find that
+/// exact plant by position, so a neighbour can never be chosen instead.
+const AIM_REACH: f32 = 0.25;
+
+/// Reach around the ground hit when the ray passes no plant — catches a
+/// seedling too small to intersect while aiming straight at it.
+const GROUND_REACH: f32 = 1.5;
 
 /// Strain reports rescan each strain's chunks, so the HUD refreshes them on a
 /// timer rather than every frame.
@@ -173,6 +181,12 @@ impl AppState {
     /// cursor is captured for mouselook in gameplay, so the crosshair *is* the
     /// cursor.
     pub(super) fn pick_ground_ahead(&self) -> Option<(f32, f32)> {
+        self.ground_hit_ahead().map(|(_, x, z)| (x, z))
+    }
+
+    /// As [`pick_ground_ahead`](Self::pick_ground_ahead), also returning the
+    /// ray distance to the hit.
+    fn ground_hit_ahead(&self) -> Option<(f32, f32, f32)> {
         let world = self.world.as_ref()?;
         let origin = self.camera.position;
         let dir = self.camera.forward();
@@ -188,12 +202,28 @@ impl AppState {
                 // the hit where the vertical gap reaches zero.
                 let denom = prev_gap - gap;
                 let frac = if denom > 0.0 { prev_gap / denom } else { 0.0 };
-                let hit = origin + dir * (t - PICK_STEP + frac * PICK_STEP);
-                return Some((hit.x, hit.z));
+                let hit_t = t - PICK_STEP + frac * PICK_STEP;
+                let hit = origin + dir * hit_t;
+                return Some((hit_t, hit.x, hit.z));
             }
             prev_gap = gap;
         }
         None
+    }
+
+    /// The plant under the crosshair, as a position plus the reach that
+    /// re-finds it: the first plant the camera ray enters before the terrain
+    /// occludes it, else whatever stands right at the ground hit.
+    fn aim_at_plant(&self) -> Option<(f32, f32, f32)> {
+        let world = self.world.as_ref()?;
+        let ground = self.ground_hit_ahead();
+        let max_t = ground.map_or(PICK_MAX_DIST, |(t, _, _)| t);
+        if let Some((_, x, z)) =
+            world.pick_plant_on_ray(self.camera.position, self.camera.forward(), max_t)
+        {
+            return Some((x, z, AIM_REACH));
+        }
+        ground.map(|(_, x, z)| (x, z, GROUND_REACH))
     }
 
     /// Plant the selected species where the camera looks, with on-screen feedback.
@@ -230,18 +260,14 @@ impl AppState {
     /// fertilise the target, so it is swapped for the target's pollen instead;
     /// that doubles as the way to drop held pollen.
     pub(super) fn pollinate_at_crosshair(&mut self) {
-        let Some((x, z)) = self.pick_ground_ahead() else {
+        let Some((x, z, reach)) = self.aim_at_plant() else {
             self.set_game_toast("No plant in view".to_string());
             return;
         };
         let message = match self.game.pollen {
-            Some(pollen) => match self.cross_at(x, z, pollen) {
+            Some(pollen) => match self.cross_at(x, z, reach, pollen) {
                 Ok(message) => message,
-                Err(err) => match self
-                    .world
-                    .as_ref()
-                    .map(|w| w.collect_pollen(x, z, PICK_REACH))
-                {
+                Err(err) => match self.world.as_ref().map(|w| w.collect_pollen(x, z, reach)) {
                     Some(Ok(other)) if other.species != pollen.species => {
                         self.game.pollen = Some(other);
                         format!("Swapped to {} pollen", self.species_name(other.species))
@@ -249,7 +275,7 @@ impl AppState {
                     _ => format!("Can't cross: {err}"),
                 },
             },
-            None => match self.gather_pollen_at(x, z) {
+            None => match self.gather_pollen_at(x, z, reach) {
                 Ok(pollen) => format!(
                     "Gathered {} pollen{} — [G] on a mature plant to cross",
                     self.species_name(pollen.species),
@@ -263,11 +289,11 @@ impl AppState {
 
     /// `F`: found a strain on the plant under the crosshair.
     pub(super) fn found_strain_at_crosshair(&mut self) {
-        let Some((x, z)) = self.pick_ground_ahead() else {
+        let Some((x, z, reach)) = self.aim_at_plant() else {
             self.set_game_toast("No plant in view".to_string());
             return;
         };
-        let message = match self.found_strain_at(x, z) {
+        let message = match self.found_strain_at(x, z, reach) {
             Ok(name) => format!("Founded the {name} strain"),
             Err(err) => format!("Can't found a strain: {err}"),
         };
@@ -275,18 +301,29 @@ impl AppState {
     }
 
     /// Gather pollen into the player's hand. Shared with the debug API.
-    pub(super) fn gather_pollen_at(&mut self, x: f32, z: f32) -> Result<Pollen, String> {
+    pub(super) fn gather_pollen_at(
+        &mut self,
+        x: f32,
+        z: f32,
+        reach: f32,
+    ) -> Result<Pollen, String> {
         let world = self.world.as_ref().ok_or("world not ready")?;
-        let pollen = world.collect_pollen(x, z, PICK_REACH)?;
+        let pollen = world.collect_pollen(x, z, reach)?;
         self.game.pollen = Some(pollen);
         Ok(pollen)
     }
 
     /// Cross held `pollen` onto the plant at a position, consuming it on
     /// success and crediting the tally. Shared with the debug API.
-    pub(super) fn cross_at(&mut self, x: f32, z: f32, pollen: Pollen) -> Result<String, String> {
+    pub(super) fn cross_at(
+        &mut self,
+        x: f32,
+        z: f32,
+        reach: f32,
+        pollen: Pollen,
+    ) -> Result<String, String> {
         let world = self.world.as_mut().ok_or("world not ready")?;
-        let outcome = world.cross_pollinate(x, z, PICK_REACH, pollen)?;
+        let outcome = world.cross_pollinate(x, z, reach, pollen)?;
         let name = world
             .strain(outcome.strain)
             .map(|s| s.name.clone())
@@ -299,9 +336,9 @@ impl AppState {
 
     /// Found a strain at a position, returning its name. Shared with the debug
     /// API.
-    pub(super) fn found_strain_at(&mut self, x: f32, z: f32) -> Result<String, String> {
+    pub(super) fn found_strain_at(&mut self, x: f32, z: f32, reach: f32) -> Result<String, String> {
         let world = self.world.as_mut().ok_or("world not ready")?;
-        let id = world.found_strain(x, z, PICK_REACH)?;
+        let id = world.found_strain(x, z, reach)?;
         self.game.strains_founded += 1;
         self.game.invalidate_strain_reports();
         Ok(world.strain(id).map(|s| s.name.clone()).unwrap_or_default())
@@ -485,8 +522,8 @@ impl AppState {
         if !self.cursor_captured {
             return None;
         }
-        let (x, z) = self.pick_ground_ahead()?;
-        let pick = self.world.as_ref()?.nearest_plant(x, z, PICK_REACH)?;
+        let (x, z, reach) = self.aim_at_plant()?;
+        let pick = self.world.as_ref()?.nearest_plant(x, z, reach)?;
         let p = pick.plant;
         let stage = ["seedling", "young", "mature", "dead"]
             .get(p.stage as usize)

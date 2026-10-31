@@ -368,7 +368,8 @@ async function cmdStrains(apiBase: string) {
 
 async function cmdRenameStrain(apiBase: string, flags: Record<string, string>) {
   const id = requireInt(flags, "id");
-  const name = requireFlag(flags, "name");
+  // `--name` selects the target game instance, so the new name has its own flag.
+  const name = requireFlag(flags, "strain-name");
   const result = await sendAndWait(apiBase, { type: "rename_strain", id, name });
   console.log(JSON.stringify(result, null, 2));
 }
@@ -424,7 +425,7 @@ Commands:
   cross_pollinate --x <n> --z <n>          Cross held pollen onto the mature plant near a position
   found_strain    --x <n> --z <n>          Found a named strain on the plant near a position
   strains                                  List player-founded strains (living, stages, mean genes, biomes)
-  rename_strain   --id <n> --name <s>      Rename a strain
+  rename_strain   --id <n> --strain-name <s>  Rename a strain
   set_population_lens --open <true|false>  Open/close the in-game Population Lens
   ui_snapshot                              Get all interactive UI elements
   ui_click        --element <id>           Click a button or toggle checkbox

@@ -423,25 +423,27 @@ impl AppState {
                     evt.data = Some(self.game_stats_json());
                     evt
                 }
-                CommandKind::CollectPollen { x, z } => match self.gather_pollen_at(x, z) {
-                    Ok(pollen) => {
-                        let mut evt = CommandAppliedEvent::ok(
+                CommandKind::CollectPollen { x, z } => {
+                    match self.gather_pollen_at(x, z, super::gameplay::PICK_REACH) {
+                        Ok(pollen) => {
+                            let mut evt = CommandAppliedEvent::ok(
+                                command.id,
+                                self.frame_index,
+                                format!("gathered species {} pollen", pollen.species),
+                            );
+                            evt.data = Some(self.game_stats_json());
+                            evt
+                        }
+                        Err(message) => CommandAppliedEvent::err(
                             command.id,
                             self.frame_index,
-                            format!("gathered species {} pollen", pollen.species),
-                        );
-                        evt.data = Some(self.game_stats_json());
-                        evt
+                            format!("collect pollen failed: {message}"),
+                        ),
                     }
-                    Err(message) => CommandAppliedEvent::err(
-                        command.id,
-                        self.frame_index,
-                        format!("collect pollen failed: {message}"),
-                    ),
-                },
+                }
                 CommandKind::CrossPollinate { x, z } => {
                     let result = match self.game.pollen {
-                        Some(pollen) => self.cross_at(x, z, pollen),
+                        Some(pollen) => self.cross_at(x, z, super::gameplay::PICK_REACH, pollen),
                         None => Err("no pollen held; collect_pollen first".to_string()),
                     };
                     self.refresh_hud_caches();
@@ -460,7 +462,7 @@ impl AppState {
                     }
                 }
                 CommandKind::FoundStrain { x, z } => {
-                    let result = self.found_strain_at(x, z);
+                    let result = self.found_strain_at(x, z, super::gameplay::PICK_REACH);
                     self.refresh_hud_caches();
                     match result {
                         Ok(name) => {

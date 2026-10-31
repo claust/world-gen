@@ -560,6 +560,20 @@ impl WorldRuntime {
         self.plant_world.nearest_plant(x, z, reach, |_| true)
     }
 
+    /// The first plant along a camera ray before `max_t` (see
+    /// [`PlantWorld::pick_plant_on_ray`]), with its world position near the
+    /// ray origin.
+    pub fn pick_plant_on_ray(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        max_t: f32,
+    ) -> Option<(PlantPick, f32, f32)> {
+        let (pick, _) = self.plant_world.pick_plant_on_ray(origin, dir, max_t)?;
+        let (x, z) = PlantWorld::pick_position(&pick, origin);
+        Some((pick, x, z))
+    }
+
     pub fn strain(&self, id: u16) -> Option<&Strain> {
         self.plant_world.strain(id)
     }
