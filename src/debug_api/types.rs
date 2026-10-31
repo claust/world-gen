@@ -192,6 +192,29 @@ pub enum CommandKind {
     /// Report the current gameplay state (selected species, tallies, eco score,
     /// expedition progress).
     GameStats,
+    /// Gather pollen from the mature plant near a world position — the first
+    /// half of the `G` verb.
+    CollectPollen {
+        x: f32,
+        z: f32,
+    },
+    /// Cross the held pollen onto the mature plant near a world position — the
+    /// second half of the `G` verb.
+    CrossPollinate {
+        x: f32,
+        z: f32,
+    },
+    /// Found a strain on the living plant near a world position — the `F` verb.
+    FoundStrain {
+        x: f32,
+        z: f32,
+    },
+    /// Live reports for every player-founded strain.
+    Strains,
+    RenameStrain {
+        id: u16,
+        name: String,
+    },
     SetPopulationLens {
         open: bool,
     },

@@ -423,6 +423,97 @@ impl AppState {
                     evt.data = Some(self.game_stats_json());
                     evt
                 }
+                CommandKind::CollectPollen { x, z } => {
+                    match self.gather_pollen_at(x, z, super::gameplay::PICK_REACH) {
+                        Ok(pollen) => {
+                            let mut evt = CommandAppliedEvent::ok(
+                                command.id,
+                                self.frame_index,
+                                format!("gathered species {} pollen", pollen.species),
+                            );
+                            evt.data = Some(self.game_stats_json());
+                            evt
+                        }
+                        Err(message) => CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("collect pollen failed: {message}"),
+                        ),
+                    }
+                }
+                CommandKind::CrossPollinate { x, z } => {
+                    let result = match self.game.pollen {
+                        Some(pollen) => self.cross_at(x, z, super::gameplay::PICK_REACH, pollen),
+                        None => Err("no pollen held; collect_pollen first".to_string()),
+                    };
+                    self.refresh_hud_caches();
+                    match result {
+                        Ok(message) => {
+                            let mut evt =
+                                CommandAppliedEvent::ok(command.id, self.frame_index, message);
+                            evt.data = Some(self.game_stats_json());
+                            evt
+                        }
+                        Err(message) => CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("cross-pollinate failed: {message}"),
+                        ),
+                    }
+                }
+                CommandKind::FoundStrain { x, z } => {
+                    let result = self.found_strain_at(x, z, super::gameplay::PICK_REACH);
+                    self.refresh_hud_caches();
+                    match result {
+                        Ok(name) => {
+                            let mut evt = CommandAppliedEvent::ok(
+                                command.id,
+                                self.frame_index,
+                                format!("founded strain {name}"),
+                            );
+                            evt.data = Some(self.game_stats_json());
+                            evt
+                        }
+                        Err(message) => CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("found strain failed: {message}"),
+                        ),
+                    }
+                }
+                CommandKind::Strains => {
+                    self.refresh_hud_caches();
+                    let mut evt = CommandAppliedEvent::ok(
+                        command.id,
+                        self.frame_index,
+                        "strains".to_string(),
+                    );
+                    evt.data = Some(super::gameplay::strain_reports_json(
+                        &self.game.strain_reports,
+                    ));
+                    evt
+                }
+                CommandKind::RenameStrain { id, name } => {
+                    let result = match self.world.as_mut() {
+                        Some(world) => world.rename_strain(id, &name),
+                        None => Err("world is not running"),
+                    };
+                    match result {
+                        Ok(()) => {
+                            self.game.invalidate_strain_reports();
+                            CommandAppliedEvent::ok(
+                                command.id,
+                                self.frame_index,
+                                format!("renamed strain {id} to {name}"),
+                            )
+                        }
+                        Err(message) => CommandAppliedEvent::err(
+                            command.id,
+                            self.frame_index,
+                            format!("rename strain failed: {message}"),
+                        ),
+                    }
+                }
                 CommandKind::SetPopulationLens { open } => {
                     self.set_population_lens(open);
                     CommandAppliedEvent::ok(

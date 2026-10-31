@@ -253,6 +253,30 @@ pub fn inherit_and_mutate(parent: PlantGenes, seed: u32, key: MutationKey) -> Pl
     PlantGenes::from_bytes(bytes)
 }
 
+/// Haploid recombination: each locus is drawn independently from the mother or
+/// the father. Unlinked loci let selection assemble a good combination from two
+/// lineages instead of waiting for mutation to find it in one. Selfing
+/// (`father == mother`) returns the mother unchanged.
+pub fn recombine(
+    mother: PlantGenes,
+    father: PlantGenes,
+    seed: u32,
+    key: MutationKey,
+) -> PlantGenes {
+    // Salts above the 3-per-locus range `inherit_and_mutate` uses, so the
+    // crossover choice is independent of the mutation rolls for the same seed.
+    const SALT_BASE: u32 = 64;
+
+    let mut bytes = mother.to_bytes();
+    let paternal = father.to_bytes();
+    for (idx, byte) in bytes.iter_mut().enumerate() {
+        if mutation_hash(seed, key, SALT_BASE + idx as u32) < 0.5 {
+            *byte = paternal[idx];
+        }
+    }
+    PlantGenes::from_bytes(bytes)
+}
+
 pub fn evaluate_phenotype(
     genes: PlantGenes,
     species: &PlantSpeciesInfo,
@@ -626,5 +650,37 @@ mod tests {
             mean_delta.abs() < 0.25,
             "mean mutation delta {mean_delta:.3} across {mutations} mutated genes"
         );
+    }
+
+    #[test]
+    fn recombination_draws_each_locus_from_a_parent_about_evenly() {
+        let mother = PlantGenes::from_bytes([10; PlantGenes::BYTE_LEN]);
+        let father = PlantGenes::from_bytes([200; PlantGenes::BYTE_LEN]);
+        let mut paternal = 0usize;
+        let mut total = 0usize;
+        for seed_index in 0..512u32 {
+            let key = MutationKey {
+                chunk: IVec2::new(3, 4),
+                parent_index: 7,
+                bucket: 1,
+                seed_index,
+            };
+            let child = recombine(mother, father, 42, key);
+            assert_eq!(child, recombine(mother, father, 42, key), "deterministic");
+            for b in child.to_bytes() {
+                assert!(b == 10 || b == 200, "loci come only from a parent");
+                paternal += (b == 200) as usize;
+                total += 1;
+            }
+        }
+        let share = paternal as f64 / total as f64;
+        assert!((0.45..0.55).contains(&share), "paternal share {share:.3}");
+        let key = MutationKey {
+            chunk: IVec2::ZERO,
+            parent_index: 0,
+            bucket: 0,
+            seed_index: 0,
+        };
+        assert_eq!(recombine(mother, mother, 42, key), mother, "selfing clones");
     }
 }

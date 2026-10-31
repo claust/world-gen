@@ -24,7 +24,7 @@ use crate::world_core::config::{BiomeConfig, GameConfig, HousesConfig};
 use crate::world_core::content::place_houses;
 use crate::world_core::content::sampling::{hash4, hash_to_unit_float};
 use crate::world_core::evolution::{
-    evaluate_phenotype, inherit_and_mutate, initial_genes, normalize_altitude,
+    evaluate_phenotype, inherit_and_mutate, initial_genes, normalize_altitude, recombine,
     EvolutionEnvironmentSummary, EvolutionGeneStats, EvolutionOverlayMode,
     EvolutionPhenotypeSummary, EvolutionRegionCenter, EvolutionRegionCounts, EvolutionRegionReport,
     EvolutionSpeciesCount, EvolutionStageCounts, FounderKey, MutationKey, PlantEnvironment,
@@ -35,6 +35,7 @@ use crate::world_core::herbarium::PlantRegistry;
 use crate::world_core::lifecycle::GrowthStage;
 use crate::world_core::population_history;
 use crate::world_core::rivers::{RiverField, MAX_PLANTABLE_WETNESS};
+use crate::world_core::strains::{strain_name, Strain, StrainFounder, StrainReport};
 
 /// Packed per-plant record — **24 bytes** (`repr(C)`), validated against the
 /// real plant count in the M0 feasibility spike.
@@ -57,8 +58,51 @@ pub struct Plant {
     pub rotation: u16,
     pub species: u8,
     pub stage: u8,
+    /// Player-founded lineage this plant descends from (maternal line), or
+    /// [`WILD_STRAIN`]. Fills what was `repr(C)` padding, so the record stays
+    /// 24 bytes.
+    pub strain: u16,
     pub born_hour: f32,
     pub genes: PlantGenes,
+}
+
+/// `Plant::strain` of a plant outside every player-founded strain.
+pub const WILD_STRAIN: u16 = 0;
+
+/// Seedlings one hand cross-pollination sows, and how many spots it tries.
+const CROSS_BROOD: usize = 4;
+const CROSS_ATTEMPTS: u32 = 16;
+/// Ring around the mother the hybrid brood lands in: outside its trunk, near
+/// enough that the player sees the result where they acted.
+const CROSS_MIN_RADIUS: f32 = 2.5;
+const CROSS_MAX_RADIUS: f32 = 9.0;
+
+/// A plant located in the store by [`PlantWorld::nearest_plant`].
+#[derive(Clone, Copy, Debug)]
+pub struct PlantPick {
+    pub chunk: usize,
+    pub index: usize,
+    pub plant: Plant,
+    pub distance: f32,
+}
+
+/// Pollen gathered from one plant — a genome snapshot rather than a reference,
+/// so it stays valid however the store reshuffles before it is used.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pollen {
+    pub species: u8,
+    pub strain: u16,
+    pub genes: PlantGenes,
+    /// Where the donor grows, so a hand cross can refuse to dust the pollen
+    /// back onto its own donor (wild spread still self-pollinates).
+    pub donor: StrainFounder,
+}
+
+/// Result of a successful [`PlantWorld::cross_pollinate_at`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CrossOutcome {
+    pub strain: u16,
+    pub seedlings: usize,
 }
 
 const MATURE: u8 = stage_to_u8(GrowthStage::Mature);
@@ -431,6 +475,7 @@ impl Plant {
             species: plant.species_index as u8,
             stage: stage_to_u8(plant.growth_stage),
             born_hour: 0.0,
+            strain: WILD_STRAIN,
             genes,
         }
     }
@@ -540,6 +585,14 @@ pub struct PlantWorld {
     /// Canonical chunk indices whose visible plant list changed since the last
     /// render refresh. This is transient and never persisted.
     dirty_chunks: Vec<usize>,
+    /// Player-founded strains; `strains[id - 1]` is strain `id`. Persisted with
+    /// the spread delta.
+    strains: Vec<Strain>,
+    /// Per strain (same index), the sorted canonical chunks a member has landed
+    /// in. A superset — culls and deaths leave stale entries that the report
+    /// scan prunes — so a strain report touches only its own range instead of
+    /// rescanning the world. Derived; rebuilt on load.
+    strain_chunks: Vec<Vec<u32>>,
 }
 
 fn chunk_index(canon: IVec2) -> usize {
@@ -702,6 +755,8 @@ impl PlantWorld {
             last_spread_added: 0,
             biome_fill: Vec::new(),
             dirty_chunks: Vec::new(),
+            strains: Vec::new(),
+            strain_chunks: Vec::new(),
         };
         world.recompute_biome_fill();
         world.recount_stage_counts();
@@ -1012,21 +1067,8 @@ impl PlantWorld {
             return Err("no such species");
         }
         let (idx, local_x, local_z) = Self::locate(world_x, world_z);
-        // Re-derive the wrapped world position from the canonical cell so the
-        // terrain/river samples match what the plant will render against.
-        let n = WORLD_SIZE_CHUNKS;
-        let cx = (idx as i32) % n;
-        let cz = (idx as i32) / n;
-        let sample_x = cx as f32 * CHUNK_SIZE_METERS + local_x;
-        let sample_z = cz as f32 * CHUNK_SIZE_METERS + local_z;
-
-        let ground = self.heightmap.sample_height(sample_x, sample_z);
-        if ground < self.sea_level {
-            return Err("cannot plant below sea level");
-        }
-        if self.rivers.wetness(sample_x, sample_z) > MAX_PLANTABLE_WETNESS {
-            return Err("cannot plant in a river");
-        }
+        let (sample_x, sample_z) = Self::canonical_position(idx, local_x, local_z);
+        self.check_plantable(sample_x, sample_z)?;
 
         let env = plant_environment(
             &self.heightmap,
@@ -1035,6 +1077,7 @@ impl PlantWorld {
             sample_x,
             sample_z,
         );
+        let (cx, cz) = Self::chunk_coords(idx);
         let genes = initial_genes(
             self.seed,
             FounderKey {
@@ -1045,36 +1088,99 @@ impl PlantWorld {
             },
             env,
         );
-        // Mid-range mature height for the species; render scales it down by the
-        // seedling stage factor until it grows.
-        let [h_lo, h_hi] = self.registry.species[species as usize].height_range;
-        let height = 0.5 * (h_lo + h_hi);
-        // Cheap deterministic yaw from the position so hand-planted rows don't all
-        // face the same way.
-        let rotation = (local_x * 0.37 + local_z * 0.71).rem_euclid(std::f32::consts::TAU);
+        let plant = self.hand_sown(local_x, local_z, species, now_hours, genes, WILD_STRAIN);
+        self.append_plant(idx, plant);
+        self.recompute_biome_fill();
+        Ok(())
+    }
 
-        let was_empty = self.chunks[idx].is_empty();
-        self.chunks[idx].push(Plant {
+    /// Canonical chunk `(cx, cz)` of a chunk index.
+    fn chunk_coords(idx: usize) -> (i32, i32) {
+        let n = WORLD_SIZE_CHUNKS;
+        ((idx as i32) % n, (idx as i32) / n)
+    }
+
+    /// World position on the canonical lap of a chunk-local offset, so terrain
+    /// and river samples match what the plant will render against.
+    fn canonical_position(idx: usize, local_x: f32, local_z: f32) -> (f32, f32) {
+        let (cx, cz) = Self::chunk_coords(idx);
+        (
+            cx as f32 * CHUNK_SIZE_METERS + local_x,
+            cz as f32 * CHUNK_SIZE_METERS + local_z,
+        )
+    }
+
+    /// The ground guards every hand placement shares with the spread landing.
+    fn check_plantable(&self, sample_x: f32, sample_z: f32) -> Result<(), &'static str> {
+        if self.heightmap.sample_height(sample_x, sample_z) < self.sea_level {
+            return Err("cannot plant below sea level");
+        }
+        if self.rivers.wetness(sample_x, sample_z) > MAX_PLANTABLE_WETNESS {
+            return Err("cannot plant in a river");
+        }
+        Ok(())
+    }
+
+    /// A seedling record for a player placement: mid-range mature height for the
+    /// species (render scales it down until it grows) and a cheap positional yaw
+    /// so hand-planted rows don't all face the same way.
+    fn hand_sown(
+        &self,
+        local_x: f32,
+        local_z: f32,
+        species: u8,
+        now_hours: f64,
+        genes: PlantGenes,
+        strain: u16,
+    ) -> Plant {
+        let [h_lo, h_hi] = self.registry.species[species as usize].height_range;
+        let rotation = (local_x * 0.37 + local_z * 0.71).rem_euclid(std::f32::consts::TAU);
+        Plant {
             local_x: quantize_span(local_x),
             local_z: quantize_span(local_z),
-            height: quantize_span(height),
+            height: quantize_span(0.5 * (h_lo + h_hi)),
             rotation: quantize_rotation(rotation),
             species,
             stage: stage_to_u8(GrowthStage::Seedling),
+            strain,
             born_hour: now_hours as f32,
             genes,
-        });
-        self.mark_dirty(idx);
-        self.saturated[idx] = false;
-        if was_empty {
+        }
+    }
+
+    /// Append one plant outside the spread pass, keeping every cached counter
+    /// (population, census, immaturity, saturation, strain range) as the spread
+    /// fold would. Callers refresh the biome-fill cache once per batch.
+    fn append_plant(&mut self, idx: usize, plant: Plant) {
+        if self.chunks[idx].is_empty() {
             self.populated_chunks += 1;
         }
-        self.immature[idx] += 1;
+        self.chunks[idx].push(plant);
+        if plant.stage < MATURE {
+            self.immature[idx] += 1;
+        }
+        if let Some(row) = self.stage_counts.get_mut(plant.species as usize) {
+            row[plant.stage.min(DEAD) as usize] += 1;
+        }
         self.population += 1;
+        self.note_strain_chunk(plant.strain, idx);
+        self.mark_dirty(idx);
+        self.saturated[idx] = false;
         // A new life threshold arrived; recompute this chunk's timeline next tick.
         self.next_event[idx] = 0.0;
-        self.recompute_biome_fill();
-        Ok(())
+    }
+
+    /// Record that strain `strain` has a member in chunk `idx`.
+    fn note_strain_chunk(&mut self, strain: u16, idx: usize) {
+        if strain == WILD_STRAIN {
+            return;
+        }
+        let Some(list) = self.strain_chunks.get_mut(strain as usize - 1) else {
+            return;
+        };
+        if let Err(pos) = list.binary_search(&(idx as u32)) {
+            list.insert(pos, idx as u32);
+        }
     }
 
     /// Remove every plant within `radius` metres of a world position — the
@@ -1116,6 +1222,7 @@ impl PlantWorld {
                 let origin_z = (cz0 + dz) as f32 * CHUNK_SIZE_METERS;
 
                 let base_count = self.base_count[idx] as usize;
+                let stage_counts = &mut self.stage_counts;
                 let chunk = &mut self.chunks[idx];
                 if chunk.is_empty() {
                     continue;
@@ -1132,6 +1239,10 @@ impl PlantWorld {
                         if read < base_count {
                             removed_base += 1;
                         }
+                        if let Some(row) = stage_counts.get_mut(plant.species as usize) {
+                            let count = &mut row[plant.stage.min(DEAD) as usize];
+                            *count = count.saturating_sub(1);
+                        }
                         continue;
                     }
                     chunk[write] = plant;
@@ -1142,6 +1253,9 @@ impl PlantWorld {
                     continue;
                 }
                 chunk.truncate(write);
+                // The per-plant event cache is index-aligned with the chunk;
+                // compaction broke that, so let the next scan rebuild it.
+                self.events[idx].clear();
                 self.base_count[idx] -= removed_base;
                 self.population -= removed;
                 if self.chunks[idx].is_empty() {
@@ -1163,6 +1277,463 @@ impl PlantWorld {
             self.recompute_biome_fill();
         }
         total_removed
+    }
+
+    /// The plant nearest a world position within `max_dist` metres that passes
+    /// `keep`, searching the containing chunk and its eight neighbours.
+    pub fn nearest_plant(
+        &self,
+        world_x: f32,
+        world_z: f32,
+        max_dist: f32,
+        keep: impl Fn(&Plant) -> bool,
+    ) -> Option<PlantPick> {
+        let n = WORLD_SIZE_CHUNKS;
+        let world = WORLD_SIZE_METERS as f32;
+        let wx = world_x.rem_euclid(world);
+        let wz = world_z.rem_euclid(world);
+        let cx0 = (wx / CHUNK_SIZE_METERS).floor() as i32;
+        let cz0 = (wz / CHUNK_SIZE_METERS).floor() as i32;
+        let mut best: Option<PlantPick> = None;
+        let mut best_d2 = max_dist * max_dist;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let idx = ((cz0 + dz).rem_euclid(n) * n + (cx0 + dx).rem_euclid(n)) as usize;
+                let origin_x = (cx0 + dx) as f32 * CHUNK_SIZE_METERS;
+                let origin_z = (cz0 + dz) as f32 * CHUNK_SIZE_METERS;
+                for (index, plant) in self.chunks[idx].iter().enumerate() {
+                    let ddx = origin_x + dequantize_span(plant.local_x) - wx;
+                    let ddz = origin_z + dequantize_span(plant.local_z) - wz;
+                    let d2 = ddx * ddx + ddz * ddz;
+                    if d2 <= best_d2 && keep(plant) {
+                        best_d2 = d2;
+                        best = Some(PlantPick {
+                            chunk: idx,
+                            index,
+                            plant: *plant,
+                            distance: d2.sqrt(),
+                        });
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    /// The first plant a ray hits within `max_t` (pass the terrain hit distance
+    /// so the ground occludes plants behind it). Each plant is a vertical
+    /// cylinder — generous radius for easy aiming, its current-stage height —
+    /// standing on the terrain. Returns the pick and the ray distance; the
+    /// pick's position is on the ray origin's world lap.
+    pub fn pick_plant_on_ray(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        max_t: f32,
+    ) -> Option<(PlantPick, f32)> {
+        const SAMPLE_STEP: f32 = 32.0;
+        let dh = Vec2::new(dir.x, dir.z);
+        let dh2 = dh.length_squared();
+        if dh2 < 1e-6 {
+            // Straight down: no horizontal sweep, the ground pick covers it.
+            return None;
+        }
+        let n = WORLD_SIZE_CHUNKS;
+        let world = WORLD_SIZE_METERS as f32;
+
+        // Chunks (unwrapped, on the origin's lap) along the ray, plus their
+        // neighbours so a plant near a border is never missed.
+        let mut cells: Vec<(i32, i32)> = Vec::new();
+        let mut t = 0.0f32;
+        loop {
+            let p = origin + dir * t.min(max_t);
+            let cx = (p.x / CHUNK_SIZE_METERS).floor() as i32;
+            let cz = (p.z / CHUNK_SIZE_METERS).floor() as i32;
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    if !cells.contains(&(cx + dx, cz + dz)) {
+                        cells.push((cx + dx, cz + dz));
+                    }
+                }
+            }
+            if t >= max_t {
+                break;
+            }
+            t += SAMPLE_STEP;
+        }
+
+        let mut best: Option<(PlantPick, f32)> = None;
+        for (ux, uz) in cells {
+            let idx = (uz.rem_euclid(n) * n + ux.rem_euclid(n)) as usize;
+            let origin_x = ux as f32 * CHUNK_SIZE_METERS;
+            let origin_z = uz as f32 * CHUNK_SIZE_METERS;
+            for (index, plant) in self.chunks[idx].iter().enumerate() {
+                let Some(species) = self.registry.species.get(plant.species as usize) else {
+                    continue;
+                };
+                let radius = if species.kind == "shrub" { 1.5 } else { 2.5 };
+                let px = origin_x + dequantize_span(plant.local_x);
+                let pz = origin_z + dequantize_span(plant.local_z);
+                // Horizontal closest approach first: cheap, rejects nearly all.
+                let rel = Vec2::new(px - origin.x, pz - origin.z);
+                let t_mid = rel.dot(dh) / dh2;
+                let miss2 = (rel - dh * t_mid).length_squared();
+                if miss2 > radius * radius {
+                    continue;
+                }
+                let half = ((radius * radius - miss2) / dh2).sqrt();
+                let t0 = (t_mid - half).max(0.0);
+                let t1 = (t_mid + half).min(max_t);
+                if t0 > t1 || best.as_ref().is_some_and(|(_, bt)| *bt <= t0) {
+                    continue;
+                }
+                let ground = self
+                    .heightmap
+                    .sample_height(px.rem_euclid(world), pz.rem_euclid(world));
+                let top = ground
+                    + dequantize_span(plant.height) * stage_from_u8(plant.stage).scale_factor();
+                // The ray's height is linear in t; take the first t in [t0, t1]
+                // where it is inside [ground, top].
+                let y0 = origin.y + dir.y * t0;
+                let y1 = origin.y + dir.y * t1;
+                let enter = if (ground..=top).contains(&y0) {
+                    Some(t0)
+                } else if dir.y.abs() > 1e-6 {
+                    let bound = if y0 > top { top } else { ground };
+                    let tb = t0 + (bound - y0) / dir.y;
+                    let crosses = (y0 - bound).signum() != (y1 - bound).signum();
+                    crosses.then_some(tb)
+                } else {
+                    None
+                };
+                let Some(hit_t) = enter else {
+                    continue;
+                };
+                if best.as_ref().is_none_or(|(_, bt)| hit_t < *bt) {
+                    let pick = PlantPick {
+                        chunk: idx,
+                        index,
+                        plant: *plant,
+                        distance: 0.0,
+                    };
+                    best = Some((pick, hit_t));
+                }
+            }
+        }
+        best
+    }
+
+    /// World position of a picked plant on the lap nearest `near`.
+    pub fn pick_position(pick: &PlantPick, near: Vec3) -> (f32, f32) {
+        let world = WORLD_SIZE_METERS as f32;
+        let (x, z) = Self::canonical_position(
+            pick.chunk,
+            dequantize_span(pick.plant.local_x),
+            dequantize_span(pick.plant.local_z),
+        );
+        let lap = |v: f32, n: f32| v + ((n - v) / world).round() * world;
+        (lap(x, near.x), lap(z, near.z))
+    }
+
+    /// Every registered strain, in id order.
+    pub fn strains(&self) -> &[Strain] {
+        &self.strains
+    }
+
+    pub fn strain(&self, id: u16) -> Option<&Strain> {
+        id.checked_sub(1).and_then(|i| self.strains.get(i as usize))
+    }
+
+    pub fn rename_strain(&mut self, id: u16, name: &str) -> Result<(), &'static str> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("name must not be empty");
+        }
+        let strain = id
+            .checked_sub(1)
+            .and_then(|i| self.strains.get_mut(i as usize))
+            .ok_or("no such strain")?;
+        strain.name = name.to_string();
+        Ok(())
+    }
+
+    /// Register a new strain and return its id (not yet carried by any plant).
+    fn register_strain(
+        &mut self,
+        species: u8,
+        hybrid: bool,
+        now_hours: f64,
+        founder: StrainFounder,
+    ) -> Result<u16, &'static str> {
+        let id = u16::try_from(self.strains.len() + 1).map_err(|_| "strain limit reached")?;
+        let pick = hash4(
+            self.seed.wrapping_add(4501),
+            founder.chunk,
+            ((founder.local_x as u32) << 16) | founder.local_z as u32,
+            id as u32,
+        );
+        let species_name = self.species_name(species).unwrap_or("plant").to_string();
+        let name = strain_name(pick, &species_name, hybrid, &self.strains);
+        self.strains.push(Strain {
+            id,
+            name,
+            species,
+            hybrid,
+            founded_hour: now_hours,
+            founder,
+        });
+        self.strain_chunks.push(Vec::new());
+        Ok(id)
+    }
+
+    /// Found a new strain on the living plant nearest a world position: it and
+    /// every seed down its maternal line carry the strain from now on.
+    pub fn found_strain_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        max_dist: f32,
+        now_hours: f64,
+    ) -> Result<u16, String> {
+        let pick = self
+            .nearest_plant(world_x, world_z, max_dist, |p| p.stage != DEAD)
+            .ok_or("no living plant here")?;
+        if let Some(existing) = self.strain(pick.plant.strain) {
+            return Err(format!("already one of the {}", existing.name));
+        }
+        let founder = StrainFounder {
+            chunk: pick.chunk as u32,
+            local_x: pick.plant.local_x,
+            local_z: pick.plant.local_z,
+        };
+        let id = self.register_strain(pick.plant.species, false, now_hours, founder)?;
+        self.chunks[pick.chunk][pick.index].strain = id;
+        self.note_strain_chunk(id, pick.chunk);
+        // A settled forest is flagged saturated and skipped by the spread pass;
+        // wake the founder's block so the new strain gets to try to reproduce.
+        if self.unsaturate_neighbourhood(pick.chunk) {
+            self.recompute_biome_fill();
+        }
+        Ok(id)
+    }
+
+    /// Collect pollen from the mature plant nearest a world position.
+    pub fn collect_pollen_at(
+        &self,
+        world_x: f32,
+        world_z: f32,
+        max_dist: f32,
+    ) -> Result<Pollen, &'static str> {
+        let pick = self
+            .nearest_plant(world_x, world_z, max_dist, |p| p.stage == MATURE)
+            .ok_or("no flowering (mature) plant here")?;
+        Ok(Pollen {
+            species: pick.plant.species,
+            strain: pick.plant.strain,
+            genes: pick.plant.genes,
+            donor: StrainFounder {
+                chunk: pick.chunk as u32,
+                local_x: pick.plant.local_x,
+                local_z: pick.plant.local_z,
+            },
+        })
+    }
+
+    /// Hand cross-pollination: dust `pollen` onto the mature plant nearest a
+    /// world position and sow its hybrid brood around it at once — each seedling
+    /// a fresh recombination of mother × pollen plus mutation — founding a new
+    /// hybrid strain for the brood. Sowing skips open water, rivers and
+    /// crowded spots; fails (founding nothing) if no seedling finds room.
+    pub fn cross_pollinate_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        max_dist: f32,
+        pollen: Pollen,
+        now_hours: f64,
+    ) -> Result<CrossOutcome, String> {
+        let mother = self
+            .nearest_plant(world_x, world_z, max_dist, |p| p.stage == MATURE)
+            .ok_or("no flowering (mature) plant here")?;
+        let mp = mother.plant;
+        if mp.species != pollen.species {
+            let pollen_name = self.species_name(pollen.species).unwrap_or("?");
+            let mother_name = self.species_name(mp.species).unwrap_or("?");
+            return Err(format!(
+                "{pollen_name} pollen can't fertilise {mother_name}"
+            ));
+        }
+        let donor = pollen.donor;
+        if donor.chunk as usize == mother.chunk
+            && donor.local_x == mp.local_x
+            && donor.local_z == mp.local_z
+        {
+            return Err("that plant gave the pollen — pick a second parent".to_string());
+        }
+        let Some(species) = self.registry.species.get(mp.species as usize) else {
+            return Err("unregistered species".to_string());
+        };
+        let spacing = min_spacing(&species.kind);
+
+        let (cx, cz) = Self::chunk_coords(mother.chunk);
+        let canon = IVec2::new(cx, cz);
+        let (mx, mz) = Self::canonical_position(
+            mother.chunk,
+            dequantize_span(mp.local_x),
+            dequantize_span(mp.local_z),
+        );
+        // The hour salts every roll so repeat crosses on one mother differ.
+        let bucket = (now_hours * 60.0) as u32;
+        let strain = u16::try_from(self.strains.len() + 1).map_err(|_| "strain limit reached")?;
+
+        let mut sown: Vec<(usize, Plant)> = Vec::new();
+        for attempt in 0..CROSS_ATTEMPTS {
+            if sown.len() >= CROSS_BROOD {
+                break;
+            }
+            let sub = bucket_salt(attempt.wrapping_mul(0x2F1B), bucket);
+            let angle = hash_unit(self.seed.wrapping_add(4601), canon, sub) * std::f32::consts::TAU;
+            let r = CROSS_MIN_RADIUS
+                + hash_unit(self.seed.wrapping_add(4602), canon, sub).sqrt()
+                    * (CROSS_MAX_RADIUS - CROSS_MIN_RADIUS);
+            let (idx, lx, lz) = Self::locate(mx + angle.cos() * r, mz + angle.sin() * r);
+            let (sx, sz) = Self::canonical_position(idx, lx, lz);
+            if self.check_plantable(sx, sz).is_err() {
+                continue;
+            }
+            let crowded = self.chunks[idx]
+                .iter()
+                .chain(sown.iter().filter(|(i, _)| *i == idx).map(|(_, p)| p))
+                .any(|p| {
+                    let ddx = dequantize_span(p.local_x) - lx;
+                    let ddz = dequantize_span(p.local_z) - lz;
+                    ddx * ddx + ddz * ddz < spacing * spacing
+                });
+            if crowded {
+                continue;
+            }
+            let key = MutationKey {
+                chunk: canon,
+                parent_index: mother.index as u32,
+                bucket,
+                // High bit keeps hand crosses off the spread pass's seed indices.
+                seed_index: 0x8000_0000 | attempt,
+            };
+            let genes = inherit_and_mutate(
+                recombine(mp.genes, pollen.genes, self.seed, key),
+                self.seed,
+                key,
+            );
+            sown.push((
+                idx,
+                self.hand_sown(lx, lz, mp.species, now_hours, genes, strain),
+            ));
+        }
+        let Some(&(first_idx, first)) = sown.first() else {
+            return Err("no room to sow hybrids here".to_string());
+        };
+        let founder = StrainFounder {
+            chunk: first_idx as u32,
+            local_x: first.local_x,
+            local_z: first.local_z,
+        };
+        self.register_strain(mp.species, true, now_hours, founder)?;
+        let seedlings = sown.len();
+        for (idx, plant) in sown {
+            self.append_plant(idx, plant);
+        }
+        self.recompute_biome_fill();
+        Ok(CrossOutcome { strain, seedlings })
+    }
+
+    /// Rebuild the per-strain chunk index after a load and re-tag base-flora
+    /// founders, whose strain isn't saved because base plants are regenerated.
+    fn restore_strain_index(&mut self) {
+        self.strain_chunks = vec![Vec::new(); self.strains.len()];
+        for idx in 0..self.chunks.len() {
+            let base = self.base_count[idx] as usize;
+            let mut seen: Vec<u16> = Vec::new();
+            for plant in &self.chunks[idx][base..] {
+                if plant.strain != WILD_STRAIN && !seen.contains(&plant.strain) {
+                    seen.push(plant.strain);
+                }
+            }
+            for strain in seen {
+                self.note_strain_chunk(strain, idx);
+            }
+        }
+        for i in 0..self.strains.len() {
+            let Strain {
+                id,
+                species,
+                founder,
+                ..
+            } = self.strains[i];
+            let idx = founder.chunk as usize;
+            let Some(chunk) = self.chunks.get_mut(idx) else {
+                continue;
+            };
+            let base = self.base_count[idx] as usize;
+            if let Some(plant) = chunk[..base].iter_mut().find(|p| {
+                p.local_x == founder.local_x
+                    && p.local_z == founder.local_z
+                    && p.species == species
+                    && p.strain == WILD_STRAIN
+            }) {
+                plant.strain = id;
+                self.note_strain_chunk(id, idx);
+            }
+        }
+    }
+
+    /// Live report for every strain, scanning only the chunks each has reached
+    /// (and pruning chunks it no longer occupies).
+    pub fn strain_reports(&mut self) -> Vec<StrainReport> {
+        let mut reports = Vec::with_capacity(self.strains.len());
+        for (i, strain) in self.strains.iter().enumerate() {
+            let id = strain.id;
+            let mut stages = [0u32; population_history::STAGE_COUNT];
+            let mut gene_sums = [0u64; PlantGenes::BYTE_LEN];
+            let mut biome_seen = [false; BIOME_SLOTS];
+            self.strain_chunks[i].retain(|&idx| {
+                let mut present = false;
+                for plant in self.chunks[idx as usize].iter().filter(|p| p.strain == id) {
+                    present = true;
+                    stages[plant.stage.min(DEAD) as usize] += 1;
+                    if plant.stage != DEAD {
+                        for (sum, g) in gene_sums.iter_mut().zip(plant.genes.to_bytes()) {
+                            *sum += g as u64;
+                        }
+                        biome_seen[biome_slot(self.biome[idx as usize])] = true;
+                    }
+                }
+                present
+            });
+            let living = stages[..DEAD as usize].iter().sum::<u32>();
+            let mut mean_genes = [0.0f32; PlantGenes::BYTE_LEN];
+            if living > 0 {
+                for (mean, sum) in mean_genes.iter_mut().zip(gene_sums) {
+                    *mean = sum as f32 / living as f32 / u8::MAX as f32;
+                }
+            }
+            let biomes = BIOME_ORDER
+                .iter()
+                .zip(biome_seen)
+                .filter(|(_, seen)| *seen)
+                .map(|(b, _)| biome_name(*b))
+                .collect();
+            reports.push(StrainReport {
+                id,
+                name: strain.name.clone(),
+                species: strain.species,
+                hybrid: strain.hybrid,
+                living,
+                stages,
+                mean_genes,
+                biomes,
+            });
+        }
+        reports
     }
 
     /// Reconstruct renderable instances for the raw chunk at `raw_coord`, reading
@@ -1436,6 +2007,13 @@ impl PlantWorld {
                     if let Some(row) = self.stage_counts.get_mut(plant.species as usize) {
                         row[plant.stage.min(DEAD) as usize] += 1;
                     }
+                    if plant.strain != WILD_STRAIN {
+                        if let Some(list) = self.strain_chunks.get_mut(plant.strain as usize - 1) {
+                            if let Err(pos) = list.binary_search(&(idx as u32)) {
+                                list.insert(pos, idx as u32);
+                            }
+                        }
+                    }
                 }
                 // New seedlings bring new life thresholds; recompute the
                 // chunk's timeline on the next growth pass.
@@ -1549,6 +2127,7 @@ impl PlantWorld {
                 write_plant(&mut buf, plant);
             }
         }
+        write_strains(&mut buf, &self.strains);
         storage.save_bytes("plants", &buf)
     }
 
@@ -1583,38 +2162,36 @@ impl PlantWorld {
         if cur.read_u32()? != SPREAD_MAGIC {
             anyhow::bail!("bad magic");
         }
-        if cur.read_u32()? != SPREAD_VERSION {
-            anyhow::bail!("unsupported version");
-        }
+        let version = cur.read_u32()?;
+        let plant_bytes = match version {
+            SPREAD_VERSION => PLANT_BYTES,
+            SPREAD_VERSION_V2 => PLANT_BYTES_V2,
+            _ => anyhow::bail!("unsupported version {version}"),
+        };
         let seed = cur.read_u32()?;
         if seed != self.seed {
             anyhow::bail!("seed {seed} does not match world seed {}", self.seed);
         }
-        let chunk_count = cur.read_u32()? as usize;
-        let mut added = 0usize;
-        for _ in 0..chunk_count {
-            let idx = cur.read_u32()? as usize;
-            let count = cur.read_u32()? as usize;
-            if idx >= self.chunks.len() {
-                anyhow::bail!("chunk index {idx} out of range");
-            }
-            // Bound `count` by the bytes actually left before reserving, so a
-            // corrupted length can't trigger a huge allocation ahead of the EOF.
-            if count.saturating_mul(PLANT_BYTES) > cur.remaining() {
-                anyhow::bail!("declared {count} plants exceed the remaining data");
-            }
-            // The base list was shrunk to fit during generation; reserve the
-            // suffix up front so restoring it is one growth, not many.
-            self.chunks[idx].reserve(count);
-            for _ in 0..count {
-                let plant = read_plant(&mut cur)?;
-                if plant.stage < MATURE {
-                    self.immature[idx] += 1;
+        // Appended in place to avoid staging a copy of a multi-million-plant
+        // save; every chunk touched is recorded so a malformed tail rolls the
+        // whole load back instead of leaving uncounted plants behind.
+        let mut touched: Vec<(usize, usize)> = Vec::new();
+        let parsed = self.append_spread_body(&mut cur, version, plant_bytes, &mut touched);
+        let (added, strains) = match parsed {
+            Ok(ok) => ok,
+            Err(err) => {
+                for &(idx, len) in &touched {
+                    self.chunks[idx].truncate(len);
                 }
-                self.chunks[idx].push(plant);
-                added += 1;
+                return Err(err);
             }
+        };
+        self.strains = strains;
+        for &(idx, _) in &touched {
+            self.immature[idx] =
+                self.chunks[idx].iter().filter(|p| p.stage < MATURE).count() as u32;
         }
+        self.restore_strain_index();
         // Recompute cached totals from scratch — cheap next to world generation.
         self.population = self.chunks.iter().map(Vec::len).sum();
         self.populated_chunks = self.chunks.iter().filter(|c| !c.is_empty()).count();
@@ -1626,8 +2203,57 @@ impl PlantWorld {
         for (idx, &immature) in self.immature.iter().enumerate() {
             self.saturated[idx] = immature == 0;
         }
+        // ...except where a strain lives: founding woke its block so it could
+        // reproduce, and a save/load must not put it back to sleep.
+        let strain_chunks: Vec<u32> = self.strain_chunks.iter().flatten().copied().collect();
+        for idx in strain_chunks {
+            self.unsaturate_neighbourhood(idx as usize);
+        }
         self.recompute_biome_fill();
         Ok(added)
+    }
+
+    /// Parse the per-chunk plant sections and strain trailer of a spread blob,
+    /// appending plants to their chunks and recording each chunk's prior length
+    /// in `touched` so the caller can roll back on error.
+    fn append_spread_body(
+        &mut self,
+        cur: &mut Cursor<'_>,
+        version: u32,
+        plant_bytes: usize,
+        touched: &mut Vec<(usize, usize)>,
+    ) -> anyhow::Result<(usize, Vec<Strain>)> {
+        let chunk_count = cur.read_u32()? as usize;
+        let mut added = 0usize;
+        for _ in 0..chunk_count {
+            let idx = cur.read_u32()? as usize;
+            let count = cur.read_u32()? as usize;
+            if idx >= self.chunks.len() {
+                anyhow::bail!("chunk index {idx} out of range");
+            }
+            // Bound `count` by the bytes actually left before reserving, so a
+            // corrupted length can't trigger a huge allocation ahead of the EOF.
+            if count.saturating_mul(plant_bytes) > cur.remaining() {
+                anyhow::bail!("declared {count} plants exceed the remaining data");
+            }
+            // A well-formed save lists each chunk once; a repeat only adds a
+            // later, longer entry that rollback (in order) truncates past.
+            touched.push((idx, self.chunks[idx].len()));
+            // The base list was shrunk to fit during generation; reserve the
+            // suffix up front so restoring it is one growth, not many.
+            self.chunks[idx].reserve(count);
+            for _ in 0..count {
+                let plant = read_plant(cur, version)?;
+                self.chunks[idx].push(plant);
+                added += 1;
+            }
+        }
+        let strains = if version >= SPREAD_VERSION {
+            read_strains(cur)?
+        } else {
+            Vec::new()
+        };
+        Ok((added, strains))
     }
 
     /// Brotli quality for the snapshot shipped on GitHub and downloaded by
@@ -1846,6 +2472,8 @@ impl PlantWorld {
             last_spread_added: 0,
             biome_fill: Vec::new(),
             dirty_chunks: Vec::new(),
+            strains: Vec::new(),
+            strain_chunks: Vec::new(),
         };
         world.recompute_biome_fill();
         world.recount_stage_counts();
@@ -1905,6 +2533,7 @@ fn parse_base_chunk(
             species,
             stage: MATURE,
             born_hour: 0.0,
+            strain: WILD_STRAIN,
             genes,
         });
     }
@@ -2126,6 +2755,7 @@ struct SpreadCandidate {
     height: f32,
     rotation: f32,
     species: u8,
+    strain: u16,
     genes: PlantGenes,
     /// Deterministic ordering key (source chunk, plant, seed) so landing order
     /// — and thus which candidates win spacing — is independent of parallelism.
@@ -2165,6 +2795,9 @@ fn emit_chunk_candidates(
     let canon = IVec2::new(cx, cz);
 
     let mut out = Vec::new();
+    // Built on the first emitter only: most chunks on a settled world emit
+    // nothing on a given day, and they shouldn't pay for the index.
+    let mut pollen_grid: Option<PollenGrid> = None;
     for (pi, plant) in chunks[idx].iter().enumerate() {
         if plant.stage != MATURE {
             continue;
@@ -2193,6 +2826,12 @@ fn emit_chunk_candidates(
             .clamp(1, 4);
         let spread_radius =
             species.placement.spread_radius.max(0.0) * parent_pheno.spread_radius_scale.max(0.0);
+        // One pollination event per mother per day: every seed in this brood
+        // shares a father, but each draws its own recombination.
+        let grid = pollen_grid.get_or_insert_with(|| PollenGrid::build(&chunks[idx]));
+        let father = grid
+            .pick_father(&chunks[idx], pi, ctx.seed, canon, ctx.bucket)
+            .map_or(plant.genes, |fi| chunks[idx][fi].genes);
         for seed_i in 0..count {
             // Salt the per-seedling jitter with the day bucket too, so a fresh
             // roll also aims at a fresh spot — otherwise each day's survivor would
@@ -2207,16 +2846,14 @@ fn emit_chunk_candidates(
             let height = h_lo + hash_unit(ctx.seed.wrapping_add(4201), canon, sub) * (h_hi - h_lo);
             let rotation =
                 hash_unit(ctx.seed.wrapping_add(4202), canon, sub) * std::f32::consts::TAU;
-            let genes = inherit_and_mutate(
-                plant.genes,
-                ctx.seed,
-                MutationKey {
-                    chunk: canon,
-                    parent_index: pi as u32,
-                    bucket: ctx.bucket,
-                    seed_index: seed_i,
-                },
-            );
+            let key = MutationKey {
+                chunk: canon,
+                parent_index: pi as u32,
+                bucket: ctx.bucket,
+                seed_index: seed_i,
+            };
+            let genes =
+                inherit_and_mutate(recombine(plant.genes, father, ctx.seed, key), ctx.seed, key);
 
             // Wrap the seedling onto the torus, then split into canonical chunk +
             // local offset.
@@ -2233,6 +2870,9 @@ fn emit_chunk_candidates(
                 height,
                 rotation,
                 species: plant.species,
+                // Strains follow the maternal line (as chloroplast DNA does), so
+                // a strain is a true lineage and pollen never leaks it outward.
+                strain: plant.strain,
                 genes,
                 order: ((idx as u64) << 24) | ((pi as u64) << 4) | seed_i as u64,
             });
@@ -2342,11 +2982,106 @@ fn land_chunk_candidates(
             species: candidate.species,
             stage: stage_to_u8(GrowthStage::Seedling),
             born_hour: ctx.born_hour,
+            strain: candidate.strain,
             genes: candidate.genes,
         });
         accepted += 1;
     }
     accepted
+}
+
+/// How far a mother plant draws pollen from. Within one spacing cell so a 3×3
+/// cell query covers it; far shorter than seed dispersal, which is what lets
+/// isolated patches drift apart while neighbours keep mixing.
+const POLLEN_RADIUS: f32 = SPACING_CELL;
+
+/// Mature plants of one chunk bucketed by spacing cell (a counting sort into one
+/// flat index list), for picking each mother's pollen donor. Fathers are drawn
+/// from the mother's own chunk only — a plant on a chunk border misses donors
+/// across it, an accepted bias for keeping the emit pass chunk-local.
+struct PollenGrid {
+    /// `start[c]..start[c + 1]` is cell `c`'s slice of `order`.
+    start: Vec<u32>,
+    order: Vec<u32>,
+}
+
+impl PollenGrid {
+    fn build(plants: &[Plant]) -> Self {
+        let cells = (SPACING_GRID_SIDE * SPACING_GRID_SIDE) as usize;
+        let cell_of = |p: &Plant| {
+            SpacingGrid::cell_of(dequantize_span(p.local_x), dequantize_span(p.local_z))
+        };
+        let mut start = vec![0u32; cells + 1];
+        for p in plants.iter().filter(|p| p.stage == MATURE) {
+            start[cell_of(p) + 1] += 1;
+        }
+        for c in 0..cells {
+            start[c + 1] += start[c];
+        }
+        let mut fill = start.clone();
+        let mut order = vec![0u32; start[cells] as usize];
+        for (i, p) in plants.iter().enumerate() {
+            if p.stage == MATURE {
+                let c = cell_of(p);
+                order[fill[c] as usize] = i as u32;
+                fill[c] += 1;
+            }
+        }
+        Self { start, order }
+    }
+
+    /// A mature same-species neighbour within [`POLLEN_RADIUS`] of `mother`,
+    /// closer ones more likely, or `None` when the mother is alone and
+    /// self-pollinates.
+    fn pick_father(
+        &self,
+        plants: &[Plant],
+        mother: usize,
+        seed: u32,
+        canon: IVec2,
+        bucket: u32,
+    ) -> Option<usize> {
+        let m = plants[mother];
+        let mx = dequantize_span(m.local_x);
+        let mz = dequantize_span(m.local_z);
+        let cx = ((mx / SPACING_CELL) as i32).clamp(0, SPACING_GRID_SIDE - 1);
+        let cz = ((mz / SPACING_CELL) as i32).clamp(0, SPACING_GRID_SIDE - 1);
+        let r2 = POLLEN_RADIUS * POLLEN_RADIUS;
+        let mut best: Option<(f32, usize)> = None;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let nx = cx + dx;
+                let nz = cz + dz;
+                if nx < 0 || nz < 0 || nx >= SPACING_GRID_SIDE || nz >= SPACING_GRID_SIDE {
+                    continue;
+                }
+                let c = (nz * SPACING_GRID_SIDE + nx) as usize;
+                for &j in &self.order[self.start[c] as usize..self.start[c + 1] as usize] {
+                    let j = j as usize;
+                    let f = plants[j];
+                    if j == mother || f.species != m.species {
+                        continue;
+                    }
+                    let ddx = dequantize_span(f.local_x) - mx;
+                    let ddz = dequantize_span(f.local_z) - mz;
+                    let d2 = ddx * ddx + ddz * ddz;
+                    if d2 > r2 {
+                        continue;
+                    }
+                    let pair = (mother as u32).wrapping_mul(0x01F3_5A7B) ^ j as u32;
+                    let u = hash_unit(seed.wrapping_add(4301), canon, bucket_salt(pair, bucket));
+                    // Lowest score wins; scaling the roll by squared distance
+                    // favours near neighbours without a per-candidate sqrt/ln
+                    // (this runs for every neighbour of every emitting mother).
+                    let score = u * (0.25 + d2 / r2);
+                    if best.is_none_or(|(b, _)| score < b) {
+                        best = Some((score, j));
+                    }
+                }
+            }
+        }
+        best.map(|(_, j)| j)
+    }
 }
 
 // Cell size ≥ the largest spacing (8 m) keeps the 3×3 neighbourhood correct;
@@ -2729,9 +3464,14 @@ fn biome_from_slot(slot: u8) -> Biome {
 // ---------------------------------------------------------------------------
 
 const SPREAD_MAGIC: u32 = 0x504c_4e54; // "PLNT"
-const SPREAD_VERSION: u32 = 2;
-/// Serialized size of one plant: u16×4 + u8×2 + f32 + eight gene bytes.
-const PLANT_BYTES: usize = 22;
+const SPREAD_VERSION: u32 = 3;
+/// v2 predates strains: no per-plant strain and no trailing strain registry.
+/// Still read so an existing world keeps its spread on upgrade.
+const SPREAD_VERSION_V2: u32 = 2;
+/// Serialized size of one plant: u16×4 + u8×2 + u16 strain + f32 + eight gene
+/// bytes.
+const PLANT_BYTES: usize = 24;
+const PLANT_BYTES_V2: usize = 22;
 
 // ---------------------------------------------------------------------------
 // Base-world snapshot — full per-chunk base flora + biome/map, a cache of the
@@ -3188,11 +3928,13 @@ fn write_plant(buf: &mut Vec<u8>, p: &Plant) {
     buf.extend_from_slice(&p.rotation.to_le_bytes());
     buf.push(p.species);
     buf.push(p.stage);
+    buf.extend_from_slice(&p.strain.to_le_bytes());
     buf.extend_from_slice(&p.born_hour.to_le_bytes());
     buf.extend_from_slice(&p.genes.to_bytes());
 }
 
-fn read_plant(cur: &mut Cursor<'_>) -> anyhow::Result<Plant> {
+fn read_plant(cur: &mut Cursor<'_>, version: u32) -> anyhow::Result<Plant> {
+    // Field initialisers run in source order, which is the wire order.
     Ok(Plant {
         local_x: cur.read_u16()?,
         local_z: cur.read_u16()?,
@@ -3200,9 +3942,64 @@ fn read_plant(cur: &mut Cursor<'_>) -> anyhow::Result<Plant> {
         rotation: cur.read_u16()?,
         species: cur.read_u8()?,
         stage: cur.read_u8()?,
+        strain: if version >= SPREAD_VERSION {
+            cur.read_u16()?
+        } else {
+            WILD_STRAIN
+        },
         born_hour: cur.read_f32()?,
         genes: PlantGenes::from_bytes(cur.read_array()?),
     })
+}
+
+/// Strain registry trailer of the spread blob: count, then per strain its
+/// species, hybrid flag, founding hour, founder location and UTF-8 name.
+fn write_strains(buf: &mut Vec<u8>, strains: &[Strain]) {
+    buf.extend_from_slice(&(strains.len() as u32).to_le_bytes());
+    for s in strains {
+        buf.push(s.species);
+        buf.push(s.hybrid as u8);
+        buf.extend_from_slice(&s.founded_hour.to_bits().to_le_bytes());
+        buf.extend_from_slice(&s.founder.chunk.to_le_bytes());
+        buf.extend_from_slice(&s.founder.local_x.to_le_bytes());
+        buf.extend_from_slice(&s.founder.local_z.to_le_bytes());
+        let mut end = s.name.len().min(u16::MAX as usize);
+        while !s.name.is_char_boundary(end) {
+            end -= 1;
+        }
+        let name = &s.name.as_bytes()[..end];
+        buf.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        buf.extend_from_slice(name);
+    }
+}
+
+fn read_strains(cur: &mut Cursor<'_>) -> anyhow::Result<Vec<Strain>> {
+    let count = cur.read_u32()? as usize;
+    if count > u16::MAX as usize {
+        anyhow::bail!("{count} strains exceed the id space");
+    }
+    let mut strains = Vec::with_capacity(count);
+    for i in 0..count {
+        let species = cur.read_u8()?;
+        let hybrid = cur.read_u8()? != 0;
+        let founded_hour = f64::from_bits(cur.read_u64()?);
+        let founder = StrainFounder {
+            chunk: cur.read_u32()?,
+            local_x: cur.read_u16()?,
+            local_z: cur.read_u16()?,
+        };
+        let len = cur.read_u16()? as usize;
+        let name = String::from_utf8_lossy(cur.take(len)?).into_owned();
+        strains.push(Strain {
+            id: i as u16 + 1,
+            name,
+            species,
+            hybrid,
+            founded_hour,
+            founder,
+        });
+    }
+    Ok(strains)
 }
 
 /// Minimal bounds-checked little-endian reader over a byte slice.
@@ -3450,6 +4247,8 @@ mod tests {
             last_spread_added: 0,
             biome_fill: Vec::new(),
             dirty_chunks: Vec::new(),
+            strains: Vec::new(),
+            strain_chunks: Vec::new(),
         };
         world.recount_stage_counts();
         world
@@ -3486,6 +4285,7 @@ mod tests {
             rotation: quantize_rotation(1.0),
             species: 0,
             stage: stage_to_u8(GrowthStage::Seedling),
+            strain: WILD_STRAIN,
             born_hour,
             genes: PlantGenes::from_bytes([11, 22, 33, 44, 55, 66, 77, 88]),
         }
@@ -3504,6 +4304,7 @@ mod tests {
             rotation: (r8 as u16) << 8,
             species,
             stage: MATURE,
+            strain: WILD_STRAIN,
             born_hour: 0.0,
             genes: PlantGenes::from_bytes([species.wrapping_add(1), 21, 42, 63, 84, 105, 126, 147]),
         }
@@ -3672,6 +4473,212 @@ mod tests {
         assert!(reloaded.saturated[0]);
         assert!(!reloaded.saturated[1]);
         assert!(reloaded.saturated[2]);
+    }
+
+    /// A full-size empty world (hand placement indexes the real chunk grid) and
+    /// a dry-land world position on it, away from rivers.
+    fn land_world() -> (PlantWorld, f32, f32) {
+        let n = (WORLD_SIZE_CHUNKS * WORLD_SIZE_CHUNKS) as usize;
+        let world = test_world(vec![Vec::new(); n], registry());
+        for i in 0..4096u32 {
+            let x = 128.0 + (i % 64) as f32 * 97.0;
+            let z = 128.0 + (i / 64) as f32 * 97.0;
+            let dry = (-12..=12).step_by(3).all(|d| {
+                let (dx, dz) = (x + d as f32, z - d as f32);
+                world.heightmap.sample_height(dx, dz) > world.sea_level + 4.0
+                    && world.rivers.wetness(dx, dz) <= MAX_PLANTABLE_WETNESS
+            });
+            if dry {
+                return (world, x, z);
+            }
+        }
+        panic!("no dry land found on the test heightmap");
+    }
+
+    fn mature_at(world: &mut PlantWorld, x: f32, z: f32, genes: [u8; 8]) {
+        world.plant_at(x, z, 0, 0.0).unwrap();
+        let (idx, ..) = PlantWorld::locate(x, z);
+        let plant = world.chunks[idx].last_mut().unwrap();
+        plant.stage = MATURE;
+        plant.genes = PlantGenes::from_bytes(genes);
+        world.recount_stage_counts();
+    }
+
+    #[test]
+    fn plant_and_cull_keep_the_census_exact() {
+        let (mut world, x, z) = land_world();
+        world.plant_at(x, z, 0, 0.0).unwrap();
+        world.plant_at(x + 9.0, z, 0, 0.0).unwrap();
+        assert_eq!(world.census()[0][0], 2, "hand-sown seedlings are counted");
+        assert_eq!(world.cull_at(x, z, 20.0), 2);
+        assert_eq!(world.census()[0], [0; population_history::STAGE_COUNT]);
+        assert_eq!(world.population(), 0);
+    }
+
+    #[test]
+    fn strains_found_cross_and_round_trip_through_save() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        mature_at(&mut world, x + 10.0, z, [240; 8]);
+
+        let founded = world.found_strain_at(x, z, 2.0, 5.0).unwrap();
+        assert_eq!(founded, 1);
+        assert!(
+            world.found_strain_at(x, z, 2.0, 5.0).is_err(),
+            "already founded"
+        );
+
+        let pollen = world.collect_pollen_at(x + 10.0, z, 2.0).unwrap();
+        let cross = world.cross_pollinate_at(x, z, 2.0, pollen, 6.0).unwrap();
+        assert_eq!(cross.strain, 2);
+        assert!(cross.seedlings > 0);
+        assert!(world.strain(2).unwrap().hybrid);
+
+        let reports = world.strain_reports();
+        assert_eq!(reports[0].living, 1, "the founder");
+        assert_eq!(reports[1].living, cross.seedlings as u32);
+        assert_eq!(reports[1].stages[0], cross.seedlings as u32);
+        // Every hybrid locus comes from a parent (±mutation), and with 8 loci
+        // per seedling both parents contribute somewhere in the brood.
+        let (idx, ..) = PlantWorld::locate(x, z);
+        let brood: Vec<u8> = world
+            .chunks
+            .iter()
+            .flatten()
+            .filter(|p| p.strain == 2)
+            .flat_map(|p| p.genes.to_bytes())
+            .collect();
+        assert!(brood.iter().any(|&g| g < 40) && brood.iter().any(|&g| g > 210));
+        assert!(world.chunks[idx].iter().any(|p| p.strain == 1));
+
+        // Save, then reload onto a world holding only the (regenerated) base:
+        // the two hand-planted parents become base by setting base_count.
+        for (i, chunk) in world.chunks.iter().enumerate() {
+            world.base_count[i] = chunk.iter().filter(|p| p.stage == MATURE).count() as u32;
+        }
+        let storage = MemBytes::default();
+        world.save_spread(&storage).unwrap();
+        let base: Vec<Vec<Plant>> = world
+            .chunks
+            .iter()
+            .map(|c| {
+                c.iter()
+                    .filter(|p| p.stage == MATURE)
+                    .map(|p| Plant {
+                        strain: WILD_STRAIN,
+                        ..*p
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut reloaded = test_world(base, registry());
+        assert_eq!(reloaded.apply_saved_spread(&storage), cross.seedlings);
+        assert_eq!(reloaded.strains(), world.strains());
+        assert_eq!(reloaded.strain_reports(), world.strain_reports());
+    }
+
+    #[test]
+    fn hand_cross_rejects_the_pollen_donor_as_mother() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        let pollen = world.collect_pollen_at(x, z, 2.0).unwrap();
+        let err = world
+            .cross_pollinate_at(x, z, 2.0, pollen, 6.0)
+            .unwrap_err();
+        assert!(err.contains("second parent"), "{err}");
+        assert!(world.strains().is_empty(), "no strain founded");
+    }
+
+    #[test]
+    fn malformed_strain_trailer_rolls_the_load_back() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        world.found_strain_at(x, z, 2.0, 1.0).unwrap();
+        let storage = MemBytes::default();
+        world.save_spread(&storage).unwrap();
+        let mut bytes = storage.load_bytes("plants").unwrap();
+        bytes.truncate(bytes.len() - 3);
+
+        let (mut fresh, ..) = land_world();
+        let before = (fresh.population(), fresh.census());
+        assert_eq!(fresh.apply_saved_spread_bytes(Some(&bytes)), 0);
+        assert_eq!((fresh.population(), fresh.census()), before);
+        assert!(
+            fresh.chunks.iter().all(Vec::is_empty),
+            "no partial plants left"
+        );
+        assert!(fresh.strains().is_empty());
+    }
+
+    #[test]
+    fn reload_keeps_a_founded_strain_awake_in_settled_ground() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        world.found_strain_at(x, z, 2.0, 1.0).unwrap();
+        let storage = MemBytes::default();
+        world.save_spread(&storage).unwrap();
+
+        let (mut reloaded, ..) = land_world();
+        reloaded.apply_saved_spread(&storage);
+        let (idx, ..) = PlantWorld::locate(x, z);
+        assert_eq!(reloaded.chunks[idx][0].strain, 1);
+        assert_eq!(reloaded.immature[idx], 0, "all mature");
+        assert!(!reloaded.saturated[idx], "strain block stays awake");
+    }
+
+    #[test]
+    fn ray_pick_hits_the_first_plant_and_respects_occlusion() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [10; 8]);
+        mature_at(&mut world, x + 10.0, z, [20; 8]);
+        let ground = world.heightmap.sample_height(x, z);
+        // Level ray along +x at ~1 m above the near plant's base.
+        let origin = Vec3::new(x - 20.0, ground + 1.0, z);
+        let dir = Vec3::X;
+        let (pick, t) = world.pick_plant_on_ray(origin, dir, 100.0).expect("hit");
+        assert_eq!(
+            pick.plant.genes,
+            PlantGenes::from_bytes([10; 8]),
+            "nearer plant"
+        );
+        assert!((15.0..20.0).contains(&t), "enters the near cylinder, t={t}");
+        let (px, pz) = PlantWorld::pick_position(&pick, origin);
+        assert!((px - x).abs() < 0.01 && (pz - z).abs() < 0.01);
+        // Terrain occluding at 10 m hides both plants.
+        assert!(world.pick_plant_on_ray(origin, dir, 10.0).is_none());
+        // A ray passing well above the canopy misses.
+        let high = Vec3::new(x - 20.0, ground + 500.0, z);
+        assert!(world.pick_plant_on_ray(high, dir, 100.0).is_none());
+    }
+
+    #[test]
+    fn spread_pollinates_from_a_neighbour_and_keeps_the_maternal_strain() {
+        let (mut world, x, z) = land_world();
+        mature_at(&mut world, x, z, [0; 8]);
+        mature_at(&mut world, x + 8.0, z, [255; 8]);
+        let (idx, ..) = PlantWorld::locate(x, z);
+        world.chunks[idx][0].strain = 1;
+        let chunks = world.chunks.clone();
+        let ctx = EmitContext {
+            registry: &world.registry,
+            heightmap: &world.heightmap,
+            rivers: &world.rivers,
+            sea_level: world.sea_level,
+            seed: world.seed,
+            bucket: 0,
+        };
+        let mut mixed = false;
+        for bucket in 0..64 {
+            let ctx = EmitContext { bucket, ..ctx };
+            for c in emit_chunk_candidates(idx, &chunks, &ctx) {
+                let bytes = c.genes.to_bytes();
+                // A clone of either parent would be all-low or all-high.
+                mixed |= bytes.iter().any(|&g| g < 30) && bytes.iter().any(|&g| g > 225);
+                let mother_low = c.order >> 4 & 0xF_FFFF == 0;
+                assert_eq!(c.strain, if mother_low { 1 } else { WILD_STRAIN });
+            }
+        }
+        assert!(mixed, "no seedling recombined both parents");
     }
 
     #[test]
@@ -3950,6 +4957,7 @@ mod tests {
             species: 0,
             stage: MATURE,
             born_hour: 0.0,
+            strain: WILD_STRAIN,
             genes: PlantGenes::default(),
         };
         let canon = IVec2::new(3, 4);
@@ -4227,6 +5235,7 @@ mod tests {
                 species: 0,
                 stage: stage_to_u8(GrowthStage::Seedling),
                 born_hour: 0.0,
+                strain: WILD_STRAIN,
                 genes: PlantGenes::default(),
             }]],
             Arc::clone(&reg),
@@ -4333,6 +5342,7 @@ mod tests {
             height: 6.0,
             rotation: 0.0,
             species: 0,
+            strain: WILD_STRAIN,
             genes: PlantGenes::from_bytes([
                 good_genes.wet_pref,
                 good_genes.alt_pref,
@@ -4451,6 +5461,7 @@ mod tests {
         let now = 0.5 * base_sched.dead_at;
         world.chunks[0].push(Plant {
             stage: stage_to_u8(GrowthStage::Seedling),
+            strain: WILD_STRAIN,
             genes: PlantGenes::from_bytes([200, 100, 50, 25, 75, 125, 175, 225]),
             born_hour: now as f32,
             ..grid_plant(46.0, 40.0, 0)
@@ -4525,6 +5536,7 @@ mod tests {
                 height: 6.0,
                 rotation: 0.0,
                 species: 0,
+                strain: WILD_STRAIN,
                 genes: good_genes,
                 order: 0,
             };
@@ -4600,6 +5612,7 @@ mod tests {
                     species: 0,
                     stage: MATURE,
                     born_hour: 0.0,
+                    strain: WILD_STRAIN,
                     genes: PlantGenes {
                         fecundity: 240,
                         ..site_genes(&probe, src_x, src_z)
@@ -4712,6 +5725,7 @@ mod tests {
                     species: 0,
                     stage: MATURE,
                     born_hour: 0.0,
+                    strain: WILD_STRAIN,
                     genes: PlantGenes {
                         fecundity: 220,
                         seed_mass: 150,

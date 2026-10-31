@@ -17,6 +17,7 @@ pub mod population_history;
 pub mod rivers;
 pub mod save;
 pub mod storage;
+pub mod strains;
 pub mod terrain;
 pub mod terrain_fields;
 pub mod time;
